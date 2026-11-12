@@ -1,0 +1,55 @@
+{
+  "name": "@open-dreamflow/mcp-client",
+  "version": "1.0.0",
+  "description": "Universal Model Context Protocol (MCP) Client (WebSocket/SSE/HTTP), Canvas Node Schema Converter, and Local STDIO Bridge Server for Open-DreamFlow",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "dreamflow-mcp-bridge": "./dist/server-bridge.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    },
+    "./server-bridge": {
+      "types": "./dist/server-bridge.d.ts",
+      "import": "./dist/server-bridge.js"
+    },
+    "./src/*": "./src/*"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node ./dist/server-bridge.js",
+    "bridge": "node ./dist/server-bridge.js",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "open-dreamflow",
+    "flow-mcp",
+    "gflow-cli",
+    "comfy-mcp",
+    "websocket",
+    "sse"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}

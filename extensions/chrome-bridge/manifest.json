@@ -1,0 +1,70 @@
+{
+  "manifest_version": 3,
+  "name": "Open-DreamFlow Consumer Subscription Bridge",
+  "version": "1.0.0",
+  "description": "Zero-API-cost bridge connecting Open-DreamFlow Studio to Google Flow (flow.google.com) and Dreamina / Seedance (dreamina.capcut.com).",
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://flow.google.com/*",
+    "https://labs.google/*",
+    "https://dreamina.capcut.com/*",
+    "https://jimeng.jianying.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open-DreamFlow Bridge",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://flow.google.com/*",
+        "https://labs.google/fx/tools/flow*"
+      ],
+      "js": [
+        "content-flow.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://dreamina.capcut.com/*",
+        "https://jimeng.jianying.com/*"
+      ],
+      "js": [
+        "content-dreamina.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "content-studio.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}

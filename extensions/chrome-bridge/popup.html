@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Open-DreamFlow Bridge</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #090d16;
+        --panel: #111827;
+        --border: #1f2937;
+        --text: #f3f4f6;
+        --muted: #9ca3af;
+        --accent: #38bdf8;
+        --ok: #34d399;
+        --warn: #fbbf24;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        width: 340px;
+        padding: 14px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+        font-size: 13px;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      .title {
+        font-weight: 700;
+        font-size: 14px;
+        letter-spacing: -0.01em;
+      }
+      .badge {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(56, 189, 248, 0.15);
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 5px 0;
+      }
+      .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 6px;
+        background: #4b5563;
+      }
+      .dot.online {
+        background: var(--ok);
+        box-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 8px;
+        text-align: center;
+      }
+      .stat-val {
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--accent);
+      }
+      .stat-lbl {
+        font-size: 10px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      button {
+        appearance: none;
+        border: 1px solid var(--border);
+        background: #1e293b;
+        color: var(--text);
+        border-radius: 8px;
+        padding: 7px 10px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      button.secondary {
+        grid-column: span 2;
+        background: transparent;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div class="title">Open-DreamFlow Bridge</div>
+      <span class="badge">$0 API Markup</span>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <span><span id="dot-studio" class="dot"></span>Studio Canvas</span>
+        <span id="lbl-studio" style="color: var(--muted)">Checking...</span>
+      </div>
+      <div class="row">
+        <span><span id="dot-flow" class="dot"></span>Google Flow</span>
+        <span id="lbl-flow" style="color: var(--muted)">Checking...</span>
+      </div>
+      <div class="row">
+        <span><span id="dot-dreamina" class="dot"></span>Dreamina / Seedance</span>
+        <span id="lbl-dreamina" style="color: var(--muted)">Checking...</span>
+      </div>
+    </div>
+
+    <div class="card stats">
+      <div>
+        <div id="val-queued" class="stat-val">0</div>
+        <div class="stat-lbl">Queued</div>
+      </div>
+      <div>
+        <div id="val-completed" class="stat-val">0</div>
+        <div class="stat-lbl">Completed</div>
+      </div>
+      <div>
+        <div id="val-saved" class="stat-val">$0.00</div>
+        <div class="stat-lbl">API Saved</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="btn-open-flow">Open Google Flow</button>
+      <button id="btn-open-dreamina">Open Dreamina</button>
+      <button id="btn-open-studio" class="secondary">Open Local Studio (:8789)</button>
+      <button id="btn-clear-queue" class="secondary">Clear Pending Queue</button>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
