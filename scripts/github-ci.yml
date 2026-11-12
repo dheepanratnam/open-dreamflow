@@ -1,0 +1,46 @@
+name: Open-DreamFlow CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-verify:
+    name: Build, Typecheck & E2E Smoke (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install monorepo dependencies
+        run: npm ci
+
+      - name: Build @open-dreamflow/provider-sdk (tsc --strict)
+        run: npm run build:sdk
+
+      - name: Build @open-dreamflow/mcp-client & STDIO Bridge (tsc --strict)
+        run: npm run build:mcp
+
+      - name: Build @open-dreamflow/web-studio (tsc --noEmit + Vite bundle)
+        run: npm run build
+
+      - name: Run full E2E verification suite (SDK + Live MCP JSON-RPC + MV3 Bridge + Bundle)
+        run: npm test
