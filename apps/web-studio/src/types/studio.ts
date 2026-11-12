@@ -40,6 +40,16 @@ export interface MCPToolDefinition {
   inputSchema?: Record<string, unknown>;
 }
 
+export interface McpBackendHealth {
+  online: boolean;
+  ffmpegAvailable: boolean;
+  toolCount: number;
+  tools: MCPToolDefinition[];
+  mediaFiles: string[];
+  baseUrl: string;
+  pingMs?: number;
+}
+
 export interface CanvasNode {
   id: string;
   kind: NodeKind;
@@ -137,6 +147,7 @@ export interface MultiframeCard {
   title: string;
   prompt: string;
   imageUrl: string;
+  videoUrl?: string;
   sourceNodeId?: string;
   aspectRatio: AspectRatio;
 }

@@ -14,6 +14,7 @@ import {
 import { useStudioStore } from '../store/useStudioStore';
 import type { AspectRatio, DreaminaSkill, ElementVault, ResolutionTier } from '../types/studio';
 import { estimateZeroMarkupCostUsd } from '../services/executionRouter';
+import { SmartMediaImage } from './SmartMedia';
 
 export const PromptDock: React.FC = () => {
   const {
@@ -180,11 +181,12 @@ export const PromptDock: React.FC = () => {
                 <div className="flex items-center gap-2.5 min-w-0">
                   <div className="flex -space-x-2 shrink-0">
                     {vault.references.slice(0, 3).map((ref) => (
-                      <img
+                      <SmartMediaImage
                         key={ref.id}
                         src={ref.dataUrl}
                         alt={ref.label}
                         className="w-8 h-8 rounded-lg object-cover ring-2 ring-[#0E121B]"
+                        fallbackPrompt={ref.label}
                       />
                     ))}
                   </div>
@@ -381,10 +383,11 @@ export const PromptDock: React.FC = () => {
                     key={ref.id}
                     className="group relative aspect-square rounded-xl overflow-hidden border border-slate-700 bg-slate-900"
                   >
-                    <img
+                    <SmartMediaImage
                       src={ref.dataUrl}
                       alt={ref.label}
                       className="w-full h-full object-cover"
+                      fallbackPrompt={ref.label}
                     />
                     <button
                       onClick={() => removeReferenceFromVault(activeVault.id, ref.id)}

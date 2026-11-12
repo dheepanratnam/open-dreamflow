@@ -10,12 +10,14 @@ import {
   Sparkles,
   Undo2,
   X,
+  Zap,
 } from 'lucide-react';
 import { CanvasBoard } from './components/CanvasBoard';
 import { PromptDock } from './components/PromptDock';
 import { MultiframeChain } from './components/MultiframeChain';
 import { ProviderModal } from './components/ProviderModal';
 import { TimelineDock } from './components/TimelineDock';
+import { ShareableAppView } from './components/ShareableAppView';
 import { useStudioStore } from './store/useStudioStore';
 import { pingChromeBridge } from './services/executionRouter';
 
@@ -31,9 +33,11 @@ export const App: React.FC = () => {
     redo,
     copyShareableRecipeUrl,
     hydrateFromUrlRecipe,
+    autoConnectLocalMcpBackend,
     openProviderModal,
     activeProvider,
     mcpServers,
+    mcpHealth,
     chromeBridge,
     handleIncomingBridgeEvent,
     directorModalOpen,
@@ -50,6 +54,13 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     hydrateFromUrlRecipe();
+    autoConnectLocalMcpBackend();
+
+    const retryTimer = setTimeout(() => {
+      if (!useStudioStore.getState().mcpHealth.online) {
+        autoConnectLocalMcpBackend();
+      }
+    }, 3200);
 
     const onMessage = (event: MessageEvent) => {
       const data = event.data;
@@ -72,8 +83,9 @@ export const App: React.FC = () => {
     return () => {
       window.removeEventListener('message', onMessage);
       clearTimeout(t);
+      clearTimeout(retryTimer);
     };
-  }, [hydrateFromUrlRecipe, handleIncomingBridgeEvent]);
+  }, [hydrateFromUrlRecipe, autoConnectLocalMcpBackend, handleIncomingBridgeEvent]);
 
   return (
     <div className="w-screen h-screen flex flex-col bg-[#07080C] text-slate-100 overflow-hidden">
@@ -102,7 +114,7 @@ export const App: React.FC = () => {
             type="text"
             value={projectTitle}
             onChange={(e) => setProjectTitle(e.target.value)}
-            className="hidden md:block bg-slate-900/80 hover:bg-slate-900 border border-slate-800 focus:border-violet-500 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-200 w-52 focus:outline-none"
+            className="hidden xl:block bg-slate-900/80 hover:bg-slate-900 border border-slate-800 focus:border-violet-500 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-200 w-52 focus:outline-none"
           />
         </div>
 
@@ -133,7 +145,7 @@ export const App: React.FC = () => {
 
           <button
             onClick={() => setActiveView('split')}
-            className={`hidden lg:flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition ${
+            className={`hidden xl:flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition ${
               activeView === 'split'
                 ? 'bg-violet-600 text-white shadow'
                 : 'text-slate-400 hover:text-slate-200'
@@ -142,15 +154,27 @@ export const App: React.FC = () => {
             <Columns2 className="w-3.5 h-3.5" />
             <span>Split View</span>
           </button>
+
+          <button
+            onClick={() => setActiveView('app')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition ${
+              activeView === 'app'
+                ? 'bg-gradient-to-r from-emerald-500 to-sky-500 text-slate-950 font-bold shadow'
+                : 'text-emerald-300 hover:text-white'
+            }`}
+          >
+            <Zap className="w-3.5 h-3.5" />
+            <span>⚡ Shareable App Mode</span>
+          </button>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => setDirectorModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-fuchsia-600/25 to-violet-600/25 hover:from-fuchsia-600/40 hover:to-violet-600/40 border border-fuchsia-500/40 text-fuchsia-200 text-xs font-semibold transition"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-fuchsia-600/25 to-violet-600/25 hover:from-fuchsia-600/40 hover:to-violet-600/40 border border-fuchsia-500/40 text-fuchsia-200 text-xs font-semibold transition"
           >
             <Bot className="w-3.5 h-3.5 text-fuchsia-300" />
-            <span className="hidden sm:inline">Director Agent</span>
+            <span className="hidden md:inline">Director Agent</span>
           </button>
 
           <div className="flex items-center bg-slate-900 rounded-lg border border-slate-800">
@@ -178,21 +202,35 @@ export const App: React.FC = () => {
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-medium text-slate-200 transition"
           >
             <Link2 className="w-3.5 h-3.5 text-sky-400" />
-            <span className="hidden sm:inline">Share `?recipe=`</span>
+            <span className="hidden lg:inline">Share `?recipe=`</span>
           </button>
 
           <button
-            onClick={() => openProviderModal('byok')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-200 text-xs font-semibold transition"
+            onClick={() => openProviderModal(mcpHealth.online ? 'mcp' : 'byok')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition ${
+              mcpHealth.online
+                ? 'bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-400/60 text-emerald-100 shadow-[0_0_16px_rgba(16,185,129,0.22)]'
+                : 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/40 text-emerald-200'
+            }`}
           >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                mcpHealth.online || chromeBridge.extensionDetected
+                  ? 'bg-emerald-400 animate-pulse'
+                  : 'bg-amber-400'
+              }`}
+            />
             <Cpu className="w-3.5 h-3.5 text-emerald-400" />
-            <span>BYOK · MCP ({mcpServers.length})</span>
-            {chromeBridge.extensionDetected && (
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            )}
-            <span className="hidden xl:inline font-mono text-[10px] text-emerald-300">
-              [{activeProvider}]
+            <span>
+              {mcpHealth.online
+                ? `MCP Live · FFmpeg + ${mcpHealth.toolCount} Tools`
+                : `BYOK · MCP (${mcpServers.length})`}
             </span>
+            {!mcpHealth.online && (
+              <span className="hidden xl:inline font-mono text-[10px] text-emerald-300">
+                [{activeProvider}]
+              </span>
+            )}
           </button>
         </div>
       </header>
@@ -224,6 +262,12 @@ export const App: React.FC = () => {
           </div>
         )}
 
+        {activeView === 'app' && (
+          <div className="relative w-full h-full">
+            <ShareableAppView />
+          </div>
+        )}
+
         {toastMessage && (
           <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-[#131826]/95 border border-violet-400/50 shadow-glow-dream text-xs font-medium text-white flex items-center gap-2">
             <Sparkles className="w-3.5 h-3.5 text-violet-400" />
@@ -247,7 +291,7 @@ export const App: React.FC = () => {
                   </h3>
                   <p className="text-xs text-slate-400">
                     Decomposes any creative brief into Style DNA + multi-turn Gemini Omni
-                    1.2 shots + Timeline rough cut.
+                    1.2 / FFmpeg shots + Timeline rough cut.
                   </p>
                 </div>
               </div>

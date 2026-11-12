@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ChevronDown,
   ChevronUp,
+  Clapperboard,
   Download,
+  ExternalLink,
   Film,
   Mic,
   Pause,
@@ -11,15 +13,16 @@ import {
   Scissors,
   Video,
   Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import { useStudioStore } from '../store/useStudioStore';
-import { drawCinemaShotFrame } from '../utils/proceduralMedia';
 import {
   compileTimelineToWebm,
   downloadTextFile,
   generateFcpxmlDocument,
 } from '../utils/exporters';
+import { SmartMediaImage, SmartMediaVideo } from './SmartMedia';
 
 export const TimelineDock: React.FC = () => {
   const {
@@ -34,13 +37,16 @@ export const TimelineDock: React.FC = () => {
     addVoiceOrSfxClip,
     removeTimelineClip,
     extractLastFrameToNextShot,
+    compileTimelineMasterMp4,
+    isRenderingMasterMp4,
+    masterRenderUrl,
     showToast,
   } = useStudioStore();
 
-  const monitorRef = useRef<HTMLCanvasElement | null>(null);
   const [selectedClipId, setSelectedClipId] = useState<string | undefined>();
   const [compilingWebm, setCompilingWebm] = useState(false);
   const [compilePct, setCompilePct] = useState(0);
+  const [monitorMuted, setMonitorMuted] = useState(true);
 
   const totalDurationSec = Math.max(
     15,
@@ -70,34 +76,14 @@ export const TimelineDock: React.FC = () => {
     return () => cancelAnimationFrame(raf);
   }, [isPlayingTimeline, totalDurationSec, setPlayheadSec, setIsPlayingTimeline]);
 
-  useEffect(() => {
-    const canvas = monitorRef.current;
-    if (!canvas || !timelineExpanded) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  const videoClips = timelineClips
+    .filter((c) => c.track === 'video')
+    .sort((a, b) => a.startSec - b.startSec);
 
-    const videoClips = timelineClips
-      .filter((c) => c.track === 'video')
-      .sort((a, b) => a.startSec - b.startSec);
-    const activeClip =
-      videoClips.find(
-        (c) =>
-          playheadSec >= c.startSec && playheadSec <= c.startSec + c.durationSec
-      ) || videoClips[0];
-
-    if (activeClip) {
-      const localSec = Math.max(0, playheadSec - activeClip.startSec);
-      drawCinemaShotFrame(ctx, canvas.width, canvas.height, localSec, {
-        prompt: activeClip.promptOrDialogue,
-        seed: activeClip.seed || 202,
-        theme: activeClip.videoTheme,
-        cameraLabel: `TC ${playheadSec.toFixed(1)}s`,
-      });
-    } else {
-      ctx.fillStyle = '#06080F';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-  }, [playheadSec, timelineClips, timelineExpanded]);
+  const activeMonitorClip =
+    videoClips.find(
+      (c) => playheadSec >= c.startSec && playheadSec <= c.startSec + c.durationSec
+    ) || videoClips[0];
 
   const handleCompileWebm = async () => {
     if (compilingWebm) return;
@@ -226,12 +212,37 @@ export const TimelineDock: React.FC = () => {
 
           <button
             onClick={() => extractLastFrameToNextShot(selectedClipId)}
-            title="Extract exact final pixel frame onto Spatial Canvas as Next-Shot First-Frame Anchor"
+            title="Extract exact final PNG frame via FFmpeg (:3001) onto Spatial Canvas as Next-Shot Anchor"
             className="px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/30 border border-sky-500/35 text-[11px] font-semibold text-sky-200 flex items-center gap-1.5 transition"
           >
             <Scissors className="w-3.5 h-3.5 text-sky-400" />
             <span>✂️ Last Frame → Next Shot</span>
           </button>
+
+          <button
+            onClick={() => compileTimelineMasterMp4()}
+            disabled={isRenderingMasterMp4}
+            title="Concatenate & stitch V1 clips into a faststart H.264 + AAC Master .mp4 via live :3001 FFmpeg"
+            className="px-3 py-1 rounded-lg bg-gradient-to-r from-fuchsia-600/40 to-violet-600/40 hover:from-fuchsia-500/60 hover:to-violet-500/60 border border-fuchsia-400/50 text-[11px] font-bold text-white flex items-center gap-1.5 shadow transition"
+          >
+            <Clapperboard className="w-3.5 h-3.5 text-fuchsia-300" />
+            <span>
+              {isRenderingMasterMp4 ? 'Stitching .mp4...' : '🎬 Render Master .mp4'}
+            </span>
+          </button>
+
+          {masterRenderUrl && (
+            <a
+              href={masterRenderUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-2 py-1 rounded-lg bg-fuchsia-500/15 hover:bg-fuchsia-500/25 border border-fuchsia-400/35 text-[10px] font-mono text-fuchsia-200 flex items-center gap-1"
+              title="Open stitched Master .mp4"
+            >
+              <ExternalLink className="w-3 h-3" />
+              <span>Master.mp4</span>
+            </a>
+          )}
 
           <button
             onClick={handleCompileWebm}
@@ -258,16 +269,56 @@ export const TimelineDock: React.FC = () => {
 
       {timelineExpanded && (
         <div className="flex h-[182px] overflow-hidden">
-          <div className="hidden md:flex w-[240px] shrink-0 border-r border-slate-800/80 p-2.5 flex-col justify-between bg-[#070910]">
-            <canvas
-              ref={monitorRef}
-              width={320}
-              height={180}
-              className="w-full h-[126px] rounded-lg border border-slate-800 object-cover bg-black"
-            />
+          <div className="hidden md:flex w-[252px] shrink-0 border-r border-slate-800/80 p-2.5 flex-col justify-between bg-[#070910]">
+            <div className="relative w-full h-[126px] rounded-lg border border-slate-800 overflow-hidden bg-black">
+              {activeMonitorClip ? (
+                <SmartMediaVideo
+                  videoUrl={activeMonitorClip.videoUrl}
+                  posterUrl={activeMonitorClip.thumbnailUrl}
+                  playing
+                  muted={monitorMuted}
+                  loop
+                  className="w-full h-full object-cover"
+                  fallbackPrompt={activeMonitorClip.promptOrDialogue}
+                  fallbackSeed={activeMonitorClip.seed || 202}
+                  fallbackTheme={activeMonitorClip.videoTheme}
+                  fallbackDurationSec={activeMonitorClip.durationSec}
+                  fallbackMotionLabel={`TC ${playheadSec.toFixed(1)}s`}
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-[11px] text-slate-500 font-mono">
+                  NO CLIP ON V1
+                </div>
+              )}
+
+              <button
+                onClick={() => setMonitorMuted((m) => !m)}
+                title={monitorMuted ? 'Unmute Program Monitor Stereo Audio' : 'Mute Program Monitor'}
+                className={`absolute top-1.5 right-1.5 px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold flex items-center gap-1 backdrop-blur-md transition ${
+                  monitorMuted
+                    ? 'bg-black/75 text-slate-300 hover:text-white border border-white/15'
+                    : 'bg-emerald-500/90 text-slate-950 font-bold shadow'
+                }`}
+              >
+                {monitorMuted ? (
+                  <>
+                    <VolumeX className="w-3 h-3" />
+                    <span>Muted</span>
+                  </>
+                ) : (
+                  <>
+                    <Volume2 className="w-3 h-3" />
+                    <span>Audio On</span>
+                  </>
+                )}
+              </button>
+            </div>
+
             <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 px-0.5">
-              <span>PROGRAM MONITOR</span>
-              <span className="text-emerald-400">24 FPS · STEREO</span>
+              <span className="truncate max-w-[130px]">
+                {activeMonitorClip ? activeMonitorClip.title : 'PROGRAM MONITOR'}
+              </span>
+              <span className="text-emerald-400">H.264 · STEREO</span>
             </div>
           </div>
 
@@ -341,10 +392,12 @@ export const TimelineDock: React.FC = () => {
                           >
                             <div className="flex items-center gap-1.5 min-w-0">
                               {clip.thumbnailUrl && (
-                                <img
+                                <SmartMediaImage
                                   src={clip.thumbnailUrl}
-                                  alt=""
+                                  alt={clip.title}
                                   className="w-8 h-6 rounded object-cover shrink-0 border border-white/10"
+                                  fallbackPrompt={clip.promptOrDialogue}
+                                  fallbackSeed={clip.seed || 202}
                                 />
                               )}
                               <div className="min-w-0">

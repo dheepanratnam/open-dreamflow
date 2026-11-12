@@ -3,7 +3,9 @@ import {
   ArrowRight,
   Clapperboard,
   Film,
+  Image as ImageIcon,
   Lock,
+  Play,
   Plus,
   Sparkles,
   Trash2,
@@ -11,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useStudioStore } from '../store/useStudioStore';
 import type { CameraTransitionCurve } from '../types/studio';
+import { SmartMediaImage, SmartMediaVideo } from './SmartMedia';
 
 const CURVES: CameraTransitionCurve[] = [
   'Dolly In',
@@ -55,6 +58,11 @@ export const MultiframeChain: React.FC = () => {
 
   const [synthesizing, setSynthesizing] = useState(false);
   const [selectedCanvasNodeId, setSelectedCanvasNodeId] = useState<string>('');
+  const [previewVideoByCard, setPreviewVideoByCard] = useState<Record<string, boolean>>({
+    'mf-1': true,
+    'mf-2': true,
+    'mf-3': true,
+  });
 
   const totalSequenceSec = bridges.reduce((acc, b) => acc + b.durationSec, 0);
   const imageOrVideoNodes = nodes.filter(
@@ -97,7 +105,7 @@ export const MultiframeChain: React.FC = () => {
             <p className="text-xs text-slate-400">
               Chain 2 to 10 keyframe cards with custom camera velocity curves (3s–15s per
               bridge). Each segment locks First & Last keyframes plus 10s temporal motion
-              context.
+              context via `:3001` FFmpeg / Omni 1.2.
             </p>
           </div>
 
@@ -141,7 +149,7 @@ export const MultiframeChain: React.FC = () => {
               <Clapperboard className="w-4 h-4" />
               <span>
                 {synthesizing
-                  ? 'Synthesizing Chain...'
+                  ? 'Synthesizing Chain via :3001...'
                   : 'Synthesize Chain → Canvas & Timeline'}
               </span>
             </button>
@@ -151,6 +159,8 @@ export const MultiframeChain: React.FC = () => {
         <div className="flex items-stretch gap-3 overflow-x-auto pb-4 pt-1">
           {multiframes.map((card, idx) => {
             const bridge = bridges.find((b) => b.fromCardId === card.id);
+            const showMotion = Boolean(card.videoUrl && (previewVideoByCard[card.id] ?? true));
+
             return (
               <React.Fragment key={card.id}>
                 <div className="w-[290px] shrink-0 rounded-2xl bg-[#0E121C] border border-slate-800 hover:border-violet-500/45 transition flex flex-col overflow-hidden shadow-lg">
@@ -180,11 +190,53 @@ export const MultiframeChain: React.FC = () => {
                   </div>
 
                   <div className="relative h-40 bg-slate-950 overflow-hidden group">
-                    <img
-                      src={card.imageUrl}
-                      alt={card.title}
-                      className="w-full h-full object-cover"
-                    />
+                    {showMotion ? (
+                      <SmartMediaVideo
+                        videoUrl={card.videoUrl}
+                        posterUrl={card.imageUrl}
+                        playing
+                        muted
+                        loop
+                        className="w-full h-full object-cover"
+                        fallbackPrompt={card.prompt}
+                        fallbackSeed={1200 + idx * 97}
+                        aspectRatio={card.aspectRatio}
+                      />
+                    ) : (
+                      <SmartMediaImage
+                        src={card.imageUrl}
+                        alt={card.title}
+                        className="w-full h-full object-cover"
+                        aspectRatio={card.aspectRatio}
+                        fallbackPrompt={card.prompt}
+                        fallbackSeed={1200 + idx * 97}
+                      />
+                    )}
+
+                    {card.videoUrl && (
+                      <button
+                        onClick={() =>
+                          setPreviewVideoByCard((p) => ({
+                            ...p,
+                            [card.id]: !(p[card.id] ?? true),
+                          }))
+                        }
+                        className="absolute bottom-2 left-2 px-2 py-0.5 rounded-md bg-black/75 hover:bg-violet-600/90 text-[10px] font-mono text-white flex items-center gap-1 transition"
+                      >
+                        {showMotion ? (
+                          <>
+                            <ImageIcon className="w-3 h-3 text-sky-300" />
+                            <span>Still</span>
+                          </>
+                        ) : (
+                          <>
+                            <Play className="w-3 h-3 text-emerald-300" />
+                            <span>MP4</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+
                     <label className="opacity-0 group-hover:opacity-100 absolute bottom-2 right-2 px-2.5 py-1 rounded-lg bg-black/80 hover:bg-violet-600 text-[11px] text-white font-medium flex items-center gap-1 cursor-pointer transition">
                       <Upload className="w-3 h-3" />
                       <span>Replace Frame</span>

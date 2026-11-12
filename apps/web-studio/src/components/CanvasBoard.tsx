@@ -25,72 +25,27 @@ import {
 } from 'lucide-react';
 import { useStudioStore } from '../store/useStudioStore';
 import type { AspectRatio, CanvasEdge, CanvasNode, FrameLayerType } from '../types/studio';
-import { drawCinemaShotFrame } from '../utils/proceduralMedia';
+import { SmartMediaImage, SmartMediaVideo } from './SmartMedia';
 
 const LiveVideoNodeSurface: React.FC<{
   node: CanvasNode;
   playing: boolean;
 }> = ({ node, playing }) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  useEffect(() => {
-    if (!playing) return;
-    let raf = 0;
-    const start = performance.now();
-    const render = () => {
-      const el = canvasRef.current;
-      if (el) {
-        const ctx = el.getContext('2d');
-        if (ctx) {
-          const elapsed = (performance.now() - start) / 1000;
-          drawCinemaShotFrame(ctx, el.width, el.height, elapsed, {
-            prompt: node.prompt,
-            seed: node.seed,
-            theme: node.videoTheme,
-            cameraLabel: `${node.cameraMotion || 'OMNI 1.2'} · ${(
-              elapsed %
-              (node.durationSec || 15)
-            ).toFixed(1)}s / ${node.durationSec || 15}s`,
-            hudBadge: node.previousInteractionId ? 'MULTI-TURN' : 'OMNI 1.2 LIVE',
-          });
-        }
-      }
-      raf = requestAnimationFrame(render);
-    };
-    raf = requestAnimationFrame(render);
-    return () => cancelAnimationFrame(raf);
-  }, [playing, node]);
-
-  if (node.videoUrl) {
-    return (
-      <video
-        src={node.videoUrl}
-        className="w-full h-full object-cover pointer-events-none"
-        autoPlay={playing}
-        loop
-        muted
-        playsInline
-      />
-    );
-  }
-
-  if (!playing && node.imageUrl) {
-    return (
-      <img
-        src={node.imageUrl}
-        alt={node.title}
-        className="w-full h-full object-cover pointer-events-none"
-        draggable={false}
-      />
-    );
-  }
-
   return (
-    <canvas
-      ref={canvasRef}
-      width={node.width * 1.5}
-      height={node.height * 1.5}
+    <SmartMediaVideo
+      videoUrl={node.videoUrl}
+      posterUrl={node.imageUrl}
+      playing={playing}
+      muted
+      loop
       className="w-full h-full object-cover pointer-events-none"
+      fallbackPrompt={node.prompt}
+      fallbackSeed={node.seed}
+      fallbackTheme={node.videoTheme}
+      fallbackDurationSec={node.durationSec || 15}
+      fallbackMotionLabel={node.cameraMotion || 'OMNI 1.2'}
+      fallbackBadge={node.previousInteractionId ? 'MULTI-TURN' : 'OMNI 1.2 LIVE'}
+      aspectRatio={node.aspectRatio}
     />
   );
 };
@@ -1033,7 +988,7 @@ export const CanvasBoard: React.FC = () => {
                   {node.kind === 'video' ? (
                     <LiveVideoNodeSurface
                       node={node}
-                      playing={Boolean(playingNodeIds[node.id])}
+                      playing={playingNodeIds[node.id] ?? true}
                     />
                   ) : hasSplitBgRemoved ? (
                     <>
@@ -1057,11 +1012,15 @@ export const CanvasBoard: React.FC = () => {
                   ) : (
                     node.imageUrl &&
                     fgLayer?.visible !== false && (
-                      <img
+                      <SmartMediaImage
                         src={node.imageUrl}
                         alt={node.title}
                         style={{ opacity: (fgLayer?.opacity ?? 100) / 100 }}
                         className="relative w-full h-full object-cover pointer-events-none"
+                        aspectRatio={node.aspectRatio}
+                        fallbackPrompt={node.prompt}
+                        fallbackSeed={node.seed}
+                        isContactSheet={node.kind === 'contact-sheet'}
                         draggable={false}
                       />
                     )
@@ -1098,16 +1057,19 @@ export const CanvasBoard: React.FC = () => {
                     <button
                       onPointerDown={(e) => e.stopPropagation()}
                       onClick={() =>
-                        setPlayingNodeIds((p) => ({ ...p, [node.id]: !p[node.id] }))
+                        setPlayingNodeIds((p) => ({
+                          ...p,
+                          [node.id]: !(p[node.id] ?? true),
+                        }))
                       }
                       className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/75 hover:bg-violet-600/90 text-white text-[11px] font-mono backdrop-blur-md transition z-10"
                     >
-                      {playingNodeIds[node.id] ? (
+                      {(playingNodeIds[node.id] ?? true) ? (
                         <Pause className="w-3 h-3" />
                       ) : (
                         <Play className="w-3 h-3" />
                       )}
-                      <span>{node.durationSec || 15}s Omni</span>
+                      <span>{node.durationSec || 15}s MP4</span>
                     </button>
                   )}
 

@@ -340,7 +340,7 @@ export function renderShotDataUrl(
   return canvas.toDataURL('image/png');
 }
 
-const NINE_GRID_LABELS = [
+export const NINE_GRID_LABELS = [
   '01 · EXTREME WIDE 14mm',
   '02 · ESTABLISHING ANAMORPHIC',
   '03 · MEDIUM TRACKING 35mm',
@@ -352,7 +352,7 @@ const NINE_GRID_LABELS = [
   '09 · SILHOUETTE CLIMAX',
 ];
 
-const FOUR_ANGLE_LABELS = [
+export const FOUR_ANGLE_LABELS = [
   'CAM A · WIDE MASTER 24mm',
   'CAM B · MEDIUM TWO-SHOT 50mm',
   'CAM C · HERO CLOSE-UP 85mm',
@@ -605,11 +605,31 @@ export function renderElementAvatarDataUrl(
 }
 
 export function loadImageElement(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = (err) => reject(err);
-    img.src = src;
+  return new Promise((resolve) => {
+    const tryLoad = (url: string, onFail: () => void) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = onFail;
+      img.src = url;
+    };
+
+    tryLoad(src, () => {
+      if (src.startsWith('/media/')) {
+        tryLoad(`http://localhost:3001${src}`, () => {
+          const fallback = renderShotDataUrl('16:9', {
+            prompt: 'Fallback Procedural Frame',
+            seed: 404,
+          });
+          tryLoad(fallback, () => resolve(new Image()));
+        });
+      } else {
+        const fallback = renderShotDataUrl('16:9', {
+          prompt: 'Fallback Procedural Frame',
+          seed: 404,
+        });
+        tryLoad(fallback, () => resolve(new Image()));
+      }
+    });
   });
 }

@@ -9,11 +9,9 @@ import type {
   TimelineClip,
 } from '../types/studio';
 import {
+  NINE_GRID_LABELS,
   extractStyleDnaFromPrompt,
   getDimensionsForAspect,
-  renderContactSheetDataUrl,
-  renderElementAvatarDataUrl,
-  renderShotDataUrl,
 } from '../utils/proceduralMedia';
 
 export function createDefaultLayers(baseDataUrl?: string): FrameLayer[] {
@@ -43,7 +41,7 @@ export function createDefaultLayers(baseDataUrl?: string): FrameLayer[] {
       name: 'Text Overlay',
       visible: false,
       opacity: 100,
-      textContent: 'NEO-TOKYO // 2099',
+      textContent: 'PROTOCOL: RAIN // ZERO MARKUP',
     },
   ];
 }
@@ -56,7 +54,7 @@ export const BUILTIN_SKILLS: DreaminaSkill[] = [
     category: 'Storyboard',
     badge: '3×3 SLICER',
     description:
-      'Synthesizes a coherent 3×3 cinema storyboard sheet and slices all 9 camera framings into linked spatial frames in 1 click.',
+      'Synthesizes a coherent 3×3 cinema storyboard sheet and slices all 9 camera framings into linked spatial frames via FFmpeg in 1 click.',
     promptTemplate:
       '@Hero_Kael walking through rain-slicked Neo-Tokyo alley wearing @Cyber_Sneaker, 9-panel anamorphic director contact sheet, @Brand_Style lighting',
     recommendedMode: '9-grid',
@@ -121,48 +119,137 @@ export const BUILTIN_SKILLS: DreaminaSkill[] = [
     description:
       'Branches selected video via Gemini Omni 1.2 `previous_interaction_id` to transform lighting/weather while keeping motion locked.',
     promptTemplate:
-      'Keep @Hero_Kael choreography identical; shift environment to crimson midnight neon downpour with volumetric thunder flashes and wet reflections',
+      'Keep @Hero_Kael choreography identical; shift lighting to golden dawn sunrise breaking through Neo-Tokyo rain clouds with warm amber rim light',
     recommendedMode: 'multi-turn',
-    durationSec: 12,
+    durationSec: 8,
   },
 ];
 
 export function buildInitialElements(): ElementVault[] {
-  const makeRefs = (prefix: string, accent: string, count = 6) =>
-    Array.from({ length: count }, (_, idx) => ({
-      id: `${prefix}_ref_${idx + 1}`,
-      label: `${prefix} Angle ${idx + 1}`,
-      dataUrl: renderElementAvatarDataUrl(`${prefix} angle ${idx + 1}`, accent, idx),
-    }));
-
   return [
     {
       id: 'el-hero-kael',
       handle: '@Hero_Kael',
       name: 'Kael (Protagonist)',
       category: 'character',
-      description: 'Cybernetic trench coat courier, cyan visor slit, locked facial & wardrobe continuity across shots.',
+      description:
+        'Cybernetic trench coat courier, cyan visor slit, locked facial & wardrobe continuity across shots.',
       accentColor: '#38BDF8',
       voiceProfile: 'Deep Baritone · Neural Lip-Sync Locked',
-      references: makeRefs('Hero Kael', '#38BDF8', 6),
+      references: [
+        {
+          id: 'kael_ref_1',
+          label: '3-Angle Turnaround Sheet',
+          dataUrl: '/media/hero_kael_vault.png',
+        },
+        {
+          id: 'kael_ref_2',
+          label: 'Rooftop Rain Keyframe',
+          dataUrl: '/media/shot01_rooftop.png',
+        },
+        {
+          id: 'kael_ref_3',
+          label: 'Alley Pursuit Action',
+          dataUrl: '/media/shot02_alley_chase.png',
+        },
+        {
+          id: 'kael_ref_4',
+          label: 'Golden Dawn Remix',
+          dataUrl: '/media/shot02b_sunrise_remix.png',
+        },
+        {
+          id: 'kael_ref_5',
+          label: '9-Grid Coverage Sheet',
+          dataUrl: '/media/contact_sheet_9grid.png',
+        },
+        {
+          id: 'kael_ref_6',
+          label: 'Wardrobe & Gear Lock',
+          dataUrl: '/media/hero_kael_vault.png',
+        },
+      ],
     },
     {
       id: 'el-cyber-sneaker',
       handle: '@Cyber_Sneaker',
       name: 'AeroFlux X-99 Sneaker',
       category: 'product',
-      description: 'Sculpted translucent luminescence sole + matte carbon chassis (6-angle orthographic product lock).',
+      description:
+        'Sculpted translucent luminescence sole + matte carbon chassis (6-angle orthographic product lock).',
       accentColor: '#A855F7',
-      references: makeRefs('Cyber Sneaker', '#A855F7', 6),
+      references: [
+        {
+          id: 'sneaker_ref_1',
+          label: 'Product Macro Sheet',
+          dataUrl: '/media/cyber_sneaker_vault.png',
+        },
+        {
+          id: 'sneaker_ref_2',
+          label: 'Wet Asphalt Kinetic Step',
+          dataUrl: '/media/shot02_alley_chase.png',
+        },
+        {
+          id: 'sneaker_ref_3',
+          label: 'Sunrise Specular Rim',
+          dataUrl: '/media/shot02b_sunrise_remix.png',
+        },
+        {
+          id: 'sneaker_ref_4',
+          label: 'Rooftop Hero Stance',
+          dataUrl: '/media/shot01_rooftop.png',
+        },
+        {
+          id: 'sneaker_ref_5',
+          label: 'Multi-Lens Contact Sheet',
+          dataUrl: '/media/contact_sheet_9grid.png',
+        },
+        {
+          id: 'sneaker_ref_6',
+          label: 'Sole Luminescence Orthographic',
+          dataUrl: '/media/cyber_sneaker_vault.png',
+        },
+      ],
     },
     {
       id: 'el-brand-style',
       handle: '@Brand_Style',
       name: 'Neo-Tokyo Anamorphic LUT',
       category: 'style',
-      description: 'Panavision 40mm T2.0 halation, wet asphalt speculars, teal/violet split-tone Kodak 500T.',
+      description:
+        'Panavision 40mm T2.0 halation, wet asphalt speculars, teal/violet split-tone Kodak 500T.',
       accentColor: '#F43F5E',
-      references: makeRefs('Brand Style', '#F43F5E', 6),
+      references: [
+        {
+          id: 'style_ref_1',
+          label: 'Teal/Cyan Rain Halation',
+          dataUrl: '/media/shot01_rooftop.png',
+        },
+        {
+          id: 'style_ref_2',
+          label: 'Shinjuku Neon Reflections',
+          dataUrl: '/media/shot02_alley_chase.png',
+        },
+        {
+          id: 'style_ref_3',
+          label: 'Golden Dawn Split-Tone',
+          dataUrl: '/media/shot02b_sunrise_remix.png',
+        },
+        {
+          id: 'style_ref_4',
+          label: '9-Panel Director LUT',
+          dataUrl: '/media/contact_sheet_9grid.png',
+        },
+        {
+          id: 'style_ref_5',
+          label: 'Character Rim Lighting',
+          dataUrl: '/media/hero_kael_vault.png',
+        },
+        {
+          id: 'style_ref_6',
+          label: 'Macro Specular Profile',
+          dataUrl: '/media/cyber_sneaker_vault.png',
+        },
+      ],
     },
   ];
 }
@@ -197,19 +284,15 @@ export function buildInitialStudioGraph(): {
   };
 
   const heroDims = getDimensionsForAspect('16:9', 360);
-  const heroImg = renderShotDataUrl('16:9', {
-    prompt: '@Hero_Kael standing in rain-soaked Neo-Tokyo street wearing @Cyber_Sneaker',
-    seed: 204,
-    palette: styleDna.palette,
-    cameraLabel: 'SHOT 01 · 40mm ANAMORPHIC',
-    hudBadge: 'KEYFRAME A',
-  });
+  const heroImg = '/media/shot01_rooftop.png';
+  const heroVideo = '/media/shot01_rooftop.mp4';
 
   const heroNode: CanvasNode = {
     id: 'node-shot-hero',
-    kind: 'image',
+    kind: 'video',
     title: 'Shot 01 · Rooftop Establishing',
-    prompt: '@Hero_Kael standing on rain-slicked Neo-Tokyo crosswalk wearing glowing @Cyber_Sneaker, @Brand_Style',
+    prompt:
+      '@Hero_Kael standing on rain-slicked Neo-Tokyo rooftop ledge wearing glowing @Cyber_Sneaker, @Brand_Style 40mm anamorphic dolly',
     x: 450,
     y: 80,
     width: heroDims.width,
@@ -217,106 +300,100 @@ export function buildInitialStudioGraph(): {
     aspectRatio: '16:9',
     status: 'ready',
     imageUrl: heroImg,
+    videoUrl: heroVideo,
+    videoTheme: 'cyberpunk-rain',
     seed: 204,
     resolution: '2K',
+    durationSec: 7,
+    cameraMotion: 'Anamorphic Dolly In 24fps',
     interactionId: 'int_omni_a102f9',
     elementHandles: ['@Hero_Kael', '@Cyber_Sneaker', '@Brand_Style'],
     styleDnaId: styleNode.id,
     layers: createDefaultLayers(heroImg),
-    providerUsed: 'Dreamina 2.0 Smart Canvas',
+    providerUsed: 'Dreamina 2.0 Smart Canvas + FFmpeg',
     createdAt: Date.now() - 30000,
   };
 
-  const sheet = renderContactSheetDataUrl(
-    3,
-    3,
-    '@Hero_Kael & @Cyber_Sneaker cyberpunk chase sequence',
-    512,
-    styleDna.palette
-  );
+  const gridImg = '/media/contact_sheet_9grid.png';
   const gridNode: CanvasNode = {
     id: 'node-grid-9',
     kind: 'contact-sheet',
     title: '9-Grid Contact Sheet (Click ⊞ Slice!)',
-    prompt: '/9-Grid Storyboard @Hero_Kael & @Cyber_Sneaker rain chase coverage across 9 cinema lenses',
+    prompt:
+      '/9-Grid Storyboard @Hero_Kael & @Cyber_Sneaker rain chase coverage across 9 cinema lenses',
     x: 450,
     y: 375,
     width: 360,
     height: 204,
     aspectRatio: '16:9',
     status: 'ready',
-    imageUrl: sheet.dataUrl,
+    imageUrl: gridImg,
     seed: 512,
     resolution: '4K',
     interactionId: 'int_seedream_9grid',
     elementHandles: ['@Hero_Kael', '@Cyber_Sneaker'],
     styleDnaId: styleNode.id,
-    gridSpec: { rows: 3, cols: 3, labels: sheet.labels },
-    layers: createDefaultLayers(sheet.dataUrl),
-    providerUsed: 'Seedream 3.0 · 9-Grid Engine',
+    gridSpec: { rows: 3, cols: 3, labels: NINE_GRID_LABELS },
+    layers: createDefaultLayers(gridImg),
+    providerUsed: 'Seedream 3.0 · 9-Grid FFmpeg Slicer',
     createdAt: Date.now() - 25000,
   };
 
-  const omniThumb = renderShotDataUrl('16:9', {
-    prompt: 'Unbroken 15s tracking shot of @Hero_Kael sprinting in @Cyber_Sneaker',
-    seed: 777,
-    palette: styleDna.palette,
-    theme: 'cyberpunk-rain',
-    cameraLabel: 'OMNI 1.2 FLASH · 15.0s',
-  });
+  const shot02Img = '/media/shot02_alley_chase.png';
+  const shot02Video = '/media/shot02_alley_chase.mp4';
   const videoNode: CanvasNode = {
     id: 'node-video-omni-1',
     kind: 'video',
-    title: 'Shot 02 · 15s Omni Tracking Shot',
-    prompt: '15s Steadicam tracking @Hero_Kael sprinting across wet neon street, @Cyber_Sneaker sole glowing cyan',
+    title: 'Shot 02 · Alley Chase 15s Omni',
+    prompt:
+      'Dynamic Steadicam tracking @Hero_Kael sprinting through rain-drenched Shinjuku neon alley, @Cyber_Sneaker sole glowing cyan',
     x: 900,
     y: 70,
     width: heroDims.width,
     height: heroDims.height,
     aspectRatio: '16:9',
     status: 'ready',
-    imageUrl: omniThumb,
+    imageUrl: shot02Img,
+    videoUrl: shot02Video,
     videoTheme: 'cyberpunk-rain',
     seed: 777,
     resolution: '1080p',
-    durationSec: 15,
+    durationSec: 7,
     cameraMotion: 'Dolly Tracking 24fps',
     interactionId: 'int_omni_88c41d',
     elementHandles: ['@Hero_Kael', '@Cyber_Sneaker'],
     styleDnaId: styleNode.id,
-    layers: createDefaultLayers(omniThumb),
-    providerUsed: 'Gemini Omni 1.2 Flash ($0 BYOK)',
+    layers: createDefaultLayers(shot02Img),
+    providerUsed: 'Gemini Omni 1.2 Flash ($0 BYOK / FFmpeg)',
     createdAt: Date.now() - 18000,
   };
 
-  const remixThumb = renderShotDataUrl('16:9', {
-    prompt: 'Crimson night remix @Cyber_Sneaker macro',
-    seed: 909,
-    theme: 'sneaker-macro',
-    cameraLabel: 'MULTI-TURN BRANCH · 10.0s',
-  });
+  const shot02bImg = '/media/shot02b_sunrise_remix.png';
+  const shot02bVideo = '/media/shot02b_sunrise_remix.mp4';
   const branchVideoNode: CanvasNode = {
     id: 'node-video-branch-2',
     kind: 'video',
-    title: 'Shot 02B · Multi-Turn Macro Branch',
-    prompt: 'Whip-pan down to 120fps slow-mo macro of @Cyber_Sneaker splashing crimson neon puddle, keep motion vector',
+    title: 'Shot 02B · Golden Dawn Multi-Turn Branch',
+    prompt:
+      'Keep @Hero_Kael motion vector locked; transform alley lighting into golden sunrise breaking through Neo-Tokyo mist on @Cyber_Sneaker',
     x: 900,
     y: 375,
     width: heroDims.width,
     height: heroDims.height,
     aspectRatio: '16:9',
     status: 'ready',
-    imageUrl: remixThumb,
+    imageUrl: shot02bImg,
+    videoUrl: shot02bVideo,
     videoTheme: 'sneaker-macro',
     seed: 909,
     resolution: '4K',
-    durationSec: 10,
-    cameraMotion: 'Orbit 180° + 120fps Ramp',
+    durationSec: 7,
+    cameraMotion: 'Orbit 180° + Golden Dawn LUT',
     interactionId: 'int_omni_f319b0',
     previousInteractionId: 'int_omni_88c41d',
-    elementHandles: ['@Cyber_Sneaker', '@Brand_Style'],
+    elementHandles: ['@Hero_Kael', '@Cyber_Sneaker', '@Brand_Style'],
     styleDnaId: styleNode.id,
-    layers: createDefaultLayers(remixThumb),
+    layers: createDefaultLayers(shot02bImg),
     providerUsed: 'Gemini Omni 1.2 (Stateful Branch)',
     createdAt: Date.now() - 9000,
   };
@@ -352,38 +429,35 @@ export function buildInitialStudioGraph(): {
     },
   ];
 
-  const mf3Img = renderShotDataUrl('16:9', {
-    prompt: 'FPV drone pull-back Neo-Tokyo skyline @Brand_Style',
-    seed: 1205,
-    theme: 'drone-canyon',
-    cameraLabel: 'KEYFRAME C · SKYLINE CLIMAX',
-  });
-
   const multiframes: MultiframeCard[] = [
     {
       id: 'mf-1',
       order: 0,
-      title: 'KF 01 · Alley Standoff',
+      title: 'KF 01 · Rooftop Rain Protocol',
       prompt: heroNode.prompt,
       imageUrl: heroImg,
+      videoUrl: heroVideo,
       sourceNodeId: heroNode.id,
       aspectRatio: '16:9',
     },
     {
       id: 'mf-2',
       order: 1,
-      title: 'KF 02 · AeroFlux Sole Surge',
-      prompt: branchVideoNode.prompt,
-      imageUrl: remixThumb,
-      sourceNodeId: branchVideoNode.id,
+      title: 'KF 02 · Shinjuku Alley Pursuit',
+      prompt: videoNode.prompt,
+      imageUrl: shot02Img,
+      videoUrl: shot02Video,
+      sourceNodeId: videoNode.id,
       aspectRatio: '16:9',
     },
     {
       id: 'mf-3',
       order: 2,
-      title: 'KF 03 · Skyline Crane Reveal',
-      prompt: 'High crane pull-back into glowing Neo-Tokyo megastructure horizon with @Hero_Kael on rooftop edge',
-      imageUrl: mf3Img,
+      title: 'KF 03 · Golden Dawn Climax',
+      prompt: branchVideoNode.prompt,
+      imageUrl: shot02bImg,
+      videoUrl: shot02bVideo,
+      sourceNodeId: branchVideoNode.id,
       aspectRatio: '16:9',
     },
   ];
@@ -393,9 +467,10 @@ export function buildInitialStudioGraph(): {
       id: 'bridge-1-2',
       fromCardId: 'mf-1',
       toCardId: 'mf-2',
-      durationSec: 6,
+      durationSec: 7,
       curve: 'Dolly In',
-      transitionPrompt: 'Low-angle camera drops smoothly toward @Cyber_Sneaker kinetic sole',
+      transitionPrompt:
+        'Anamorphic plunge from rooftop ledge into rain-soaked Shinjuku alley sprint',
       useTenSecContextWindow: true,
       firstLastKeyframeLock: true,
     },
@@ -403,9 +478,10 @@ export function buildInitialStudioGraph(): {
       id: 'bridge-2-3',
       fromCardId: 'mf-2',
       toCardId: 'mf-3',
-      durationSec: 9,
+      durationSec: 7,
       curve: 'Crane Up',
-      transitionPrompt: 'Sweeping crane ascent from wet street reflection up into neon skyline',
+      transitionPrompt:
+        'Seamless multi-turn lighting morph from midnight neon rain into golden sunrise horizon',
       useTenSecContextWindow: true,
       firstLastKeyframeLock: true,
     },
@@ -413,13 +489,28 @@ export function buildInitialStudioGraph(): {
 
   const timelineClips: TimelineClip[] = [
     {
+      id: 'clip-v0',
+      track: 'video',
+      title: 'Shot 01 · Rooftop Establishing',
+      sourceNodeId: heroNode.id,
+      startSec: 0,
+      durationSec: 7,
+      thumbnailUrl: heroImg,
+      videoUrl: heroVideo,
+      videoTheme: 'cyberpunk-rain',
+      seed: 204,
+      promptOrDialogue: heroNode.prompt,
+      color: '#6366F1',
+    },
+    {
       id: 'clip-v1',
       track: 'video',
-      title: 'Shot 02 · 15s Omni Tracking',
+      title: 'Shot 02 · Alley Chase Tracking',
       sourceNodeId: videoNode.id,
-      startSec: 0,
-      durationSec: 8,
-      thumbnailUrl: omniThumb,
+      startSec: 7,
+      durationSec: 7,
+      thumbnailUrl: shot02Img,
+      videoUrl: shot02Video,
       videoTheme: 'cyberpunk-rain',
       seed: 777,
       promptOrDialogue: videoNode.prompt,
@@ -428,11 +519,12 @@ export function buildInitialStudioGraph(): {
     {
       id: 'clip-v2',
       track: 'video',
-      title: 'Shot 02B · Sneaker Macro Branch',
+      title: 'Shot 02B · Golden Dawn Remix',
       sourceNodeId: branchVideoNode.id,
-      startSec: 8,
+      startSec: 14,
       durationSec: 7,
-      thumbnailUrl: remixThumb,
+      thumbnailUrl: shot02bImg,
+      videoUrl: shot02bVideo,
       videoTheme: 'sneaker-macro',
       seed: 909,
       promptOrDialogue: branchVideoNode.prompt,
@@ -443,8 +535,9 @@ export function buildInitialStudioGraph(): {
       track: 'voice',
       title: '@Hero_Kael · Neural Lip-Sync VO',
       startSec: 1,
-      durationSec: 6.5,
-      promptOrDialogue: 'Every step rewrites the city grid. Zero latency. Zero limits.',
+      durationSec: 12,
+      promptOrDialogue:
+        'Protocol Rain initiated. Every step rewrites the city grid — zero markup, zero limits.',
       lipSyncCharacter: '@Hero_Kael',
       audioFreqHz: 174,
       color: '#10B981',
@@ -452,20 +545,20 @@ export function buildInitialStudioGraph(): {
     {
       id: 'clip-a2-sfx-1',
       track: 'sfx',
-      title: 'Rain Downpour + Neon Hum (Native Audio)',
+      title: 'Rain Downpour + Sub-Bass Drone (Stereo)',
       startSec: 0,
-      durationSec: 8,
-      promptOrDialogue: 'Binaural rain on asphalt + 60Hz transformer hum',
+      durationSec: 14,
+      promptOrDialogue: 'Binaural rain on asphalt + 55Hz anamorphic sub-bass drone',
       sfxKind: 'rain-ambience',
       color: '#F59E0B',
     },
     {
       id: 'clip-a2-sfx-2',
       track: 'sfx',
-      title: 'Kinetic Sub-Bass Drop + Whoosh',
-      startSec: 8,
+      title: 'Golden Dawn Synth Swell + Riser',
+      startSec: 14,
       durationSec: 7,
-      promptOrDialogue: 'Anamorphic whip-pan whoosh + sub-bass impact 40Hz',
+      promptOrDialogue: 'Warm harmonic sunrise synth swell + kinetic sneaker impact',
       sfxKind: 'sub-impact',
       color: '#F97316',
     },

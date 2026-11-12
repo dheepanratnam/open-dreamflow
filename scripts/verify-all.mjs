@@ -4,9 +4,10 @@
  *
  * Verifies:
  *   1. @open-dreamflow/provider-sdk build & runtime router / zero-markup cost engine
- *   2. @open-dreamflow/mcp-client live HTTP JSON-RPC roundtrip & Canvas Node schema mapper
- *   3. extensions/chrome-bridge Manifest V3 schema, icons & JS syntax (`node --check`)
- *   4. @open-dreamflow/web-studio production Vite bundle integrity (`dist/`)
+ *   2. @open-dreamflow/mcp-client 6-tool live HTTP JSON-RPC roundtrip & Canvas Node schemas
+ *   3. Local FFmpeg + MCP Media Pipeline (/api/health, /media/* byte-range, & rendered PROTOCOL: RAIN assets)
+ *   4. extensions/chrome-bridge Manifest V3 schema, icons & JS syntax (`node --check`)
+ *   5. @open-dreamflow/web-studio production Vite bundle integrity (`dist/` + `dist/media/`)
  */
 
 import * as fs from 'node:fs';
@@ -64,7 +65,7 @@ async function verifyProviderSdk() {
   );
 }
 
-async function verifyMcpClientAndBridge() {
+async function verifyMcpClientAndFfmpegPipeline() {
   const mcpIndex = path.join(ROOT, 'packages/mcp-client/dist/index.js');
   const mcpBridge = path.join(ROOT, 'packages/mcp-client/dist/server-bridge.js');
   assert(fs.existsSync(mcpIndex), 'packages/mcp-client/dist/index.js missing (run npm run build:mcp)');
@@ -78,31 +79,88 @@ async function verifyMcpClientAndBridge() {
   await bridge.start();
 
   try {
+    // 1. Verify /api/health endpoint
+    const healthRes = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+    assert(healthRes.ok, '/api/health returned non-200');
+    const health = await healthRes.json();
+    assert(health.ok === true, '/api/health ok !== true');
+    assert(Array.isArray(health.mcpTools) && health.mcpTools.length >= 6, 'Expected 6 MCP tools in /api/health');
+
+    // 2. Verify MCP JSON-RPC tools/list & Canvas Node schema conversion
     const client = new UniversalMcpClient({
       url: `http://127.0.0.1:${testPort}/mcp`,
       transport: 'http',
     });
     await client.connect();
     const tools = await client.listTools();
-    assert(tools.length >= 4, `Expected >= 4 built-in MCP tools, got ${tools.length}`);
+    assert(tools.length >= 6, `Expected >= 6 built-in MCP tools, got ${tools.length}`);
 
     const nodeSchemas = convertToolsToCanvasNodes(tools);
     const names = nodeSchemas.map((s) => s.toolName || s.id);
-    for (const expected of ['generate_video', 'inpaint_frame', 'extract_style_dna', 'flow_scene_builder']) {
+    const expectedTools = [
+      'generate_video',
+      'inpaint_frame',
+      'extract_style_dna',
+      'flow_scene_builder',
+      'slice_contact_sheet',
+      'extract_last_frame',
+    ];
+    for (const expected of expectedTools) {
       assert(names.includes(expected), `Missing mapped Canvas Node schema for MCP tool: ${expected}`);
     }
 
     const callRes = await client.callTool('extract_style_dna', {
-      reference_images: ['data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='],
+      reference_images: [
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      ],
       lock_strength: 0.9,
     });
     assert(callRes && !callRes.isError, 'MCP tools/call extract_style_dna returned an error');
-
     await client.disconnect();
+
     logStep(
       'mcp-client',
-      `Live JSON-RPC HTTP roundtrip on :${testPort} verified (${names.join(', ')})`
+      `Live JSON-RPC HTTP roundtrip on :${testPort} verified (${expectedTools.length} tools: ${expectedTools.join(', ')})`
     );
+
+    // 3. Verify static byte-range media serving & FFmpeg PROTOCOL: RAIN media artifacts if present
+    const mediaDir = path.join(ROOT, 'apps/web-studio/public/media');
+    const masterMp4 = path.join(mediaDir, 'protocol_rain_master.mp4');
+    if (fs.existsSync(masterMp4)) {
+      const rangeRes = await fetch(`http://127.0.0.1:${testPort}/media/protocol_rain_master.mp4`, {
+        headers: { Range: 'bytes=0-1023' },
+      });
+      assert(
+        rangeRes.status === 206 || rangeRes.status === 200,
+        `Expected 206 Partial Content on /media/protocol_rain_master.mp4, got ${rangeRes.status}`
+      );
+      const requiredMedia = [
+        'hero_kael_vault.png',
+        'cyber_sneaker_vault.png',
+        'shot01_rooftop.png',
+        'shot01_rooftop.mp4',
+        'shot02_alley_chase.png',
+        'shot02_alley_chase.mp4',
+        'shot02b_sunrise_remix.png',
+        'shot02b_sunrise_remix.mp4',
+        'contact_sheet_9grid.png',
+        'slice_1.png',
+        'slice_9.png',
+        'lastframe_shot02.png',
+        'protocol_rain_master.mp4',
+      ];
+      for (const file of requiredMedia) {
+        const full = path.join(mediaDir, file);
+        assert(fs.existsSync(full) && fs.statSync(full).size > 1024, `Missing or empty media asset: ${file}`);
+      }
+      const masterMb = (fs.statSync(masterMp4).size / (1024 * 1024)).toFixed(2);
+      logStep(
+        'ffmpeg-media',
+        `Verified 206 byte-range streaming + ${requiredMedia.length} PROTOCOL: RAIN assets (master = ${masterMb} MB)`
+      );
+    } else {
+      logStep('ffmpeg-media', `Bridge /api/health verified (ffmpeg=${Boolean(health.ffmpeg)})`);
+    }
   } finally {
     await bridge.stop();
   }
@@ -177,10 +235,10 @@ function verifyWebStudioBundle() {
 async function main() {
   console.log('\nOpen-DreamFlow — Running End-to-End Verification Suite...');
   await verifyProviderSdk();
-  await verifyMcpClientAndBridge();
+  await verifyMcpClientAndFfmpegPipeline();
   verifyChromeBridgeExtension();
   verifyWebStudioBundle();
-  console.log('All 4 Open-DreamFlow subsystems passed verification with 0 errors!\n');
+  console.log('All Open-DreamFlow subsystems passed verification with 0 errors!\n');
 }
 
 main().catch((err) => {
