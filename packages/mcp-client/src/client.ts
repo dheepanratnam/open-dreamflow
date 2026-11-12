@@ -87,7 +87,10 @@ export interface McpToolCallResult {
   structuredContent?: Record<string, unknown>;
   extractedMedia: {
     videoUrl?: string;
+    masterUrl?: string;
     imageUrl?: string;
+    frameUrl?: string;
+    slices?: string[];
     audioUrl?: string;
     styleDna?: Record<string, unknown>;
     interactionId?: string;
@@ -257,15 +260,41 @@ const CANONICAL_TOOL_BLUEPRINTS: Record<
     icon: '🎞️',
     accentColor: '#F59E0B',
     inputPorts: [
-      { id: 'prompt', label: 'Sequence Script', dataType: 'prompt', required: true },
+      { id: 'prompt', label: 'Sequence Script', dataType: 'prompt', required: false },
+      { id: 'clips', label: 'Timeline Clips', dataType: 'video', required: false, multiple: true },
       { id: 'keyframes', label: 'Keyframes (2–10)', dataType: 'keyframes', required: false, multiple: true },
       { id: 'reference_elements', label: '@Elements Vault', dataType: 'elements', required: false, multiple: true },
       { id: 'style_dna', label: 'Style DNA', dataType: 'style_dna', required: false },
     ],
     outputPorts: [
-      { id: 'video', label: 'Compiled Sequence', dataType: 'video', required: true },
+      { id: 'video', label: 'Compiled Master (.mp4)', dataType: 'video', required: true },
       { id: 'timeline_tracks', label: 'Rough-Cut Tracks', dataType: 'timeline', required: false },
       { id: 'interaction_id', label: 'Chain Turn ID', dataType: 'interaction_id', required: false },
+    ],
+  },
+  slice_contact_sheet: {
+    title: 'MCP · 9-Grid Contact Sheet Slicer',
+    category: 'image-editing',
+    icon: '⊞',
+    accentColor: '#06B6D4',
+    inputPorts: [
+      { id: 'source_image', label: 'Contact Sheet PNG', dataType: 'image', required: true },
+    ],
+    outputPorts: [
+      { id: 'slices', label: 'Sliced Angle Frames', dataType: 'keyframes', required: true, multiple: true },
+      { id: 'result_json', label: 'Panel Metadata', dataType: 'json', required: false },
+    ],
+  },
+  extract_last_frame: {
+    title: 'MCP · Extract Last Frame',
+    category: 'image-editing',
+    icon: '✂️',
+    accentColor: '#8B5CF6',
+    inputPorts: [
+      { id: 'video_url', label: 'Source Clip (.mp4)', dataType: 'video', required: true },
+    ],
+    outputPorts: [
+      { id: 'frame_image', label: 'Final Keyframe PNG', dataType: 'image', required: true },
     ],
   },
 };
@@ -276,12 +305,13 @@ function inferCanvasPortType(
 ): CanvasPortDataType | null {
   const lower = propName.toLowerCase();
   if (lower.includes('mask')) return 'mask';
-  if (lower.includes('video')) return 'video';
+  if (lower.includes('video') || lower === 'clips') return 'video';
   if (
     lower.includes('image') ||
     lower.includes('frame') ||
     lower.includes('photo') ||
-    lower.includes('thumbnail')
+    lower.includes('thumbnail') ||
+    lower.includes('sheet')
   ) {
     return lower.includes('keyframes') ? 'keyframes' : 'image';
   }
@@ -422,7 +452,10 @@ export function normalizeMcpToolCallResult(raw: Record<string, unknown>): McpToo
       : undefined;
 
   let videoUrl: string | undefined;
+  let masterUrl: string | undefined;
   let imageUrl: string | undefined;
+  let frameUrl: string | undefined;
+  let slices: string[] | undefined;
   let audioUrl: string | undefined;
   let styleDna: Record<string, unknown> | undefined;
   let interactionId: string | undefined;
@@ -457,10 +490,18 @@ export function normalizeMcpToolCallResult(raw: Record<string, unknown>): McpToo
   }
 
   if (parsedJson) {
+    if (typeof parsedJson.masterUrl === 'string') masterUrl = parsedJson.masterUrl;
+    if (typeof parsedJson.frameUrl === 'string') frameUrl = parsedJson.frameUrl;
+    if (Array.isArray(parsedJson.slices)) {
+      slices = parsedJson.slices.filter((s): s is string => typeof s === 'string');
+    }
     if (!videoUrl && typeof parsedJson.videoUrl === 'string') videoUrl = parsedJson.videoUrl;
     if (!videoUrl && typeof parsedJson.video_url === 'string') videoUrl = parsedJson.video_url;
+    if (!videoUrl && masterUrl) videoUrl = masterUrl;
     if (!imageUrl && typeof parsedJson.imageUrl === 'string') imageUrl = parsedJson.imageUrl;
     if (!imageUrl && typeof parsedJson.image_url === 'string') imageUrl = parsedJson.image_url;
+    if (!imageUrl && frameUrl) imageUrl = frameUrl;
+    if (!imageUrl && slices && slices.length > 0) imageUrl = slices[0];
     if (!audioUrl && typeof parsedJson.audioUrl === 'string') audioUrl = parsedJson.audioUrl;
     if (typeof parsedJson.interactionId === 'string') interactionId = parsedJson.interactionId;
     if (typeof parsedJson.interaction_id === 'string') interactionId = parsedJson.interaction_id;
@@ -477,7 +518,10 @@ export function normalizeMcpToolCallResult(raw: Record<string, unknown>): McpToo
     structuredContent: structured,
     extractedMedia: {
       videoUrl,
+      masterUrl,
       imageUrl,
+      frameUrl,
+      slices,
       audioUrl,
       styleDna,
       interactionId,
