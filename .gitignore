@@ -28,9 +28,11 @@ build/
 .cache/
 coverage/
 
-# macOS / OS / Editor
+# macOS / OS / Local Persistence
 .DS_Store
 **/.DS_Store
+.dreamflow-data.nosync
+.dreamflow-data.nosync/
 *.nosync
 *.nosync/
 Thumbs.db

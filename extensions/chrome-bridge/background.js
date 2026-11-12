@@ -1,10 +1,11 @@
 /**
- * Open-DreamFlow Chrome Bridge — Manifest V3 Background Service Worker
+ * Open-DreamFlow Chrome Bridge — Manifest V3 Background Service Worker (Stage 4)
  *
  * Coordinates zero-API-cost job queuing between Open-DreamFlow Web Studio
- * (`localhost` / `127.0.0.1`) and consumer web sessions on:
+ * (`localhost` / `127.0.0.1`), consumer web sessions on:
  *   - Google Flow (`https://flow.google.com/*`)
  *   - Dreamina / Seedance (`https://dreamina.capcut.com/*`)
+ * and the Stage 4 Live Bridge Relay (`ws://localhost:3001/bridge` & `http://localhost:3001/api/bridge/push`).
  *
  * Includes strict `isKnownJobId()` deduplication so dual-envelope Studio posts
  * (`open-dreamflow-studio` + `OPEN_DREAMFLOW_STUDIO`) never double-enqueue jobs.
@@ -14,6 +15,13 @@ const TARGET_URLS = {
   'google-flow': 'https://flow.google.com/',
   dreamina: 'https://dreamina.capcut.com/',
 };
+
+const LOCAL_RELAY_HTTP_PUSH = 'http://localhost:3001/api/bridge/push';
+const LOCAL_RELAY_WS_URL = 'ws://localhost:3001/bridge';
+
+/** @type {WebSocket | null} */
+let relaySocket = null;
+let relayConnected = false;
 
 const STATE = {
   /** @type {Array<Record<string, any>>} */
@@ -59,6 +67,7 @@ async function hydrateState() {
   }
   stateHydrated = true;
   await refreshConnectedTabs();
+  ensureLocalRelaySocket();
 }
 
 async function persistState() {
@@ -97,10 +106,91 @@ function isKnownJobId(jobId) {
  */
 function normalizeTarget(rawTarget) {
   const lowered = String(rawTarget || 'google-flow').toLowerCase();
-  if (lowered.includes('dreamina') || lowered.includes('seedance') || lowered.includes('seedream') || lowered.includes('jimeng')) {
+  if (
+    lowered.includes('dreamina') ||
+    lowered.includes('seedance') ||
+    lowered.includes('seedream') ||
+    lowered.includes('jimeng')
+  ) {
     return 'dreamina';
   }
   return 'google-flow';
+}
+
+/**
+ * Maintains a live WebSocket link to `ws://localhost:3001/bridge` when `:3001` is running.
+ */
+function ensureLocalRelaySocket() {
+  if (
+    typeof WebSocket === 'undefined' ||
+    (relaySocket &&
+      (relaySocket.readyState === WebSocket.OPEN ||
+        relaySocket.readyState === WebSocket.CONNECTING))
+  ) {
+    return;
+  }
+
+  try {
+    const ws = new WebSocket(LOCAL_RELAY_WS_URL);
+    relaySocket = ws;
+
+    ws.onopen = () => {
+      relayConnected = true;
+      try {
+        ws.send(
+          JSON.stringify({
+            type: 'bridge_session',
+            source: 'chrome-extension',
+            title: 'Open-DreamFlow Chrome Bridge Connected',
+            metadata: buildBridgeStatusPayload(),
+          })
+        );
+      } catch {
+        // Ignore transient send error
+      }
+    };
+
+    ws.onclose = () => {
+      relayConnected = false;
+      relaySocket = null;
+    };
+
+    ws.onerror = () => {
+      relayConnected = false;
+    };
+  } catch {
+    relayConnected = false;
+    relaySocket = null;
+  }
+}
+
+/**
+ * Pushes a captured Dreamina / Google Flow asset or prompt event to `:3001/api/bridge/push`
+ * so connected Web Studio canvases spawn the node immediately in real time.
+ * @param {Record<string, any>} eventBody
+ */
+async function pushEventToLocalRelay(eventBody) {
+  try {
+    const res = await fetch(LOCAL_RELAY_HTTP_PUSH, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(eventBody),
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {
+    // Fallback to open WS frame if HTTP fetch failed
+    if (relaySocket && relaySocket.readyState === WebSocket.OPEN) {
+      try {
+        relaySocket.send(JSON.stringify(eventBody));
+        return { ok: true, via: 'ws' };
+      } catch {
+        // Ignore
+      }
+    }
+  }
+  return { ok: false };
 }
 
 async function refreshConnectedTabs() {
@@ -112,11 +202,20 @@ async function refreshConnectedTabs() {
 
     for (const tab of allTabs) {
       if (!tab.id || !tab.url) continue;
-      if (tab.url.startsWith('https://flow.google.com/') || tab.url.startsWith('https://labs.google/fx/tools/flow')) {
+      if (
+        tab.url.startsWith('https://flow.google.com/') ||
+        tab.url.startsWith('https://labs.google/fx/tools/flow')
+      ) {
         STATE.tabs['google-flow'].add(tab.id);
-      } else if (tab.url.startsWith('https://dreamina.capcut.com/') || tab.url.startsWith('https://jimeng.jianying.com/')) {
+      } else if (
+        tab.url.startsWith('https://dreamina.capcut.com/') ||
+        tab.url.startsWith('https://jimeng.jianying.com/')
+      ) {
         STATE.tabs.dreamina.add(tab.id);
-      } else if (tab.url.startsWith('http://localhost:') || tab.url.startsWith('http://127.0.0.1:')) {
+      } else if (
+        tab.url.startsWith('http://localhost:') ||
+        tab.url.startsWith('http://127.0.0.1:')
+      ) {
         STATE.tabs.studio.add(tab.id);
       }
     }
@@ -130,6 +229,7 @@ function buildBridgeStatusPayload() {
     extensionVersion: '1.0.0',
     flowConnected: STATE.tabs['google-flow'].size > 0,
     dreaminaConnected: STATE.tabs.dreamina.size > 0,
+    relayConnected,
     studioTabsCount: STATE.tabs.studio.size,
     flowTabsCount: STATE.tabs['google-flow'].size,
     dreaminaTabsCount: STATE.tabs.dreamina.size,
@@ -195,7 +295,6 @@ async function ensureTargetTab(target, autoOpen = true) {
   });
   if (created.id) {
     STATE.tabs[target].add(created.id);
-    // Allow initial SPA bootstrap time
     await new Promise((resolve) => setTimeout(resolve, 2500));
     return created.id;
   }
@@ -270,7 +369,7 @@ async function processQueue() {
   }
 }
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
   if (changeInfo.status === 'complete' && tab.url) {
     refreshConnectedTabs().then(() => {
       broadcastToStudio('DREAMFLOW_BRIDGE_STATUS', buildBridgeStatusPayload());
@@ -288,6 +387,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.alarms.create('dreamflow-queue-watchdog', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'dreamflow-queue-watchdog') {
+    ensureLocalRelaySocket();
     processQueue();
   }
 });
@@ -295,6 +395,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     await hydrateState();
+    ensureLocalRelaySocket();
 
     switch (message?.type) {
       case 'TARGET_REGISTER': {
@@ -430,8 +531,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         if (completedRecord.status === 'succeeded') {
           STATE.stats.completedCount += 1;
-          // Estimated equivalent raw cloud video cost saved per clip (~$0.35 avg)
           STATE.stats.savedEstimateUsd = Number((STATE.stats.savedEstimateUsd + 0.35).toFixed(2));
+
+          // Automatically push captured Dreamina / Google Flow media to Stage 4 `:3001/api/bridge/push`
+          const relaySource = target === 'dreamina' ? 'dreamina' : 'flow';
+          await pushEventToLocalRelay({
+            type: 'bridge_asset',
+            source: relaySource,
+            mediaUrl: completedRecord.videoUrl || completedRecord.imageUrl,
+            videoUrl: completedRecord.videoUrl,
+            imageUrl: completedRecord.imageUrl,
+            title:
+              target === 'dreamina'
+                ? 'Dreamina · Seedance Capture'
+                : 'Google Flow · Omni Capture',
+            prompt: completedRecord.prompt || '',
+            metadata: {
+              jobId: completedRecord.jobId,
+              aspectRatio: completedRecord.aspectRatio || '16:9',
+            },
+          });
         }
 
         STATE.history.unshift(completedRecord);
@@ -450,6 +569,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         processQueue();
         sendResponse({ ok: true });
+        return;
+      }
+
+      case 'POPUP_TEST_RELAY_PUSH': {
+        const pushResult = await pushEventToLocalRelay({
+          type: 'bridge_asset',
+          source: message.source || 'dreamina',
+          mediaUrl: message.mediaUrl || '/media/shot01_rooftop.mp4',
+          videoUrl: message.videoUrl || '/media/shot01_rooftop.mp4',
+          title: message.title || 'Bridge · Dreamina Captured Clip',
+          prompt:
+            message.prompt ||
+            '@Hero_Kael rooftop rain establishing shot relayed via Chrome Bridge',
+        });
+        sendResponse({
+          ok: Boolean(pushResult?.ok),
+          pushResult,
+          status: buildBridgeStatusPayload(),
+        });
         return;
       }
 

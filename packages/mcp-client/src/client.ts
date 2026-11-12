@@ -297,6 +297,55 @@ const CANONICAL_TOOL_BLUEPRINTS: Record<
       { id: 'frame_image', label: 'Final Keyframe PNG', dataType: 'image', required: true },
     ],
   },
+  outpaint_expand: {
+    title: 'MCP · Outpaint Aspect Expand',
+    category: 'image-editing',
+    icon: '⤢',
+    accentColor: '#14B8A6',
+    inputPorts: [
+      { id: 'imageUrl', label: 'Source Frame', dataType: 'image', required: true },
+      { id: 'prompt', label: 'Outpaint Context', dataType: 'prompt', required: false },
+    ],
+    outputPorts: [
+      { id: 'expanded_image', label: 'Expanded Frame', dataType: 'image', required: true },
+    ],
+  },
+  remove_background: {
+    title: 'MCP · Remove Background (RGBA)',
+    category: 'image-editing',
+    icon: '✂',
+    accentColor: '#F43F5E',
+    inputPorts: [
+      { id: 'imageUrl', label: 'Source Frame', dataType: 'image', required: true },
+    ],
+    outputPorts: [
+      { id: 'cutout_png', label: 'Transparent RGBA PNG', dataType: 'image', required: true },
+    ],
+  },
+  upscale_4k: {
+    title: 'MCP · Super-Upscale 4K',
+    category: 'image-editing',
+    icon: '✨',
+    accentColor: '#EAB308',
+    inputPorts: [
+      { id: 'imageUrl', label: 'Source Frame', dataType: 'image', required: true },
+    ],
+    outputPorts: [
+      { id: 'upscaled_4k', label: '4K Master PNG (3840px)', dataType: 'image', required: true },
+    ],
+  },
+  save_project: {
+    title: 'MCP · Save Project Snapshot',
+    category: 'scene-builder',
+    icon: '💾',
+    accentColor: '#38BDF8',
+    inputPorts: [
+      { id: 'state', label: 'Canvas Project State', dataType: 'json', required: true },
+    ],
+    outputPorts: [
+      { id: 'project_record', label: 'Saved Project Metadata', dataType: 'json', required: true },
+    ],
+  },
 };
 
 function inferCanvasPortType(

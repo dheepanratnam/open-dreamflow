@@ -1,5 +1,5 @@
 /**
- * Open-DreamFlow Chrome Bridge — Popup Controller (`popup.js`)
+ * Open-DreamFlow Chrome Bridge — Stage 4 Popup Controller (`popup.js`)
  */
 
 function setIndicator(dotId, labelId, connected, onlineText = 'Connected', offlineText = 'Not Open') {
@@ -10,7 +10,7 @@ function setIndicator(dotId, labelId, connected, onlineText = 'Connected', offli
   }
   if (label) {
     label.textContent = connected ? onlineText : offlineText;
-    label.style.color = connected ? '#34d399' : '#9ca3af';
+    label.style.color = connected ? '#34d399' : '#8e8e93';
   }
 }
 
@@ -22,6 +22,13 @@ function renderPopupState(response) {
     (status.studioTabsCount || 0) > 0,
     `${status.studioTabsCount} tab(s)`,
     'Offline'
+  );
+  setIndicator(
+    'dot-relay',
+    'lbl-relay',
+    Boolean(status.relayConnected),
+    'Live WS (:3001)',
+    'Standby'
   );
   setIndicator(
     'dot-flow',
@@ -74,6 +81,22 @@ document.getElementById('btn-open-dreamina')?.addEventListener('click', () => {
     type: 'POPUP_OPEN_TARGET',
     target: 'dreamina',
     url: 'https://dreamina.capcut.com/',
+  });
+});
+
+document.getElementById('btn-test-relay')?.addEventListener('click', () => {
+  const feedback = document.getElementById('relay-feedback');
+  if (feedback) feedback.textContent = 'Pushing capture to :3001/api/bridge/push...';
+
+  chrome.runtime.sendMessage({ type: 'POPUP_TEST_RELAY_PUSH' }, (response) => {
+    if (chrome.runtime.lastError) return;
+    if (feedback) {
+      feedback.textContent = response?.ok
+        ? 'Relayed to Studio Canvas via :3001!'
+        : 'Start :3001 MCP server to relay live.';
+      feedback.style.color = response?.ok ? '#20d5ec' : '#8e8e93';
+    }
+    if (response?.status) renderPopupState(response);
   });
 });
 
