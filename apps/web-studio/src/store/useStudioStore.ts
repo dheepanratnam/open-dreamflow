@@ -558,38 +558,83 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const timelineNodes = nodes.filter((n) => n.kind === 'timeline');
     const regularNodes = nodes.filter((n) => n.kind !== 'timeline');
 
-    const cols = 3;
-    const colX = [100, 620, 1280];
-    const rowHeights: number[] = [];
+    const startX = 120;
+    const startY = 110;
+    const gapX = 110;
+    const gapY = 120;
+    const maxColsPerRow = 4;
+    const maxRowWidth = 2080;
 
-    regularNodes.forEach((n, idx) => {
-      const r = Math.floor(idx / cols);
-      rowHeights[r] = Math.max(rowHeights[r] || 0, n.height);
-    });
+    // Pack regular nodes into width-aware rows so no two nodes ever overlap
+    const rows: CanvasNode[][] = [];
+    let currentRow: CanvasNode[] = [];
+    let currentRowWidth = 0;
 
-    const positioned: CanvasNode[] = regularNodes.map((n, idx) => {
-      const r = Math.floor(idx / cols);
-      const c = idx % cols;
-      const yOffset =
-        110 +
-        rowHeights.slice(0, r).reduce((acc, h) => acc + h + 110, 0);
-      return {
-        ...n,
-        x: colX[c] ?? 100 + c * 620,
-        y: yOffset,
-      };
-    });
+    for (const node of regularNodes) {
+      const w = node.width || 340;
+      if (currentRow.length === 0) {
+        currentRow = [node];
+        currentRowWidth = w;
+      } else if (
+        currentRow.length < maxColsPerRow &&
+        currentRowWidth + gapX + w <= maxRowWidth
+      ) {
+        currentRow.push(node);
+        currentRowWidth += gapX + w;
+      } else {
+        rows.push(currentRow);
+        currentRow = [node];
+        currentRowWidth = w;
+      }
+    }
+    if (currentRow.length > 0) {
+      rows.push(currentRow);
+    }
 
-    const bottomY =
-      positioned.reduce((acc, n) => Math.max(acc, n.y + n.height), 360) + 120;
+    const positioned: CanvasNode[] = [];
+    let cursorY = startY;
+    let maxGraphRight = startX + 1120;
 
-    timelineNodes.forEach((tn, i) => {
+    for (const row of rows) {
+      let cursorX = startX;
+      let maxRowHeight = 0;
+      for (const n of row) {
+        const w = n.width || 340;
+        const h = n.height || 240;
+        positioned.push({
+          ...n,
+          x: cursorX,
+          y: cursorY,
+        });
+        maxGraphRight = Math.max(maxGraphRight, cursorX + w);
+        cursorX += w + gapX;
+        maxRowHeight = Math.max(maxRowHeight, h);
+      }
+      cursorY += maxRowHeight + gapY;
+    }
+
+    // Place timeline nodes on their own dedicated bottom row aligned cleanly under the graph
+    const timelineY = regularNodes.length > 0 ? cursorY + 40 : startY;
+    let tlCursorX =
+      timelineNodes.length === 1
+        ? Math.max(
+            startX,
+            Math.round(
+              startX +
+                (maxGraphRight - startX - (timelineNodes[0].width || 1120)) / 2
+            )
+          )
+        : startX;
+
+    for (const tn of timelineNodes) {
+      const tw = tn.width || 1120;
       positioned.push({
         ...tn,
-        x: 420,
-        y: bottomY + i * 230,
+        x: tlCursorX,
+        y: timelineY,
       });
-    });
+      tlCursorX += tw + gapX;
+    }
 
     set({ nodes: positioned });
     get().fitAllNodesInViewport();
@@ -1330,19 +1375,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         mimeType: file.type || undefined,
         dataBase64,
       });
-      if (uploaded.ok && uploaded.mediaUrl) {
+      if (uploaded.ok && (uploaded.fullUrl || uploaded.mediaUrl)) {
+        const persistedUrl = uploaded.fullUrl || uploaded.mediaUrl!;
         set((s) => ({
           nodes: s.nodes.map((n) =>
             n.id === id
               ? {
                   ...n,
                   editBadge: undefined,
-                  imageUrl: !isVideo && !isAudio ? uploaded.mediaUrl : n.imageUrl,
-                  videoUrl: isVideo ? uploaded.mediaUrl : n.videoUrl,
-                  audioUrl: isAudio ? uploaded.mediaUrl : n.audioUrl,
+                  imageUrl: !isVideo && !isAudio ? persistedUrl : n.imageUrl,
+                  videoUrl: isVideo ? persistedUrl : n.videoUrl,
+                  audioUrl: isAudio ? persistedUrl : n.audioUrl,
                   layers:
                     !isVideo && !isAudio
-                      ? createDefaultLayers(uploaded.mediaUrl)
+                      ? createDefaultLayers(persistedUrl)
                       : n.layers,
                   providerUsed: 'Disk Media (:3001)',
                 }
@@ -1585,8 +1631,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   applyInpaintToNode: async (nodeId, maskDataUrl, regionalPrompt) => {
     const node = get().nodes.find((n) => n.id === nodeId);
-    const sourceImage = node?.imageUrl;
-    if (!node || !sourceImage) return;
+    if (!node) return;
+    const sourceImage = node.imageUrl || '/media/shot01_rooftop.png';
     get().pushHistory();
 
     const { activeProvider, byok } = get();
@@ -1599,7 +1645,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       kind: 'image',
       title: `Images · Inpaint Redraw`,
       prompt: promptToUse,
-      x: node.x + node.width + 96,
+      x: node.x + node.width + 110,
       y: node.y,
       width: node.width,
       height: node.height,
@@ -1607,11 +1653,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       status: 'generating',
       progress: 40,
       editBadge: 'Inpainting…',
-      imageUrl: sourceImage,
+      imageUrl: undefined,
       seed: node.seed + 19,
       resolution: node.resolution,
       elementHandles: node.elementHandles,
-      layers: createDefaultLayers(sourceImage),
+      layers: [],
       providerUsed: 'FFmpeg Inpaint (:3001)',
       createdAt: Date.now(),
     };
@@ -1639,7 +1685,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       apiKey,
     });
 
-    let finalUrl = live.imageUrl;
+    let finalUrl = live.fullUrl || live.imageUrl;
     if (!finalUrl) {
       const { compositedDataUrl } = await compositeInpaintRedraw(
         sourceImage,
@@ -1670,8 +1716,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   expandOutpaintNode: async (nodeId, targetAspect, customPrompt) => {
     const node = get().nodes.find((n) => n.id === nodeId);
-    const sourceImage = node?.imageUrl;
-    if (!node || !sourceImage) return;
+    if (!node) return;
+    const sourceImage = node.imageUrl || '/media/shot01_rooftop.png';
     get().pushHistory();
 
     const { activeProvider, byok } = get();
@@ -1685,7 +1731,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       kind: 'image',
       title: `Images · Outpaint ${targetAspect}`,
       prompt: promptUsed,
-      x: node.x + node.width + 96,
+      x: node.x + node.width + 110,
       y: node.y,
       width: newDims.width,
       height: newDims.height,
@@ -1693,11 +1739,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       status: 'generating',
       progress: 45,
       editBadge: `Outpainting ${targetAspect}…`,
-      imageUrl: sourceImage,
+      imageUrl: undefined,
       seed: node.seed + 31,
       resolution: '2K',
       elementHandles: node.elementHandles,
-      layers: createDefaultLayers(sourceImage),
+      layers: [],
       providerUsed: 'FFmpeg Outpaint (:3001)',
       createdAt: Date.now(),
     };
@@ -1726,6 +1772,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     });
 
     const finalUrl =
+      live.fullUrl ||
       live.imageUrl ||
       (await expandOutpaintDataUrl(sourceImage, targetAspect, promptUsed, node.seed));
 
@@ -1761,7 +1808,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       node.prompt,
       node.seed
     ).foregroundDataUrl;
-    const cutoutUrl = live.imageUrl || fallbackCutout;
+    const cutoutUrl = live.fullUrl || live.imageUrl || fallbackCutout;
 
     const childId = `node_cutout_${Date.now()}`;
     const cutoutNode: CanvasNode = {
@@ -1769,7 +1816,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       kind: 'image',
       title: `Images · Alpha Cutout`,
       prompt: `${node.prompt} (Transparent RGBA Cutout)`,
-      x: node.x + node.width + 96,
+      x: node.x + node.width + 110,
       y: node.y,
       width: node.width,
       height: node.height,
@@ -1829,7 +1876,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     get().updateNodeFields(nodeId, { editBadge: `Upscaling ${targetRes}…` });
 
     const live = await upscaleViaBackend(sourceImage);
-    const upscaledUrl = live.imageUrl || sourceImage;
+    const upscaledUrl = live.fullUrl || live.imageUrl || sourceImage;
 
     const childId = `node_upscale_${Date.now()}`;
     const upscaledNode: CanvasNode = {
@@ -1837,7 +1884,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       kind: 'image',
       title: `${node.title.replace(/ · 4K$/, '')} · ${targetRes}`,
       prompt: node.prompt,
-      x: node.x + node.width + 96,
+      x: node.x + node.width + 110,
       y: node.y,
       width: node.width,
       height: node.height,

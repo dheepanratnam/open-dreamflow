@@ -8,10 +8,19 @@ import {
 
 const BACKEND_ORIGIN = 'http://localhost:3001';
 
+function isRuntimeGeneratedMediaPath(relPath: string): boolean {
+  return /^\/media\/(inpaint_|outpaint_|cutout_|upscale4k_|upload_|slice_gen_|lastframe_gen_|render_|shot_|master_|bridge_)/.test(
+    relPath
+  );
+}
+
 function buildCandidateUrls(src?: string): string[] {
   if (!src) return [];
   if (src.startsWith('data:') || src.startsWith('blob:')) return [src];
   if (src.startsWith('/media/')) {
+    if (isRuntimeGeneratedMediaPath(src)) {
+      return [`${BACKEND_ORIGIN}${src}`, src];
+    }
     return [src, `${BACKEND_ORIGIN}${src}`];
   }
   if (src.startsWith(`${BACKEND_ORIGIN}/media/`)) {
@@ -76,6 +85,7 @@ export const SmartMediaImage: React.FC<{
 
   return (
     <img
+      key={activeSrc}
       src={activeSrc}
       alt={alt}
       style={style}
