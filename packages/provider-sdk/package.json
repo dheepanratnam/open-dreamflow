@@ -1,0 +1,63 @@
+{
+  "name": "@open-dreamflow/provider-sdk",
+  "version": "1.0.0",
+  "description": "Zero-markup TypeScript BYOK & Local GPU Provider SDK for Open-DreamFlow (Gemini Omni 1.2 Flash, Dreamina Seedream/Seedance, Fal.ai, Replicate, Local ComfyUI)",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./gemini-omni": {
+      "types": "./dist/gemini-omni.d.ts",
+      "import": "./dist/gemini-omni.js"
+    },
+    "./seedance": {
+      "types": "./dist/seedance.d.ts",
+      "import": "./dist/seedance.js"
+    },
+    "./fal-replicate": {
+      "types": "./dist/fal-replicate.d.ts",
+      "import": "./dist/fal-replicate.js"
+    },
+    "./comfyui": {
+      "types": "./dist/comfyui.d.ts",
+      "import": "./dist/comfyui.js"
+    },
+    "./src/*": "./src/*"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "open-dreamflow",
+    "gemini-omni",
+    "seedance",
+    "seedream",
+    "dreamina",
+    "google-flow",
+    "fal-ai",
+    "replicate",
+    "comfyui",
+    "wan-2.1",
+    "ltx-video",
+    "hunyuan-video",
+    "byok"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}
