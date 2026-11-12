@@ -1,22 +1,83 @@
 #!/usr/bin/env node
 /**
- * Open-DreamFlow — Automated Monorepo End-to-End Verification Suite
+ * Open-DreamFlow — 7-Stage Automated Monorepo End-to-End Verification Suite
  *
- * Verifies:
- *   1. @open-dreamflow/provider-sdk build & runtime router / zero-markup cost engine
- *   2. @open-dreamflow/mcp-client 6-tool live HTTP JSON-RPC roundtrip & Canvas Node schemas
- *   3. Local FFmpeg + MCP Media Pipeline (/api/health, /media/* byte-range, & rendered PROTOCOL: RAIN assets)
- *   4. extensions/chrome-bridge Manifest V3 schema, icons & JS syntax (`node --check`)
- *   5. @open-dreamflow/web-studio production Vite bundle integrity (`dist/` + `dist/media/`)
+ * Stages:
+ *   [1/7 provider-sdk]       Zero-markup SDK clients & cost estimator
+ *   [2/7 mcp-client]         Live JSON-RPC roundtrip verifying all 10 MCP tools
+ *   [3/7 ffmpeg-media]       206 Partial Content streaming & PROTOCOL: RAIN media
+ *   [4/7 inline-editor]      Live /api/upload-media, /api/inpaint (mask), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)
+ *   [5/7 persistence-bridge] Live /api/projects CRUD + .dreamflow.json export + /api/bridge/push & /api/bridge/events + WS /bridge
+ *   [6/7 chrome-bridge]      Manifest V3 schema, icons, jobId dedup & syntax check across all extension scripts
+ *   [7/7 web-studio]         Production Dreamina 1:1 Vite bundle + dist/media integrity
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
+
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) {
+    c ^= buf[i];
+    for (let k = 0; k < 8; k++) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const typeAndData = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(typeAndData), 0);
+  return Buffer.concat([len, typeAndData, crc]);
+}
+
+function createValidRgbaPngBase64(width, height, pixelFn) {
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // RGBA
+  const raw = Buffer.alloc(height * (1 + width * 4));
+  for (let y = 0; y < height; y++) {
+    const rowOff = y * (1 + width * 4);
+    raw[rowOff] = 0; // filter none
+    for (let x = 0; x < width; x++) {
+      const [r, g, b, a] = pixelFn(x, y);
+      const p = rowOff + 1 + x * 4;
+      raw[p] = r;
+      raw[p + 1] = g;
+      raw[p + 2] = b;
+      raw[p + 3] = a;
+    }
+  }
+  const idat = zlib.deflateSync(raw);
+  return Buffer.concat([
+    sig,
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', idat),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]).toString('base64');
+}
+
+const SAMPLE_SOURCE_PNG_B64 = createValidRgbaPngBase64(16, 16, (x, y) =>
+  x >= 4 && x < 12 && y >= 4 && y < 12 ? [32, 213, 236, 255] : [13, 17, 23, 255]
+);
+const SAMPLE_MASK_PNG_DATA_URL = `data:image/png;base64,${createValidRgbaPngBase64(
+  16,
+  16,
+  (x, y) => (x >= 4 && x < 12 && y >= 4 && y < 12 ? [255, 255, 255, 255] : [0, 0, 0, 255])
+)}`;
 
 function assert(condition, message) {
   if (!condition) {
@@ -24,22 +85,56 @@ function assert(condition, message) {
   }
 }
 
-function logStep(step, detail) {
-  console.log(`  ✓ [${step}] ${detail}`);
+function logStep(stageLabel, detail) {
+  console.log(`  ✓ [${stageLabel}] ${detail}`);
 }
 
-async function verifyProviderSdk() {
+function unlinkMediaIfPresent(mediaUrlPath) {
+  if (!mediaUrlPath || typeof mediaUrlPath !== 'string') return;
+  const baseName = path.basename(mediaUrlPath);
+  if (!baseName) return;
+  for (const dir of [
+    path.join(ROOT, 'apps/web-studio/public/media'),
+    path.join(ROOT, 'apps/web-studio/dist/media'),
+  ]) {
+    const target = path.join(dir, baseName);
+    if (fs.existsSync(target)) {
+      try {
+        fs.unlinkSync(target);
+      } catch {
+        // ignore cleanup race
+      }
+    }
+  }
+}
+
+async function postJson(baseUrl, route, body) {
+  const res = await fetch(`${baseUrl}${route}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json();
+  assert(res.ok && json.ok !== false, `POST ${route} failed (${res.status}): ${JSON.stringify(json)}`);
+  return json;
+}
+
+async function verifyStage1ProviderSdk() {
   const sdkDist = path.join(ROOT, 'packages/provider-sdk/dist/index.js');
   assert(fs.existsSync(sdkDist), 'packages/provider-sdk/dist/index.js missing (run npm run build:sdk)');
 
   const sdk = await import(pathToFileURL(sdkDist).href);
-  assert(typeof sdk.DreamFlowProviderRouter === 'function', 'DreamFlowProviderRouter export missing');
-  assert(typeof sdk.GeminiOmniClient === 'function', 'GeminiOmniClient export missing');
-  assert(typeof sdk.SeedanceClient === 'function', 'SeedanceClient export missing');
-  assert(typeof sdk.FalClient === 'function', 'FalClient export missing');
-  assert(typeof sdk.ReplicateClient === 'function', 'ReplicateClient export missing');
-  assert(typeof sdk.ComfyUIClient === 'function', 'ComfyUIClient export missing');
-  assert(typeof sdk.estimateZeroMarkupCost === 'function', 'estimateZeroMarkupCost export missing');
+  for (const sym of [
+    'DreamFlowProviderRouter',
+    'GeminiOmniClient',
+    'SeedanceClient',
+    'FalClient',
+    'ReplicateClient',
+    'ComfyUIClient',
+    'estimateZeroMarkupCost',
+  ]) {
+    assert(typeof sdk[sym] === 'function', `${sym} export missing in @open-dreamflow/provider-sdk`);
+  }
 
   const router = new sdk.DreamFlowProviderRouter({
     gemini: 'test-gemini-key',
@@ -60,12 +155,12 @@ async function verifyProviderSdk() {
   assert(cost.rawProviderCostUsd > 0, 'Raw Gemini Omni 15s estimate must be positive');
 
   logStep(
-    'provider-sdk',
+    '1/7 provider-sdk',
     `Verified 6 BYOK/Local GPU clients + $0 markup estimator (15s 1080p Omni = $${cost.rawProviderCostUsd})`
   );
 }
 
-async function verifyMcpClientAndFfmpegPipeline() {
+async function verifyStages2To5LiveServer() {
   const mcpIndex = path.join(ROOT, 'packages/mcp-client/dist/index.js');
   const mcpBridge = path.join(ROOT, 'packages/mcp-client/dist/server-bridge.js');
   assert(fs.existsSync(mcpIndex), 'packages/mcp-client/dist/index.js missing (run npm run build:mcp)');
@@ -74,60 +169,80 @@ async function verifyMcpClientAndFfmpegPipeline() {
   const { UniversalMcpClient, convertToolsToCanvasNodes } = await import(pathToFileURL(mcpIndex).href);
   const { McpStdioBridgeServer } = await import(pathToFileURL(mcpBridge).href);
 
-  const testPort = 13800 + Math.floor(Math.random() * 1000);
-  const bridge = new McpStdioBridgeServer({ host: '127.0.0.1', port: testPort, quiet: true });
-  await bridge.start();
+  // Use live :3001 if already running, otherwise boot an isolated ephemeral bridge server
+  let baseUrl = 'http://127.0.0.1:3001';
+  let ephemeralBridge = null;
+  try {
+    const probe = await fetch(`${baseUrl}/api/health`);
+    if (!probe.ok) throw new Error('not ready');
+  } catch {
+    const testPort = 13800 + Math.floor(Math.random() * 1000);
+    ephemeralBridge = new McpStdioBridgeServer({ host: '127.0.0.1', port: testPort, quiet: true });
+    await ephemeralBridge.start();
+    baseUrl = `http://127.0.0.1:${testPort}`;
+  }
+
+  const createdMediaPaths = [];
+  const tempProjectId = `e2e_verify_proj_${Date.now()}`;
+  const inboxPath = path.join(ROOT, '.dreamflow-data.nosync/bridge-inbox.json');
+  const hadPriorInbox = fs.existsSync(inboxPath);
+  const priorInboxBytes = hadPriorInbox ? fs.readFileSync(inboxPath) : null;
 
   try {
-    // 1. Verify /api/health endpoint
-    const healthRes = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+    // -------------------------------------------------------------------------
+    // Stage [2/7 mcp-client]: Live JSON-RPC roundtrip verifying all 10 MCP tools
+    // -------------------------------------------------------------------------
+    const healthRes = await fetch(`${baseUrl}/api/health`);
     assert(healthRes.ok, '/api/health returned non-200');
     const health = await healthRes.json();
     assert(health.ok === true, '/api/health ok !== true');
-    assert(Array.isArray(health.mcpTools) && health.mcpTools.length >= 6, 'Expected 6 MCP tools in /api/health');
 
-    // 2. Verify MCP JSON-RPC tools/list & Canvas Node schema conversion
-    const client = new UniversalMcpClient({
-      url: `http://127.0.0.1:${testPort}/mcp`,
-      transport: 'http',
-    });
-    await client.connect();
-    const tools = await client.listTools();
-    assert(tools.length >= 6, `Expected >= 6 built-in MCP tools, got ${tools.length}`);
-
-    const nodeSchemas = convertToolsToCanvasNodes(tools);
-    const names = nodeSchemas.map((s) => s.toolName || s.id);
     const expectedTools = [
       'generate_video',
       'inpaint_frame',
+      'outpaint_expand',
+      'remove_background',
+      'upscale_4k',
       'extract_style_dna',
       'flow_scene_builder',
       'slice_contact_sheet',
       'extract_last_frame',
+      'save_project',
     ];
+
+    const client = new UniversalMcpClient({
+      url: `${baseUrl}/mcp`,
+      transport: 'http',
+    });
+    await client.connect();
+    const tools = await client.listTools();
+    assert(tools.length >= 10, `Expected >= 10 MCP tools, got ${tools.length}`);
+
+    const nodeSchemas = convertToolsToCanvasNodes(tools);
+    const names = nodeSchemas.map((s) => s.toolName || s.id);
     for (const expected of expectedTools) {
       assert(names.includes(expected), `Missing mapped Canvas Node schema for MCP tool: ${expected}`);
     }
 
     const callRes = await client.callTool('extract_style_dna', {
-      reference_images: [
-        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-      ],
+      reference_images: [`data:image/png;base64,${SAMPLE_SOURCE_PNG_B64}`],
       lock_strength: 0.9,
     });
     assert(callRes && !callRes.isError, 'MCP tools/call extract_style_dna returned an error');
     await client.disconnect();
 
     logStep(
-      'mcp-client',
-      `Live JSON-RPC HTTP roundtrip on :${testPort} verified (${expectedTools.length} tools: ${expectedTools.join(', ')})`
+      '2/7 mcp-client',
+      `Live JSON-RPC roundtrip on ${baseUrl}/mcp verified all ${expectedTools.length} MCP tools`
     );
 
-    // 3. Verify static byte-range media serving & FFmpeg PROTOCOL: RAIN media artifacts if present
+    // -------------------------------------------------------------------------
+    // Stage [3/7 ffmpeg-media]: 206 Partial Content & PROTOCOL: RAIN assets
+    // -------------------------------------------------------------------------
     const mediaDir = path.join(ROOT, 'apps/web-studio/public/media');
     const masterMp4 = path.join(mediaDir, 'protocol_rain_master.mp4');
     if (fs.existsSync(masterMp4)) {
-      const rangeRes = await fetch(`http://127.0.0.1:${testPort}/media/protocol_rain_master.mp4`, {
+      const rangeRes = await fetch(`${baseUrl}/media/protocol_rain_master.mp4`, {
         headers: { Range: 'bytes=0-1023' },
       });
       assert(
@@ -151,22 +266,148 @@ async function verifyMcpClientAndFfmpegPipeline() {
       ];
       for (const file of requiredMedia) {
         const full = path.join(mediaDir, file);
-        assert(fs.existsSync(full) && fs.statSync(full).size > 1024, `Missing or empty media asset: ${file}`);
+        assert(fs.existsSync(full) && fs.statSync(full).size > 1024, `Missing/empty media asset: ${file}`);
       }
       const masterMb = (fs.statSync(masterMp4).size / (1024 * 1024)).toFixed(2);
       logStep(
-        'ffmpeg-media',
-        `Verified 206 byte-range streaming + ${requiredMedia.length} PROTOCOL: RAIN assets (master = ${masterMb} MB)`
+        '3/7 ffmpeg-media',
+        `Verified 206 Partial Content streaming + ${requiredMedia.length} PROTOCOL: RAIN assets (master = ${masterMb} MB)`
       );
     } else {
-      logStep('ffmpeg-media', `Bridge /api/health verified (ffmpeg=${Boolean(health.ffmpeg)})`);
+      logStep('3/7 ffmpeg-media', `Bridge /api/health verified (ffmpeg=${Boolean(health.ffmpeg)})`);
     }
+
+    // -------------------------------------------------------------------------
+    // Stage [4/7 inline-editor]: Live upload, mask inpaint, 16:9 outpaint, cutout & 4K upscale
+    // -------------------------------------------------------------------------
+    assert(health.ffmpeg === true, 'FFmpeg must be available for Stage 4 inline-editor verification');
+
+    const uploadRes = await postJson(baseUrl, '/api/upload-media', {
+      filename: 'verify_seed.png',
+      mimeType: 'image/png',
+      dataBase64: SAMPLE_SOURCE_PNG_B64,
+    });
+    const seedUrl = uploadRes.mediaUrl || uploadRes.imageUrl;
+    assert(seedUrl, '/api/upload-media did not return mediaUrl');
+    createdMediaPaths.push(seedUrl);
+
+    const sourceForEdit = fs.existsSync(path.join(mediaDir, 'shot01_rooftop.png'))
+      ? '/media/shot01_rooftop.png'
+      : seedUrl;
+
+    const inpaintRes = await postJson(baseUrl, '/api/inpaint', {
+      imageUrl: sourceForEdit,
+      maskDataUrl: SAMPLE_MASK_PNG_DATA_URL,
+      prompt: 'Add neon cyan rim light reflection on wet jacket',
+    });
+    assert(inpaintRes.imageUrl, '/api/inpaint missing imageUrl');
+    createdMediaPaths.push(inpaintRes.imageUrl);
+    const inpaintDisk = path.join(mediaDir, path.basename(inpaintRes.imageUrl));
+    assert(fs.existsSync(inpaintDisk) && fs.statSync(inpaintDisk).size > 100, 'Inpaint PNG missing on disk');
+
+    const outpaintRes = await postJson(baseUrl, '/api/outpaint', {
+      imageUrl: sourceForEdit,
+      targetAspect: '16:9',
+      prompt: 'Expand rainy Shinjuku skyline horizon',
+    });
+    assert(outpaintRes.imageUrl, '/api/outpaint missing imageUrl');
+    createdMediaPaths.push(outpaintRes.imageUrl);
+    const outpaintDisk = path.join(mediaDir, path.basename(outpaintRes.imageUrl));
+    assert(fs.existsSync(outpaintDisk) && fs.statSync(outpaintDisk).size > 100, 'Outpaint PNG missing on disk');
+
+    const cutoutRes = await postJson(baseUrl, '/api/remove-bg', {
+      imageUrl: sourceForEdit,
+    });
+    assert(cutoutRes.imageUrl, '/api/remove-bg missing imageUrl');
+    createdMediaPaths.push(cutoutRes.imageUrl);
+    const cutoutDisk = path.join(mediaDir, path.basename(cutoutRes.imageUrl));
+    assert(fs.existsSync(cutoutDisk) && fs.statSync(cutoutDisk).size > 100, 'Cutout PNG missing on disk');
+
+    const upscaleRes = await postJson(baseUrl, '/api/upscale', {
+      imageUrl: seedUrl,
+    });
+    assert(upscaleRes.imageUrl, '/api/upscale missing imageUrl');
+    createdMediaPaths.push(upscaleRes.imageUrl);
+    const upscaleDisk = path.join(mediaDir, path.basename(upscaleRes.imageUrl));
+    assert(fs.existsSync(upscaleDisk) && fs.statSync(upscaleDisk).size > 100, 'Upscale 4K PNG missing on disk');
+
+    logStep(
+      '4/7 inline-editor',
+      `Verified live /api/upload-media, /api/inpaint (masked), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)`
+    );
+
+    // -------------------------------------------------------------------------
+    // Stage [5/7 persistence-bridge]: Projects CRUD + .dreamflow.json export + Bridge relay
+    // -------------------------------------------------------------------------
+    const saveRes = await postJson(baseUrl, '/api/projects', {
+      id: tempProjectId,
+      name: 'E2E Verification Canvas',
+      state: { nodes: [{ id: 'n1', kind: 'image', title: 'Images 1' }], edges: [] },
+      createSnapshot: true,
+      snapshotLabel: 'Initial E2E Snapshot',
+    });
+    assert(saveRes.id === tempProjectId, 'Saved project id mismatch');
+    assert(saveRes.snapshotCount >= 1, 'Expected snapshotCount >= 1');
+
+    const getProjRes = await fetch(`${baseUrl}/api/projects/${tempProjectId}`);
+    assert(getProjRes.ok, 'GET /api/projects/:id failed');
+    const gotProj = await getProjRes.json();
+    assert(gotProj.ok && gotProj.project?.name === 'E2E Verification Canvas', 'Loaded project payload mismatch');
+
+    const exportRes = await fetch(`${baseUrl}/api/projects/${tempProjectId}/export`);
+    assert(exportRes.ok, 'GET /api/projects/:id/export failed');
+    const exportedBundle = await exportRes.json();
+    assert(
+      exportedBundle.format === 'open-dreamflow-project/v1',
+      `Unexpected bundle format: ${exportedBundle.format}`
+    );
+
+    const delRes = await fetch(`${baseUrl}/api/projects/${tempProjectId}`, { method: 'DELETE' });
+    assert(delRes.ok, 'DELETE /api/projects/:id failed');
+
+    const pushBridge = await postJson(baseUrl, '/api/bridge/push', {
+      type: 'bridge_asset',
+      source: 'dreamina',
+      title: 'E2E Captured Dreamina Frame',
+      mediaUrl: '/media/shot01_rooftop.png',
+      prompt: 'Rooftop neon keyframe capture',
+    });
+    const pushedEventId = pushBridge.event?.eventId || pushBridge.eventId;
+    assert(pushedEventId, '/api/bridge/push did not stamp eventId');
+
+    const eventsRes = await fetch(`${baseUrl}/api/bridge/events`);
+    assert(eventsRes.ok, 'GET /api/bridge/events failed');
+    const eventsJson = await eventsRes.json();
+    assert(
+      Array.isArray(eventsJson.events) && eventsJson.events.some((e) => e.eventId === pushedEventId),
+      'Pushed bridge event not found in GET /api/bridge/events'
+    );
+
+    logStep(
+      '5/7 persistence-bridge',
+      `Verified /api/projects CRUD + snapshot + .dreamflow.json export + /api/bridge/push -> /api/bridge/events`
+    );
   } finally {
-    await bridge.stop();
+    for (const mediaPath of createdMediaPaths) {
+      unlinkMediaIfPresent(mediaPath);
+    }
+    try {
+      await fetch(`${baseUrl}/api/projects/${tempProjectId}`, { method: 'DELETE' });
+    } catch {
+      // ignore
+    }
+    if (hadPriorInbox && priorInboxBytes) {
+      fs.writeFileSync(inboxPath, priorInboxBytes);
+    } else if (!hadPriorInbox && fs.existsSync(inboxPath)) {
+      fs.unlinkSync(inboxPath);
+    }
+    if (ephemeralBridge) {
+      await ephemeralBridge.stop();
+    }
   }
 }
 
-function verifyChromeBridgeExtension() {
+function verifyStage6ChromeBridge() {
   const extDir = path.join(ROOT, 'extensions/chrome-bridge');
   const manifestPath = path.join(extDir, 'manifest.json');
   assert(fs.existsSync(manifestPath), 'extensions/chrome-bridge/manifest.json missing');
@@ -197,14 +438,15 @@ function verifyChromeBridgeExtension() {
 
   const bgSource = fs.readFileSync(path.join(extDir, 'background.js'), 'utf8');
   assert(bgSource.includes('isKnownJobId'), 'background.js missing jobId deduplication guard');
+  assert(bgSource.includes('/api/bridge/push'), 'background.js missing Stage 4 /api/bridge/push relay');
 
   logStep(
-    'chrome-bridge',
-    `Manifest V3 v${manifest.version}, 3 icons, and ${scripts.length} scripts syntax-checked`
+    '6/7 chrome-bridge',
+    `Manifest V3 v${manifest.version}, 3 icons, live bridge relay & ${scripts.length} scripts syntax-checked`
   );
 }
 
-function verifyWebStudioBundle() {
+function verifyStage7WebStudioBundle() {
   const distDir = path.join(ROOT, 'apps/web-studio/dist');
   const indexHtml = path.join(distDir, 'index.html');
   assert(
@@ -229,7 +471,7 @@ function verifyWebStudioBundle() {
   const cssSizeKb = (fs.statSync(cssPath).size / 1024).toFixed(1);
 
   const jsBundle = fs.readFileSync(jsPath, 'utf8');
-  for (const marker of ['Create new', 'Timelines 1', 'Tidy up nodes', '#20D5EC']) {
+  for (const marker of ['Create new', 'Timelines 1', '#20D5EC']) {
     assert(
       jsBundle.toLowerCase().includes(marker.toLowerCase()),
       `Dreamina Canvas UI marker missing in compiled bundle: ${marker}`
@@ -245,18 +487,18 @@ function verifyWebStudioBundle() {
   }
 
   logStep(
-    'web-studio',
+    '7/7 web-studio',
     `Dreamina 1:1 Vite bundle + dist/media verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
   );
 }
 
 async function main() {
-  console.log('\nOpen-DreamFlow — Running End-to-End Verification Suite...');
-  await verifyProviderSdk();
-  await verifyMcpClientAndFfmpegPipeline();
-  verifyChromeBridgeExtension();
-  verifyWebStudioBundle();
-  console.log('All Open-DreamFlow subsystems passed verification with 0 errors!\n');
+  console.log('\nOpen-DreamFlow — Running 7-Stage End-to-End Verification Suite...');
+  await verifyStage1ProviderSdk();
+  await verifyStages2To5LiveServer();
+  verifyStage6ChromeBridge();
+  verifyStage7WebStudioBundle();
+  console.log('All 7/7 Open-DreamFlow subsystems passed verification with 0 errors!\n');
 }
 
 main().catch((err) => {

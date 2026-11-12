@@ -67,6 +67,8 @@ export interface McpBackendHealth {
   mediaFiles: string[];
   baseUrl: string;
   pingMs?: number;
+  savedProjectsCount?: number;
+  bridgeClients?: number;
 }
 
 export interface CanvasNode {
@@ -107,6 +109,8 @@ export interface CanvasNode {
     labels: string[];
   };
   mcpTool?: MCPToolDefinition;
+  isTransparentCutout?: boolean;
+  editBadge?: string;
   layers: FrameLayer[];
   providerUsed: string;
   createdAt: number;
@@ -266,6 +270,44 @@ export interface ChatMessageItem {
   role: 'user' | 'assistant';
   text: string;
   timestamp: number;
+  videoUrl?: string;
+  imageUrl?: string;
+  nodeFocusPills?: Array<{ nodeId: string; title: string }>;
+}
+
+export interface DiskProjectMeta {
+  id: string;
+  name: string;
+  nodeCount: number;
+  edgeCount: number;
+  snapshotCount: number;
+  updatedAt: number;
+}
+
+export interface DiskSnapshotItem {
+  snapshotId: string;
+  label: string;
+  createdAt: number;
+  state: Record<string, unknown>;
+}
+
+export interface DiskProjectRecord {
+  id: string;
+  name: string;
+  state: Record<string, unknown>;
+  snapshots?: DiskSnapshotItem[];
+  updatedAt: number;
+}
+
+export interface BridgeIncomingEvent {
+  eventId?: string;
+  timestamp?: number;
+  type: 'bridge_asset' | 'bridge_prompt' | 'bridge_session';
+  source: 'dreamina' | 'flow' | 'manual';
+  mediaUrl?: string;
+  title?: string;
+  prompt?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface StudioHistorySnapshot {

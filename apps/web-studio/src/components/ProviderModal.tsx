@@ -34,6 +34,8 @@ export const ProviderModal: React.FC = () => {
     spawnMcpToolAsCanvasNode,
     chromeBridge,
     pingBridge,
+    bridgeWsConnected,
+    triggerTestBridgeCapture,
   } = useStudioStore();
 
   const [showSecrets, setShowSecrets] = useState(false);
@@ -275,6 +277,20 @@ export const ProviderModal: React.FC = () => {
                   </div>
                   <div>
                     <label className="block text-[11px] text-white/45 mb-1">
+                      Replicate API Token
+                    </label>
+                    <input
+                      type={showSecrets ? 'text' : 'password'}
+                      value={byok.replicateApiKey}
+                      onChange={(e) =>
+                        updateByok({ replicateApiKey: e.target.value })
+                      }
+                      placeholder="r8_..."
+                      className="w-full h-8 px-3 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] font-mono text-white outline-none focus:border-white/30"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-[11px] text-white/45 mb-1">
                       Local ComfyUI Endpoint
                     </label>
                     <input
@@ -423,30 +439,34 @@ export const ProviderModal: React.FC = () => {
           {providerModalTab === 'bridge' && (
             <div className="space-y-4">
               <div className="p-4 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-[13px] font-medium text-white">
-                      Manifest V3 Browser Subscription Bridge
+                      Manifest V3 Browser Subscription Bridge + Live WS Relay
                     </div>
                     <div className="text-[11.5px] text-white/50">
                       Load <code className="font-mono text-white/80">extensions/chrome-bridge</code> in{' '}
-                      <code className="font-mono text-white/80">chrome://extensions</code> to reuse your
-                      existing Dreamina or Google Flow web credits.
+                      <code className="font-mono text-white/80">chrome://extensions</code> to stream assets & prompts over{' '}
+                      <code className="font-mono text-white/80">ws://localhost:3001/bridge</code>.
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={pingBridge}
-                    className="h-8 px-3.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[12px] font-semibold"
+                    className="h-8 px-3.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[12px] font-semibold shrink-0"
                   >
                     Ping Extension
                   </button>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2 pt-1">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-1">
                   {[
                     {
-                      label: 'Extension Content Script',
+                      label: 'WS Relay (:3001/bridge)',
+                      ok: bridgeWsConnected,
+                    },
+                    {
+                      label: 'Extension Script',
                       ok: chromeBridge.extensionDetected,
                     },
                     {
@@ -460,23 +480,53 @@ export const ProviderModal: React.FC = () => {
                   ].map((item) => (
                     <div
                       key={item.label}
-                      className="p-3 rounded-[9px] bg-[#1d1d1d] border border-white/[0.06] flex items-center justify-between"
+                      className="p-3 rounded-[9px] bg-[#1d1d1d] border border-white/[0.06] flex items-center justify-between gap-2"
                     >
-                      <span className="text-[11.5px] text-white/80">
+                      <span className="text-[11.5px] text-white/80 truncate">
                         {item.label}
                       </span>
                       {item.ok ? (
                         <Check
-                          className="w-4 h-4 text-[#10b981]"
+                          className="w-4 h-4 text-[#10b981] shrink-0"
                           strokeWidth={1.75}
                         />
                       ) : (
-                        <span className="text-[10.5px] font-mono text-white/35">
+                        <span className="text-[10.5px] font-mono text-white/35 shrink-0">
                           Standby
                         </span>
                       )}
                     </div>
                   ))}
+                </div>
+
+                <div className="pt-2 border-t border-white/[0.07] flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-[11px] text-white/50">
+                    Simulate an instant live capture event via{' '}
+                    <code className="font-mono text-white/75">POST /api/bridge/push</code> →{' '}
+                    <code className="font-mono text-white/75">ws://localhost:3001/bridge</code>:
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void triggerTestBridgeCapture('dreamina');
+                        closeProviderModal();
+                      }}
+                      className="h-8 px-3 rounded-[8px] bg-[#252525] hover:bg-white hover:text-[#0e0e0e] text-[11.5px] font-medium text-white/90 transition-colors"
+                    >
+                      Test Bridge Capture (Dreamina)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void triggerTestBridgeCapture('flow');
+                        closeProviderModal();
+                      }}
+                      className="h-8 px-3 rounded-[8px] bg-[#252525] hover:bg-white hover:text-[#0e0e0e] text-[11.5px] font-medium text-white/90 transition-colors"
+                    >
+                      Test Bridge Capture (Flow)
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

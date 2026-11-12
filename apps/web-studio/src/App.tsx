@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { Check } from 'lucide-react';
 import { useStudioStore } from './store/useStudioStore';
 import { CanvasBoard } from './components/CanvasBoard';
 import { DreaminaFloatingChrome } from './components/DreaminaFloatingChrome';
 import { ContextualNodeOverlay } from './components/ContextualNodeOverlay';
+import { InlineImageEditorModal } from './components/InlineImageEditorModal';
 import {
   FullscreenTimelineModal,
   TimelinePlaybackEngine,
@@ -11,6 +12,8 @@ import {
 import { ProviderModal } from './components/ProviderModal';
 import { MultiframeChain } from './components/MultiframeChain';
 import { ShareableAppView } from './components/ShareableAppView';
+import { LOCAL_BRIDGE_WS_URL } from './services/executionRouter';
+import type { BridgeIncomingEvent } from './types/studio';
 
 export const App: React.FC = () => {
   const activeView = useStudioStore((s) => s.activeView);
@@ -19,18 +22,24 @@ export const App: React.FC = () => {
   const autoConnectLocalMcpBackend = useStudioStore(
     (s) => s.autoConnectLocalMcpBackend
   );
+  const bootDiskPersistence = useStudioStore((s) => s.bootDiskPersistence);
   const pingBridge = useStudioStore((s) => s.pingBridge);
   const handleIncomingBridgeEvent = useStudioStore(
     (s) => s.handleIncomingBridgeEvent
   );
-
-  const [activeInpaintNodeId, setActiveInpaintNodeId] = useState<string | null>(
-    null
-  );
+  const setBridgeWsConnected = useStudioStore((s) => s.setBridgeWsConnected);
+  const ingestBridgeWsEvent = useStudioStore((s) => s.ingestBridgeWsEvent);
 
   useEffect(() => {
+    const hasUrlRecipe =
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).has('recipe');
+
     hydrateFromUrlRecipe();
     void autoConnectLocalMcpBackend();
+    if (!hasUrlRecipe) {
+      void bootDiskPersistence();
+    }
     pingBridge();
 
     const onMessage = (ev: MessageEvent) => {
@@ -45,9 +54,112 @@ export const App: React.FC = () => {
   }, [
     hydrateFromUrlRecipe,
     autoConnectLocalMcpBackend,
+    bootDiskPersistence,
     pingBridge,
     handleIncomingBridgeEvent,
   ]);
+
+  // Debounced 800ms auto-save of active project graph to local disk (:3001/api/projects + localStorage)
+  useEffect(() => {
+    let saveTimer: ReturnType<typeof setTimeout> | null = null;
+    let bootReady = false;
+    const readyTimer = setTimeout(() => {
+      bootReady = true;
+    }, 1200);
+
+    let prevNodes = useStudioStore.getState().nodes;
+    let prevEdges = useStudioStore.getState().edges;
+    let prevElements = useStudioStore.getState().elements;
+    let prevTitle = useStudioStore.getState().projectTitle;
+
+    const unsubscribe = useStudioStore.subscribe((state) => {
+      const changed =
+        state.nodes !== prevNodes ||
+        state.edges !== prevEdges ||
+        state.elements !== prevElements ||
+        state.projectTitle !== prevTitle;
+
+      prevNodes = state.nodes;
+      prevEdges = state.edges;
+      prevElements = state.elements;
+      prevTitle = state.projectTitle;
+
+      if (!changed || !bootReady) return;
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        void useStudioStore.getState().persistActiveProjectToDisk();
+      }, 800);
+    });
+
+    return () => {
+      clearTimeout(readyTimer);
+      if (saveTimer) clearTimeout(saveTimer);
+      unsubscribe();
+    };
+  }, []);
+
+  // Live WebSocket subscription to ws://localhost:3001/bridge for instant Chrome Extension captures
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof WebSocket === 'undefined') {
+      return;
+    }
+
+    let unmounted = false;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connectWs = () => {
+      if (unmounted) return;
+      try {
+        ws = new WebSocket(LOCAL_BRIDGE_WS_URL);
+        ws.onopen = () => {
+          if (!unmounted) setBridgeWsConnected(true);
+        };
+        ws.onmessage = (ev) => {
+          if (unmounted || typeof ev.data !== 'string') return;
+          try {
+            const parsed = JSON.parse(ev.data) as Record<string, unknown>;
+            if (
+              parsed.type === 'bridge_asset' ||
+              parsed.type === 'bridge_prompt' ||
+              parsed.type === 'bridge_session'
+            ) {
+              ingestBridgeWsEvent(parsed as unknown as BridgeIncomingEvent);
+            }
+          } catch {
+            // ignore non-JSON frames
+          }
+        };
+        ws.onclose = () => {
+          if (unmounted) return;
+          setBridgeWsConnected(false);
+          reconnectTimer = setTimeout(connectWs, 2500);
+        };
+        ws.onerror = () => {
+          try {
+            ws?.close();
+          } catch {
+            // ignore
+          }
+        };
+      } catch {
+        setBridgeWsConnected(false);
+        reconnectTimer = setTimeout(connectWs, 3000);
+      }
+    };
+
+    connectWs();
+
+    return () => {
+      unmounted = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try {
+        ws?.close();
+      } catch {
+        // ignore
+      }
+    };
+  }, [setBridgeWsConnected, ingestBridgeWsEvent]);
 
   return (
     <div className="w-screen h-screen overflow-hidden bg-[#0e0e0e] text-[#f5f5f5] relative">
@@ -62,22 +174,20 @@ export const App: React.FC = () => {
         <>
           {/* 95% Open Spatial Infinite Canvas (#0e0e0e + 20px dot grid) */}
           <CanvasBoard
-            activeInpaintNodeId={activeInpaintNodeId}
-            onCloseInpaint={() => setActiveInpaintNodeId(null)}
+            activeInpaintNodeId={null}
+            onCloseInpaint={() => undefined}
           />
 
           {/* Minimal Floating Chrome (Top Strip, Left 12-Tool Dock, Bottom-Left Zoom/Minimap, Bottom-Right Chats) */}
           <DreaminaFloatingChrome />
 
           {/* Contextual Selected-Node Quick Actions + 648px Prompt Popover */}
-          <ContextualNodeOverlay
-            activeInpaintNodeId={activeInpaintNodeId}
-            onToggleInpaint={(nodeId) =>
-              setActiveInpaintNodeId((cur) => (cur === nodeId ? null : nodeId))
-            }
-          />
+          <ContextualNodeOverlay />
         </>
       )}
+
+      {/* Interactive Dreamina Inline Image/Frame Editor (Inpaint Brush + Outpaint Aspect Expansion) */}
+      <InlineImageEditorModal />
 
       {/* Full-Screen Timeline Editor Modal */}
       <FullscreenTimelineModal />

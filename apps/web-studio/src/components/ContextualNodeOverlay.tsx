@@ -8,8 +8,6 @@ import {
   Clapperboard,
   Clock,
   Compass,
-  Eye,
-  EyeOff,
   Film,
   Grid3X3,
   Image as ImageIcon,
@@ -67,15 +65,7 @@ const MOTION_PRESETS = [
   { label: 'Dawn Multi-Turn', tag: 'multi-turn weather shift to golden sunrise' },
 ];
 
-export interface ContextualNodeOverlayProps {
-  activeInpaintNodeId: string | null;
-  onToggleInpaint: (nodeId: string) => void;
-}
-
-export const ContextualNodeOverlay: React.FC<ContextualNodeOverlayProps> = ({
-  activeInpaintNodeId,
-  onToggleInpaint,
-}) => {
+export const ContextualNodeOverlay: React.FC = () => {
   const nodes = useStudioStore((s) => s.nodes);
   const selectedNodeIds = useStudioStore((s) => s.selectedNodeIds);
   const panX = useStudioStore((s) => s.panX);
@@ -103,9 +93,8 @@ export const ContextualNodeOverlay: React.FC<ContextualNodeOverlayProps> = ({
   const applySkillPreset = useStudioStore((s) => s.applySkillPreset);
   const updateNodeFields = useStudioStore((s) => s.updateNodeFields);
 
-  const expandOutpaintNode = useStudioStore((s) => s.expandOutpaintNode);
+  const openInlineEditor = useStudioStore((s) => s.openInlineEditor);
   const removeBgAndDecomposeLayers = useStudioStore((s) => s.removeBgAndDecomposeLayers);
-  const updateNodeLayer = useStudioStore((s) => s.updateNodeLayer);
   const upscaleNodeHd = useStudioStore((s) => s.upscaleNodeHd);
   const retakeNode = useStudioStore((s) => s.retakeNode);
   const sliceContactSheetNode = useStudioStore((s) => s.sliceContactSheetNode);
@@ -244,8 +233,7 @@ export const ContextualNodeOverlay: React.FC<ContextualNodeOverlayProps> = ({
     void submitPromptGeneration(selectedNode.id);
   };
 
-  const isInpaintActive = activeInpaintNodeId === selectedNode.id;
-  const isGenerating = selectedNode.status === 'generating';
+  const isGenerating = selectedNode.status === 'generating' || Boolean(selectedNode.editBadge);
 
   return (
     <>
@@ -261,104 +249,46 @@ export const ContextualNodeOverlay: React.FC<ContextualNodeOverlayProps> = ({
       >
         {(selectedNode.kind === 'image' ||
           selectedNode.kind === 'contact-sheet' ||
-          selectedNode.kind === 'element') && (
-          <button
-            type="button"
-            onClick={() => onToggleInpaint(selectedNode.id)}
-            className={`h-7 px-2.5 rounded-[7px] text-[12px] font-medium flex items-center gap-1.5 transition-colors ${
-              isInpaintActive
-                ? 'bg-white text-[#0e0e0e]'
-                : 'text-white/80 hover:text-white hover:bg-[#252525]'
-            }`}
-          >
-            <Paintbrush className="w-3.5 h-3.5" strokeWidth={1.5} />
-            <span>Inpaint</span>
-          </button>
+          selectedNode.kind === 'element' ||
+          selectedNode.kind === 'video') && (
+          <>
+            <button
+              type="button"
+              onClick={() => openInlineEditor('inpaint', selectedNode.id)}
+              className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
+            >
+              <Paintbrush className="w-3.5 h-3.5" strokeWidth={1.5} />
+              <span>Inpaint</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openInlineEditor('outpaint', selectedNode.id)}
+              className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
+            >
+              <Maximize className="w-3.5 h-3.5" strokeWidth={1.5} />
+              <span>Expand</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void removeBgAndDecomposeLayers(selectedNode.id)}
+              className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
+            >
+              <Scissors className="w-3.5 h-3.5" strokeWidth={1.5} />
+              <span>Remove BG</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void upscaleNodeHd(selectedNode.id, '4K')}
+              className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5" strokeWidth={1.5} />
+              <span>Upscale 4K</span>
+            </button>
+          </>
         )}
-
-        {/* Expand / Outpaint */}
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() =>
-              setOpenMenu(openMenu === 'expand' ? null : 'expand')
-            }
-            className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-          >
-            <Maximize className="w-3.5 h-3.5" strokeWidth={1.5} />
-            <span>Expand</span>
-          </button>
-          {openMenu === 'expand' && (
-            <div className="absolute left-0 top-[34px] w-[132px] p-1 rounded-[10px] dreamina-menu z-40">
-              {ASPECT_OPTIONS.map((ar) => (
-                <button
-                  key={ar}
-                  type="button"
-                  onClick={() => {
-                    void expandOutpaintNode(selectedNode.id, ar);
-                    setOpenMenu(null);
-                  }}
-                  className="w-full h-7 px-2.5 rounded-[6px] text-left text-[12px] text-white/85 hover:bg-white/[0.08] flex items-center justify-between"
-                >
-                  <span>Outpaint {ar}</span>
-                  {selectedNode.aspectRatio === ar && (
-                    <Check className="w-3 h-3 text-white/70" strokeWidth={1.75} />
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Remove BG & Non-Destructive Layers */}
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => {
-              removeBgAndDecomposeLayers(selectedNode.id);
-              setOpenMenu(openMenu === 'layers' ? null : 'layers');
-            }}
-            className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-          >
-            <Layers className="w-3.5 h-3.5" strokeWidth={1.5} />
-            <span>Remove BG</span>
-          </button>
-          {openMenu === 'layers' && (
-            <div className="absolute left-0 top-[34px] w-[216px] p-2 rounded-[10px] dreamina-menu z-40 space-y-1">
-              <div className="px-1.5 py-0.5 text-[11px] text-white/45 font-medium">
-                Frame Layers
-              </div>
-              {selectedNode.layers.map((layer) => (
-                <button
-                  key={layer.id}
-                  type="button"
-                  onClick={() =>
-                    updateNodeLayer(selectedNode.id, layer.id, {
-                      visible: !layer.visible,
-                    })
-                  }
-                  className="w-full h-7 px-2 rounded-[6px] hover:bg-white/[0.07] flex items-center justify-between text-[12px] text-white/85"
-                >
-                  <span className="truncate">{layer.name}</span>
-                  {layer.visible ? (
-                    <Eye className="w-3.5 h-3.5 text-white/75" strokeWidth={1.5} />
-                  ) : (
-                    <EyeOff className="w-3.5 h-3.5 text-white/30" strokeWidth={1.5} />
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <button
-          type="button"
-          onClick={() => upscaleNodeHd(selectedNode.id, '4K')}
-          className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-        >
-          <Sparkles className="w-3.5 h-3.5" strokeWidth={1.5} />
-          <span>Upscale 4K</span>
-        </button>
 
         <button
           type="button"
@@ -375,7 +305,7 @@ export const ContextualNodeOverlay: React.FC<ContextualNodeOverlayProps> = ({
             onClick={() => void extractLastFrameToNextShot(selectedNode.id)}
             className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
           >
-            <Scissors className="w-3.5 h-3.5" strokeWidth={1.5} />
+            <Layers className="w-3.5 h-3.5" strokeWidth={1.5} />
             <span>Extract Frame</span>
           </button>
         ) : selectedNode.kind === 'mcp-tool' ? (

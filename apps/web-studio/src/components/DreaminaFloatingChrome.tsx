@@ -30,6 +30,7 @@ import {
   Share2,
   Sparkles,
   StickyNote,
+  Trash2,
   Type,
   Undo2,
   Redo2,
@@ -69,7 +70,11 @@ const DOCK_TOOLS: DockToolItem[] = [
 ];
 
 export const DreaminaFloatingChrome: React.FC = () => {
+  const activeProjectId = useStudioStore((s) => s.activeProjectId);
   const projectTitle = useStudioStore((s) => s.projectTitle);
+  const saveStatus = useStudioStore((s) => s.saveStatus);
+  const diskProjects = useStudioStore((s) => s.diskProjects);
+  const projectSnapshots = useStudioStore((s) => s.projectSnapshots);
   const nodes = useStudioStore((s) => s.nodes);
   const timelineClips = useStudioStore((s) => s.timelineClips);
   const panX = useStudioStore((s) => s.panX);
@@ -116,12 +121,25 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const openProviderModal = useStudioStore((s) => s.openProviderModal);
   const copyShareableRecipeUrl = useStudioStore((s) => s.copyShareableRecipeUrl);
   const sendChatAssistantPrompt = useStudioStore((s) => s.sendChatAssistantPrompt);
+  const runChatQuickAction = useStudioStore((s) => s.runChatQuickAction);
+  const switchDiskProject = useStudioStore((s) => s.switchDiskProject);
+  const createNewBlankProject = useStudioStore((s) => s.createNewBlankProject);
+  const deleteSavedProject = useStudioStore((s) => s.deleteSavedProject);
+  const saveVersionSnapshot = useStudioStore((s) => s.saveVersionSnapshot);
+  const restoreVersionSnapshot = useStudioStore((s) => s.restoreVersionSnapshot);
+  const exportCurrentProjectDreamflowJson = useStudioStore(
+    (s) => s.exportCurrentProjectDreamflowJson
+  );
+  const importProjectDreamflowJson = useStudioStore(
+    (s) => s.importProjectDreamflowJson
+  );
   const runAutonomousDirectorAgent = useStudioStore(
     (s) => s.runAutonomousDirectorAgent
   );
   const showToast = useStudioStore((s) => s.showToast);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const importBundleInputRef = useRef<HTMLInputElement | null>(null);
   const [hoveredTool, setHoveredTool] = useState<DreaminaToolId | null>(null);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [shareMenuOpen, setShareMenuOpen] = useState(false);
@@ -202,6 +220,22 @@ export const DreaminaFloatingChrome: React.FC = () => {
         }}
       />
 
+      {/* Hidden .dreamflow.json Bundle Import Input */}
+      <input
+        ref={importBundleInputRef}
+        type="file"
+        accept=".json,application/json"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            void importProjectDreamflowJson(file);
+            e.target.value = '';
+            setProjectMenuOpen(false);
+          }
+        }}
+      />
+
       {/* 1. Top Minimal Floating Header Strip (40px) */}
       <header className="fixed top-[10px] left-[12px] right-[12px] h-[40px] z-30 pointer-events-none flex items-center justify-between select-none">
         {/* Top-Left Project Pill */}
@@ -246,46 +280,132 @@ export const DreaminaFloatingChrome: React.FC = () => {
             {nodes.length} nodes
           </span>
 
-          <span className="text-[11px] text-white/38 hidden sm:inline pr-1">
-            Auto saved
+          <span className="text-[11px] text-white/42 hidden sm:inline pr-1">
+            {saveStatus === 'saving'
+              ? 'Saving…'
+              : saveStatus === 'saved'
+                ? 'Auto saved · Disk'
+                : 'Saved locally'}
           </span>
 
           {projectMenuOpen && (
-            <div className="absolute left-0 top-[42px] w-[224px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
-              <div className="px-2.5 py-1 text-[11px] text-white/40 font-medium">
-                Canvas Workspace
+            <div className="absolute left-0 top-[42px] w-[268px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
+              <div className="px-2.5 py-1 text-[11px] text-white/45 font-medium flex items-center justify-between">
+                <span>Saved Projects (Disk)</span>
+                <span className="font-mono text-[10px] text-white/35">
+                  {diskProjects.length}
+                </span>
               </div>
+
+              {diskProjects.length > 0 && (
+                <div className="max-h-[164px] overflow-y-auto space-y-0.5 pb-0.5">
+                  {diskProjects.map((proj) => {
+                    const isCurrent = proj.id === activeProjectId;
+                    return (
+                      <div
+                        key={proj.id}
+                        className={`group h-8 px-2 rounded-[7px] flex items-center justify-between gap-1.5 ${
+                          isCurrent
+                            ? 'bg-white/[0.09] text-white'
+                            : 'hover:bg-white/[0.07] text-white/85'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void switchDiskProject(proj.id);
+                            setProjectMenuOpen(false);
+                          }}
+                          className="flex-1 min-w-0 text-left flex items-center gap-1.5 text-[12px]"
+                        >
+                          {isCurrent ? (
+                            <Check
+                              className="w-3.5 h-3.5 text-[#20D5EC] shrink-0"
+                              strokeWidth={1.75}
+                            />
+                          ) : (
+                            <span className="w-3.5 shrink-0" />
+                          )}
+                          <span className="truncate">{proj.name}</span>
+                          <span className="text-[10px] font-mono text-white/40 shrink-0">
+                            {proj.nodeCount}n
+                          </span>
+                        </button>
+                        {diskProjects.length > 1 && (
+                          <button
+                            type="button"
+                            title="Delete project from disk"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void deleteSavedProject(proj.id);
+                            }}
+                            className="w-6 h-6 rounded-[5px] opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-white/45 hover:text-red-300 flex items-center justify-center transition-opacity"
+                          >
+                            <Trash2 className="w-3 h-3" strokeWidth={1.5} />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  void createNewBlankProject('Untitled canvas');
+                  setProjectMenuOpen(false);
+                }}
+                className="w-full h-8 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/90 flex items-center gap-2"
+              >
+                <Plus className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
+                <span>New Blank Canvas</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => {
                   loadPresetProject('protocol-rain');
                   setProjectMenuOpen(false);
                 }}
-                className="w-full h-8 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/90 flex items-center justify-between"
+                className="w-full h-8 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/80 flex items-center justify-between"
               >
-                <span>Protocol: Rain (6 Nodes)</span>
-                {nodes.length > 0 && (
-                  <Check className="w-3.5 h-3.5 text-white/70" strokeWidth={1.5} />
-                )}
+                <span>Reset Preset: Protocol Rain</span>
+                <RotateCcw className="w-3 h-3 text-white/45" strokeWidth={1.5} />
               </button>
+
+              <div className="my-1 h-px bg-white/[0.07]" />
+
               <button
                 type="button"
                 onClick={() => {
-                  loadPresetProject('blank');
+                  void exportCurrentProjectDreamflowJson();
                   setProjectMenuOpen(false);
                 }}
-                className="w-full h-8 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/85 flex items-center justify-between"
+                className="w-full h-7.5 py-1.5 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/85 flex items-center justify-between"
               >
-                <span>New Blank Canvas</span>
+                <span>Export .dreamflow.json</span>
+                <Download className="w-3.5 h-3.5 text-white/55" strokeWidth={1.5} />
               </button>
+
+              <button
+                type="button"
+                onClick={() => importBundleInputRef.current?.click()}
+                className="w-full h-7.5 py-1.5 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/85 flex items-center justify-between"
+              >
+                <span>Import .dreamflow.json…</span>
+                <Upload className="w-3.5 h-3.5 text-white/55" strokeWidth={1.5} />
+              </button>
+
               <div className="my-1 h-px bg-white/[0.07]" />
+
               <button
                 type="button"
                 onClick={() => {
                   setEditingTitle(true);
                   setProjectMenuOpen(false);
                 }}
-                className="w-full h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/75"
+                className="w-full h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/70"
               >
                 Rename project…
               </button>
@@ -315,16 +435,16 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 setHistoryPanelOpen(!historyPanelOpen);
                 setSearchModalOpen(false);
               }}
-              title="Undo / Redo History"
+              title="Version Snapshots & Undo History"
               className="w-7 h-7 rounded-[7px] hover:bg-[#252525] flex items-center justify-center text-white/75 hover:text-white transition-colors"
             >
               <History className="w-3.5 h-3.5" strokeWidth={1.5} />
             </button>
 
             {historyPanelOpen && (
-              <div className="absolute right-0 top-[40px] w-[224px] p-2 rounded-[12px] dreamina-menu z-50 space-y-1.5">
-                <div className="px-1.5 text-[11px] font-medium text-white/45 flex items-center justify-between">
-                  <span>Canvas History</span>
+              <div className="absolute right-0 top-[40px] w-[288px] p-2.5 rounded-[12px] dreamina-menu z-50 space-y-2">
+                <div className="px-1 text-[11px] font-medium text-white/50 flex items-center justify-between">
+                  <span>Canvas History & Snapshots</span>
                   <span className="font-mono">{past.length} steps</span>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5">
@@ -346,6 +466,53 @@ export const DreaminaFloatingChrome: React.FC = () => {
                     <Redo2 className="w-3.5 h-3.5" strokeWidth={1.5} />
                     <span>Redo</span>
                   </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void saveVersionSnapshot()}
+                  className="w-full h-8 rounded-[8px] bg-white hover:bg-[#e6e6e6] text-[#0e0e0e] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
+                  <span>Save Version Snapshot</span>
+                </button>
+
+                <div className="pt-1 border-t border-white/[0.07] space-y-1 max-h-[180px] overflow-y-auto">
+                  {projectSnapshots.length === 0 ? (
+                    <div className="px-1.5 py-2 text-[11px] text-white/40 text-center">
+                      No disk snapshots saved yet.
+                    </div>
+                  ) : (
+                    projectSnapshots.map((snap) => (
+                      <div
+                        key={snap.snapshotId}
+                        className="px-2 py-1.5 rounded-[8px] bg-[#1e1e1e] border border-white/[0.06] flex items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-[11.5px] font-medium text-white/90 truncate">
+                            {snap.label}
+                          </div>
+                          <div className="text-[10px] font-mono text-white/40">
+                            {new Date(snap.createdAt).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              second: '2-digit',
+                            })}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void restoreVersionSnapshot(snap.snapshotId);
+                            setHistoryPanelOpen(false);
+                          }}
+                          className="h-6 px-2 rounded-[6px] bg-[#2a2a2a] hover:bg-white hover:text-[#0e0e0e] text-[11px] font-medium text-white/85 shrink-0 transition-colors"
+                        >
+                          Restore
+                        </button>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             )}
@@ -726,7 +893,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
       {/* 4. Bottom-Right Dreamina "Chats" Pill + Collapsible Director Assistant Drawer */}
       <div className="fixed right-[16px] bottom-[14px] z-30 flex flex-col items-end gap-2 select-none">
         {chatDrawerOpen && (
-          <div className="w-[360px] h-[440px] rounded-[16px] dreamina-menu flex flex-col overflow-hidden">
+          <div className="w-[380px] h-[490px] rounded-[16px] dreamina-menu flex flex-col overflow-hidden">
             <div className="h-[44px] px-3.5 border-b border-white/[0.08] flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
                 <MessageSquare className="w-4 h-4 text-white/75" strokeWidth={1.5} />
@@ -755,6 +922,27 @@ export const DreaminaFloatingChrome: React.FC = () => {
               </div>
             </div>
 
+            {/* Quick-Action Director Chips */}
+            <div className="px-2.5 py-2 border-b border-white/[0.06] bg-[#161616] flex items-center gap-1.5 overflow-x-auto shrink-0">
+              {(
+                [
+                  { id: 'sequence-3', label: '+ 3-Shot Sequence' },
+                  { id: 'remix-branch', label: 'Branch Multi-Turn Remix' },
+                  { id: 'slice-sheet', label: 'Slice Active Sheet' },
+                  { id: 'compile-master', label: 'Compile Master .mp4' },
+                ] as const
+              ).map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  onClick={() => void runChatQuickAction(chip.id)}
+                  className="h-6 px-2.5 rounded-full bg-[#242424] hover:bg-white hover:text-[#0e0e0e] border border-white/[0.08] text-[10.5px] font-medium text-white/85 whitespace-nowrap shrink-0 transition-colors"
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+
             <div className="flex-1 p-3 overflow-y-auto space-y-2.5">
               {chatMessages.map((msg) => (
                 <div
@@ -764,13 +952,49 @@ export const DreaminaFloatingChrome: React.FC = () => {
                   }`}
                 >
                   <div
-                    className={`max-w-[85%] px-3 py-2 rounded-[12px] text-[12px] leading-relaxed ${
+                    className={`max-w-[88%] px-3 py-2 rounded-[12px] text-[12px] leading-relaxed ${
                       msg.role === 'user'
                         ? 'bg-white text-[#0e0e0e] font-medium'
                         : 'bg-[#252525] text-white/90 border border-white/[0.06]'
                     }`}
                   >
-                    {msg.text}
+                    <div>{msg.text}</div>
+
+                    {msg.videoUrl && (
+                      <video
+                        src={msg.videoUrl}
+                        controls
+                        playsInline
+                        muted
+                        className="w-full rounded-[8px] mt-2 border border-white/10 bg-black aspect-video object-cover"
+                      />
+                    )}
+
+                    {msg.nodeFocusPills && msg.nodeFocusPills.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-2 pt-1.5 border-t border-white/[0.08]">
+                        {msg.nodeFocusPills.map((pill) => (
+                          <button
+                            key={pill.nodeId}
+                            type="button"
+                            onClick={() => {
+                              const target = nodes.find((n) => n.id === pill.nodeId);
+                              if (!target) return;
+                              selectNodes([target.id]);
+                              setViewport(
+                                window.innerWidth / 2 -
+                                  (target.x + target.width / 2) * zoom,
+                                window.innerHeight / 2 -
+                                  (target.y + target.height / 2) * zoom,
+                                zoom
+                              );
+                            }}
+                            className="h-6 px-2 rounded-[6px] bg-[#191919] hover:bg-white hover:text-[#0e0e0e] border border-white/[0.1] text-[10.5px] font-medium text-[#20D5EC] hover:border-white transition-colors truncate max-w-full"
+                          >
+                            Focus · {pill.title}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -789,7 +1013,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
               <input
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
-                placeholder="Ask Director to spawn a shot or 9-grid…"
+                placeholder="Ask Director to spawn a shot, sequence, or 9-grid…"
                 className="flex-1 h-8 px-3 rounded-[9px] bg-[#252525] text-[12px] text-white placeholder:text-white/35 outline-none border border-white/[0.06] focus:border-white/25"
               />
               <button

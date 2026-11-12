@@ -1,6 +1,9 @@
 import type {
   AspectRatio,
+  BridgeIncomingEvent,
   BYOKCredentials,
+  DiskProjectMeta,
+  DiskProjectRecord,
   MCPToolDefinition,
   McpBackendHealth,
   ProviderId,
@@ -10,6 +13,27 @@ import type {
 export const LOCAL_MCP_BASE = 'http://localhost:3001';
 export const LOCAL_MCP_HTTP_URL = `${LOCAL_MCP_BASE}/mcp`;
 export const LOCAL_MCP_WS_URL = 'ws://localhost:3001/mcp';
+export const LOCAL_BRIDGE_WS_URL = 'ws://localhost:3001/bridge';
+
+export function getActiveApiKeyForProvider(
+  provider: ProviderId,
+  byok: BYOKCredentials
+): string | undefined {
+  switch (provider) {
+    case 'gemini-omni':
+      return byok.geminiApiKey || undefined;
+    case 'seedance':
+      return byok.seedanceApiKey || undefined;
+    case 'fal':
+      return byok.falApiKey || undefined;
+    case 'replicate':
+      return byok.replicateApiKey || undefined;
+    case 'openai':
+      return byok.openaiApiKey || undefined;
+    default:
+      return undefined;
+  }
+}
 
 export interface GenerationRequest {
   provider: ProviderId;
@@ -123,6 +147,8 @@ export async function probeLiveMcpBackend(): Promise<McpBackendHealth> {
           ffmpegAvailable?: boolean;
           mcpTools?: Array<string | { name: string; description?: string }>;
           mediaFiles?: string[];
+          savedProjectsCount?: number;
+          bridgeClients?: number;
         };
       }),
       discoverMcpTools(LOCAL_MCP_HTTP_URL, serverName),
@@ -155,11 +181,13 @@ export async function probeLiveMcpBackend(): Promise<McpBackendHealth> {
     return {
       online,
       ffmpegAvailable,
-      toolCount: online ? Math.max(toolCount, 6) : tools.length,
+      toolCount: online ? Math.max(toolCount, 10) : tools.length,
       tools,
       mediaFiles: Array.isArray(healthData?.mediaFiles) ? healthData!.mediaFiles! : [],
       baseUrl: LOCAL_MCP_BASE,
       pingMs: Math.round(performance.now() - start),
+      savedProjectsCount: healthData?.savedProjectsCount,
+      bridgeClients: healthData?.bridgeClients,
     };
   } catch {
     const fallbackTools = getDefaultDiscoveredMcpTools(LOCAL_MCP_HTTP_URL, serverName);
@@ -739,10 +767,31 @@ export function getDefaultDiscoveredMcpTools(
     },
     {
       name: 'inpaint_frame',
-      description: 'Dreamina Smart Brush regional redraw & alpha layer decomposition via MCP',
+      description: 'Dreamina Smart Brush regional redraw & FFmpeg maskedmerge composite',
       serverUrl,
       serverName,
-      inputSchema: { type: 'object', properties: { prompt: { type: 'string' }, mask_b64: { type: 'string' } } },
+      inputSchema: { type: 'object', properties: { imageUrl: { type: 'string' }, maskDataUrl: { type: 'string' }, prompt: { type: 'string' } } },
+    },
+    {
+      name: 'outpaint_expand',
+      description: 'Expands frame boundaries to 16:9, 9:16, 21:9, or 1:1 via FFmpeg atmospheric outpaint',
+      serverUrl,
+      serverName,
+      inputSchema: { type: 'object', properties: { imageUrl: { type: 'string' }, targetAspect: { type: 'string' } } },
+    },
+    {
+      name: 'remove_background',
+      description: 'Extracts RGBA alpha subject cutout PNG via FFmpeg colorkey matte',
+      serverUrl,
+      serverName,
+      inputSchema: { type: 'object', properties: { imageUrl: { type: 'string' } } },
+    },
+    {
+      name: 'upscale_4k',
+      description: 'Upscales frame to 3840px 4K UHD via FFmpeg Lanczos + unsharp detail pass',
+      serverUrl,
+      serverName,
+      inputSchema: { type: 'object', properties: { imageUrl: { type: 'string' } } },
     },
     {
       name: 'extract_style_dna',
@@ -750,6 +799,13 @@ export function getDefaultDiscoveredMcpTools(
       serverUrl,
       serverName,
       inputSchema: { type: 'object', properties: { image_url: { type: 'string' } } },
+    },
+    {
+      name: 'save_project',
+      description: 'Persists canvas graph and snapshots to local .dreamflow-data.nosync disk database',
+      serverUrl,
+      serverName,
+      inputSchema: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' } } },
     },
   ];
 }
@@ -820,4 +876,315 @@ export function dispatchBridgeJob(payload: {
     { source: 'open-dreamflow-studio', type: 'DREAMFLOW_ENQUEUE_JOB', payload },
     '*'
   );
+}
+
+// ============================================================================
+// Stage 4: Inline Image Editing, Upload, Disk Persistence & Bridge Relay APIs
+// ============================================================================
+
+export async function uploadMediaViaBackend(params: {
+  filename: string;
+  mimeType?: string;
+  dataBase64: string;
+}): Promise<{ ok: boolean; mediaUrl?: string; fullUrl?: string; bytes?: number }> {
+  try {
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/upload-media`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) return { ok: false };
+    const json = (await res.json()) as {
+      ok?: boolean;
+      mediaUrl?: string;
+      fullUrl?: string;
+      bytes?: number;
+    };
+    const resolved =
+      json.mediaUrl ||
+      (json.fullUrl ? toBackendRelativeMediaPath(json.fullUrl) : undefined);
+    if (!resolved) return { ok: false };
+    return {
+      ok: true,
+      mediaUrl: resolved,
+      fullUrl: json.fullUrl || normalizeBackendMediaUrl(resolved, true),
+      bytes: json.bytes,
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function inpaintViaBackend(params: {
+  imageUrl: string;
+  maskDataUrl?: string;
+  prompt?: string;
+  provider?: ProviderId;
+  apiKey?: string;
+}): Promise<{ ok: boolean; imageUrl?: string; fullUrl?: string; engine?: string }> {
+  try {
+    const cleanSource = toBackendRelativeMediaPath(params.imageUrl) || params.imageUrl;
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/inpaint`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageUrl: cleanSource,
+        maskDataUrl: params.maskDataUrl,
+        prompt: params.prompt,
+        provider: params.provider,
+        apiKey: params.apiKey,
+      }),
+    });
+    if (!res.ok) return { ok: false };
+    const json = (await res.json()) as {
+      ok?: boolean;
+      imageUrl?: string;
+      fullUrl?: string;
+      engine?: string;
+    };
+    const url = json.imageUrl || toBackendRelativeMediaPath(json.fullUrl);
+    if (!url) return { ok: false };
+    return {
+      ok: true,
+      imageUrl: url,
+      fullUrl: json.fullUrl || normalizeBackendMediaUrl(url, true),
+      engine: json.engine || 'ffmpeg-local',
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function outpaintViaBackend(params: {
+  imageUrl: string;
+  targetAspect: AspectRatio;
+  prompt?: string;
+  provider?: ProviderId;
+  apiKey?: string;
+}): Promise<{
+  ok: boolean;
+  imageUrl?: string;
+  fullUrl?: string;
+  width?: number;
+  height?: number;
+}> {
+  try {
+    const cleanSource = toBackendRelativeMediaPath(params.imageUrl) || params.imageUrl;
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/outpaint`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageUrl: cleanSource,
+        targetAspect: params.targetAspect,
+        prompt: params.prompt,
+        provider: params.provider,
+        apiKey: params.apiKey,
+      }),
+    });
+    if (!res.ok) return { ok: false };
+    const json = (await res.json()) as {
+      ok?: boolean;
+      imageUrl?: string;
+      fullUrl?: string;
+      width?: number;
+      height?: number;
+    };
+    const url = json.imageUrl || toBackendRelativeMediaPath(json.fullUrl);
+    if (!url) return { ok: false };
+    return {
+      ok: true,
+      imageUrl: url,
+      fullUrl: json.fullUrl || normalizeBackendMediaUrl(url, true),
+      width: json.width,
+      height: json.height,
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function removeBgViaBackend(
+  imageUrl: string
+): Promise<{ ok: boolean; imageUrl?: string; fullUrl?: string }> {
+  try {
+    const cleanSource = toBackendRelativeMediaPath(imageUrl) || imageUrl;
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/remove-bg`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageUrl: cleanSource }),
+    });
+    if (!res.ok) return { ok: false };
+    const json = (await res.json()) as {
+      ok?: boolean;
+      imageUrl?: string;
+      fullUrl?: string;
+    };
+    const url = json.imageUrl || toBackendRelativeMediaPath(json.fullUrl);
+    if (!url) return { ok: false };
+    return {
+      ok: true,
+      imageUrl: url,
+      fullUrl: json.fullUrl || normalizeBackendMediaUrl(url, true),
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function upscaleViaBackend(
+  imageUrl: string
+): Promise<{ ok: boolean; imageUrl?: string; fullUrl?: string; width?: number }> {
+  try {
+    const cleanSource = toBackendRelativeMediaPath(imageUrl) || imageUrl;
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/upscale`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageUrl: cleanSource }),
+    });
+    if (!res.ok) return { ok: false };
+    const json = (await res.json()) as {
+      ok?: boolean;
+      imageUrl?: string;
+      fullUrl?: string;
+      width?: number;
+    };
+    const url = json.imageUrl || toBackendRelativeMediaPath(json.fullUrl);
+    if (!url) return { ok: false };
+    return {
+      ok: true,
+      imageUrl: url,
+      fullUrl: json.fullUrl || normalizeBackendMediaUrl(url, true),
+      width: json.width || 3840,
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function listDiskProjects(): Promise<{
+  ok: boolean;
+  projects: DiskProjectMeta[];
+}> {
+  try {
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/projects`);
+    if (!res.ok) return { ok: false, projects: [] };
+    const json = (await res.json()) as {
+      ok?: boolean;
+      projects?: DiskProjectMeta[];
+    };
+    return {
+      ok: Boolean(json.ok),
+      projects: Array.isArray(json.projects) ? json.projects : [],
+    };
+  } catch {
+    return { ok: false, projects: [] };
+  }
+}
+
+export async function getDiskProject(
+  id: string
+): Promise<{ ok: boolean; project?: DiskProjectRecord }> {
+  try {
+    const res = await fetch(
+      `${LOCAL_MCP_BASE}/api/projects/${encodeURIComponent(id)}`
+    );
+    if (!res.ok) return { ok: false };
+    const json = (await res.json()) as {
+      ok?: boolean;
+      project?: DiskProjectRecord;
+    };
+    return { ok: Boolean(json.ok && json.project), project: json.project };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function saveDiskProject(params: {
+  id: string;
+  name: string;
+  state: Record<string, unknown>;
+  createSnapshot?: boolean;
+  snapshotLabel?: string;
+}): Promise<{ ok: boolean; updatedAt?: number; snapshotCount?: number }> {
+  try {
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) return { ok: false };
+    const json = (await res.json()) as {
+      ok?: boolean;
+      updatedAt?: number;
+      snapshotCount?: number;
+    };
+    return {
+      ok: Boolean(json.ok),
+      updatedAt: json.updatedAt,
+      snapshotCount: json.snapshotCount,
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function deleteDiskProject(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${LOCAL_MCP_BASE}/api/projects/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function exportDiskProjectBundle(
+  id: string
+): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetch(
+      `${LOCAL_MCP_BASE}/api/projects/${encodeURIComponent(id)}/export`
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+export async function importDiskProjectBundle(
+  bundle: Record<string, unknown>
+): Promise<{ ok: boolean; project?: DiskProjectRecord }> {
+  try {
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/projects/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bundle }),
+    });
+    if (!res.ok) return { ok: false };
+    const json = (await res.json()) as {
+      ok?: boolean;
+      project?: DiskProjectRecord;
+    };
+    return { ok: Boolean(json.ok && json.project), project: json.project };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function pushBridgeEventViaBackend(
+  event: BridgeIncomingEvent
+): Promise<{ ok: boolean }> {
+  try {
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/bridge/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    });
+    return { ok: res.ok };
+  } catch {
+    return { ok: false };
+  }
 }

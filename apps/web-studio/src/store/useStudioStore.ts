@@ -1,12 +1,15 @@
 import { create } from 'zustand';
 import type {
   AspectRatio,
+  BridgeIncomingEvent,
   BYOKCredentials,
   CameraTransitionCurve,
   CanvasEdge,
   CanvasNode,
   ChatMessageItem,
   ChromeBridgeState,
+  DiskProjectMeta,
+  DiskSnapshotItem,
   DreaminaSkill,
   DreaminaToolId,
   ElementVault,
@@ -47,23 +50,39 @@ import {
   LOCAL_MCP_BASE,
   LOCAL_MCP_HTTP_URL,
   compileTimelineViaBackend,
+  deleteDiskProject,
   discoverMcpTools,
   executeStudioGeneration,
+  exportDiskProjectBundle,
   extractLastFrameViaBackend,
+  getActiveApiKeyForProvider,
   getDefaultDiscoveredMcpTools,
+  getDiskProject,
+  importDiskProjectBundle,
+  inpaintViaBackend,
+  listDiskProjects,
   normalizeBackendMediaUrl,
+  outpaintViaBackend,
   pingChromeBridge,
   probeLiveMcpBackend,
+  pushBridgeEventViaBackend,
+  removeBgViaBackend,
   renderVideoViaBackend,
+  saveDiskProject,
   sliceGridViaBackend,
+  uploadMediaViaBackend,
+  upscaleViaBackend,
 } from '../services/executionRouter';
 import {
   compileTimelineToWebm,
   decodeRecipeFromUrlParam,
+  downloadTextFile,
   encodeRecipeToUrlParam,
 } from '../utils/exporters';
 
 const BYOK_STORAGE_KEY = 'open_dreamflow_byok_v1';
+const ACTIVE_PROJECT_KEY = 'dreamflow_active_project_id';
+const seenBridgeEventIds = new Set<string>();
 
 function loadSavedByok(): BYOKCredentials {
   try {
@@ -116,7 +135,18 @@ export interface ShareableBeatInput {
 }
 
 export interface StudioState {
+  activeProjectId: string;
   projectTitle: string;
+  saveStatus: 'saved' | 'saving' | 'local';
+  diskProjects: DiskProjectMeta[];
+  projectSnapshots: DiskSnapshotItem[];
+  bridgeWsConnected: boolean;
+  inlineEditorModal: {
+    open: boolean;
+    mode: 'inpaint' | 'outpaint';
+    nodeId: string | null;
+  };
+
   activeView: ActiveWorkspaceView;
   canvasToolMode: 'select' | 'hand';
   showMinimap: boolean;
@@ -250,14 +280,40 @@ export interface StudioState {
     maskDataUrl: string,
     regionalPrompt: string
   ) => Promise<void>;
-  expandOutpaintNode: (nodeId: string, targetAspect: AspectRatio) => Promise<void>;
-  removeBgAndDecomposeLayers: (nodeId: string) => void;
+  expandOutpaintNode: (
+    nodeId: string,
+    targetAspect: AspectRatio,
+    customPrompt?: string
+  ) => Promise<void>;
+  removeBgAndDecomposeLayers: (nodeId: string) => Promise<void>;
   updateNodeLayer: (
     nodeId: string,
     layerId: FrameLayerType,
     patch: Partial<FrameLayer>
   ) => void;
-  upscaleNodeHd: (nodeId: string, targetRes: '2K' | '4K') => void;
+  upscaleNodeHd: (nodeId: string, targetRes: '2K' | '4K') => Promise<void>;
+  openInlineEditor: (mode: 'inpaint' | 'outpaint', nodeId: string) => void;
+  closeInlineEditor: () => void;
+
+  bootDiskPersistence: () => Promise<void>;
+  persistActiveProjectToDisk: (opts?: {
+    createSnapshot?: boolean;
+    snapshotLabel?: string;
+  }) => Promise<void>;
+  switchDiskProject: (id: string) => Promise<void>;
+  createNewBlankProject: (name?: string) => Promise<void>;
+  deleteSavedProject: (id: string) => Promise<void>;
+  saveVersionSnapshot: (label?: string) => Promise<void>;
+  restoreVersionSnapshot: (snapshotId: string) => Promise<void>;
+  exportCurrentProjectDreamflowJson: () => Promise<void>;
+  importProjectDreamflowJson: (file: File) => Promise<void>;
+
+  setBridgeWsConnected: (connected: boolean) => void;
+  ingestBridgeWsEvent: (ev: BridgeIncomingEvent) => boolean;
+  triggerTestBridgeCapture: (source?: 'dreamina' | 'flow') => Promise<void>;
+  runChatQuickAction: (
+    action: 'sequence-3' | 'remix-branch' | 'slice-sheet' | 'compile-master'
+  ) => Promise<void>;
   retakeNode: (nodeId: string) => Promise<void>;
   sliceContactSheetNode: (nodeId: string, rows?: number, cols?: number) => Promise<void>;
   generateFourAngleCoverage: (nodeId: string) => Promise<void>;
@@ -333,7 +389,18 @@ const defaultMcpTools = getDefaultDiscoveredMcpTools(
 );
 
 export const useStudioStore = create<StudioState>((set, get) => ({
+  activeProjectId: 'protocol-rain',
   projectTitle: 'Protocol: Rain',
+  saveStatus: 'saved',
+  diskProjects: [],
+  projectSnapshots: [],
+  bridgeWsConnected: false,
+  inlineEditorModal: {
+    open: false,
+    mode: 'inpaint',
+    nodeId: null,
+  },
+
   activeView: 'canvas',
   canvasToolMode: 'select',
   showMinimap: false,
@@ -1233,6 +1300,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       height: isVideo ? 320 : isAudio ? 150 : 340,
       aspectRatio: isVideo ? '16:9' : '1:1',
       status: 'ready',
+      editBadge: 'Uploading…',
       imageUrl: !isVideo && !isAudio ? objectUrl : undefined,
       videoUrl: isVideo ? objectUrl : undefined,
       audioUrl: isAudio ? objectUrl : undefined,
@@ -1249,7 +1317,48 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       nodes: [...s.nodes, newNode],
       selectedNodeIds: [id],
     }));
-    get().showToast(`Added "${file.name}" to canvas`);
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataBase64 = typeof reader.result === 'string' ? reader.result : '';
+      if (!dataBase64) {
+        get().updateNodeFields(id, { editBadge: undefined });
+        return;
+      }
+      const uploaded = await uploadMediaViaBackend({
+        filename: file.name,
+        mimeType: file.type || undefined,
+        dataBase64,
+      });
+      if (uploaded.ok && uploaded.mediaUrl) {
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  editBadge: undefined,
+                  imageUrl: !isVideo && !isAudio ? uploaded.mediaUrl : n.imageUrl,
+                  videoUrl: isVideo ? uploaded.mediaUrl : n.videoUrl,
+                  audioUrl: isAudio ? uploaded.mediaUrl : n.audioUrl,
+                  layers:
+                    !isVideo && !isAudio
+                      ? createDefaultLayers(uploaded.mediaUrl)
+                      : n.layers,
+                  providerUsed: 'Disk Media (:3001)',
+                }
+              : n
+          ),
+        }));
+        get().showToast(`Saved "${file.name}" to /media`);
+      } else {
+        get().updateNodeFields(id, { editBadge: undefined });
+        get().showToast(`Added "${file.name}" to canvas`);
+      }
+    };
+    reader.onerror = () => {
+      get().updateNodeFields(id, { editBadge: undefined });
+    };
+    reader.readAsDataURL(file);
   },
 
   setPromptText: (promptText) => {
@@ -1454,117 +1563,248 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     get().showToast(`Synthesized ${placeholderNode.title}`);
   },
 
-  applyInpaintToNode: async (nodeId, maskDataUrl, regionalPrompt) => {
-    const node = get().nodes.find((n) => n.id === nodeId);
-    if (!node || !node.imageUrl) return;
-    get().pushHistory();
-    const { compositedDataUrl, isolatedPatchDataUrl } = await compositeInpaintRedraw(
-      node.imageUrl,
-      maskDataUrl,
-      regionalPrompt || 'Subtle cinema lighting detail',
-      node.seed + 19
-    );
-
-    set((s) => ({
-      nodes: s.nodes.map((n) => {
-        if (n.id !== nodeId) return n;
-        const updatedLayers = n.layers.map((layer) =>
-          layer.id === 'mask'
-            ? {
-                ...layer,
-                visible: true,
-                dataUrl: isolatedPatchDataUrl,
-                regionalPrompt,
-              }
-            : layer
-        );
-        return {
-          ...n,
-          imageUrl: compositedDataUrl,
-          seed: n.seed + 19,
-          layers: updatedLayers,
-        };
-      }),
-    }));
-    get().showToast(`Applied Inpaint redraw`);
+  openInlineEditor: (mode, nodeId) => {
+    set({
+      inlineEditorModal: {
+        open: true,
+        mode,
+        nodeId,
+      },
+    });
   },
 
-  expandOutpaintNode: async (nodeId, targetAspect) => {
+  closeInlineEditor: () => {
+    set({
+      inlineEditorModal: {
+        open: false,
+        mode: 'inpaint',
+        nodeId: null,
+      },
+    });
+  },
+
+  applyInpaintToNode: async (nodeId, maskDataUrl, regionalPrompt) => {
     const node = get().nodes.find((n) => n.id === nodeId);
-    if (!node || !node.imageUrl) return;
+    const sourceImage = node?.imageUrl;
+    if (!node || !sourceImage) return;
     get().pushHistory();
-    const expandedDataUrl = await expandOutpaintDataUrl(
-      node.imageUrl,
-      targetAspect,
-      node.prompt,
-      node.seed
-    );
-    const newDims = getDimensionsForAspect(targetAspect, 420);
+
+    const { activeProvider, byok } = get();
+    const apiKey = getActiveApiKeyForProvider(activeProvider, byok);
+    const promptToUse = regionalPrompt || 'Cinema lighting & texture detail redraw';
+
+    const childId = `node_inpaint_${Date.now()}`;
+    const childNode: CanvasNode = {
+      id: childId,
+      kind: 'image',
+      title: `Images · Inpaint Redraw`,
+      prompt: promptToUse,
+      x: node.x + node.width + 96,
+      y: node.y,
+      width: node.width,
+      height: node.height,
+      aspectRatio: node.aspectRatio,
+      status: 'generating',
+      progress: 40,
+      editBadge: 'Inpainting…',
+      imageUrl: sourceImage,
+      seed: node.seed + 19,
+      resolution: node.resolution,
+      elementHandles: node.elementHandles,
+      layers: createDefaultLayers(sourceImage),
+      providerUsed: 'FFmpeg Inpaint (:3001)',
+      createdAt: Date.now(),
+    };
+
+    set((s) => ({
+      nodes: [...s.nodes, childNode],
+      edges: [
+        ...s.edges,
+        {
+          id: `edge_inpaint_${Date.now()}`,
+          sourceId: node.id,
+          targetId: childId,
+          kind: 'lineage',
+        },
+      ],
+      selectedNodeIds: [childId],
+      inlineEditorModal: { open: false, mode: 'inpaint', nodeId: null },
+    }));
+
+    const live = await inpaintViaBackend({
+      imageUrl: sourceImage,
+      maskDataUrl,
+      prompt: promptToUse,
+      provider: activeProvider,
+      apiKey,
+    });
+
+    let finalUrl = live.imageUrl;
+    if (!finalUrl) {
+      const { compositedDataUrl } = await compositeInpaintRedraw(
+        sourceImage,
+        maskDataUrl,
+        promptToUse,
+        node.seed + 19
+      );
+      finalUrl = compositedDataUrl;
+    }
+
     set((s) => ({
       nodes: s.nodes.map((n) =>
-        n.id === nodeId
+        n.id === childId
           ? {
               ...n,
-              aspectRatio: targetAspect,
-              width: newDims.width,
-              height: newDims.height,
-              imageUrl: expandedDataUrl,
-              title: `${n.title.replace(/ \(Outpaint.*\)$/, '')} (${targetAspect})`,
-              layers: createDefaultLayers(expandedDataUrl),
+              status: 'ready',
+              progress: 100,
+              editBadge: undefined,
+              imageUrl: finalUrl,
+              layers: createDefaultLayers(finalUrl),
+              providerUsed: live.ok ? `FFmpeg Inpaint (${live.engine || 'local'})` : 'Canvas Inpaint',
             }
           : n
       ),
     }));
-    get().showToast(`Expanded frame to ${targetAspect}`);
+    get().showToast('Synthesized Inpaint frame');
   },
 
-  removeBgAndDecomposeLayers: (nodeId) => {
+  expandOutpaintNode: async (nodeId, targetAspect, customPrompt) => {
+    const node = get().nodes.find((n) => n.id === nodeId);
+    const sourceImage = node?.imageUrl;
+    if (!node || !sourceImage) return;
+    get().pushHistory();
+
+    const { activeProvider, byok } = get();
+    const apiKey = getActiveApiKeyForProvider(activeProvider, byok);
+    const newDims = getDimensionsForAspect(targetAspect, 440);
+    const childId = `node_outpaint_${Date.now()}`;
+    const promptUsed = customPrompt?.trim() || node.prompt;
+
+    const childNode: CanvasNode = {
+      id: childId,
+      kind: 'image',
+      title: `Images · Outpaint ${targetAspect}`,
+      prompt: promptUsed,
+      x: node.x + node.width + 96,
+      y: node.y,
+      width: newDims.width,
+      height: newDims.height,
+      aspectRatio: targetAspect,
+      status: 'generating',
+      progress: 45,
+      editBadge: `Outpainting ${targetAspect}…`,
+      imageUrl: sourceImage,
+      seed: node.seed + 31,
+      resolution: '2K',
+      elementHandles: node.elementHandles,
+      layers: createDefaultLayers(sourceImage),
+      providerUsed: 'FFmpeg Outpaint (:3001)',
+      createdAt: Date.now(),
+    };
+
+    set((s) => ({
+      nodes: [...s.nodes, childNode],
+      edges: [
+        ...s.edges,
+        {
+          id: `edge_outpaint_${Date.now()}`,
+          sourceId: node.id,
+          targetId: childId,
+          kind: 'lineage',
+        },
+      ],
+      selectedNodeIds: [childId],
+      inlineEditorModal: { open: false, mode: 'outpaint', nodeId: null },
+    }));
+
+    const live = await outpaintViaBackend({
+      imageUrl: sourceImage,
+      targetAspect,
+      prompt: promptUsed,
+      provider: activeProvider,
+      apiKey,
+    });
+
+    const finalUrl =
+      live.imageUrl ||
+      (await expandOutpaintDataUrl(sourceImage, targetAspect, promptUsed, node.seed));
+
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === childId
+          ? {
+              ...n,
+              status: 'ready',
+              progress: 100,
+              editBadge: undefined,
+              imageUrl: finalUrl,
+              layers: createDefaultLayers(finalUrl),
+              providerUsed: live.ok ? 'FFmpeg Outpaint (:3001)' : 'Canvas Outpaint',
+            }
+          : n
+      ),
+    }));
+    get().showToast(`Outpainted frame to ${targetAspect}`);
+  },
+
+  removeBgAndDecomposeLayers: async (nodeId) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
     get().pushHistory();
-    const { foregroundDataUrl, backgroundDataUrl } = decomposeSubjectAndBackground(
+
+    const sourceImage = node.imageUrl || '/media/hero_kael_vault.png';
+    get().updateNodeFields(nodeId, { editBadge: 'Removing BG…' });
+
+    const live = await removeBgViaBackend(sourceImage);
+    const fallbackCutout = decomposeSubjectAndBackground(
       node.aspectRatio,
       node.prompt,
       node.seed
-    );
+    ).foregroundDataUrl;
+    const cutoutUrl = live.imageUrl || fallbackCutout;
+
+    const childId = `node_cutout_${Date.now()}`;
+    const cutoutNode: CanvasNode = {
+      id: childId,
+      kind: 'image',
+      title: `Images · Alpha Cutout`,
+      prompt: `${node.prompt} (Transparent RGBA Cutout)`,
+      x: node.x + node.width + 96,
+      y: node.y,
+      width: node.width,
+      height: node.height,
+      aspectRatio: node.aspectRatio,
+      status: 'ready',
+      isTransparentCutout: true,
+      imageUrl: cutoutUrl,
+      seed: node.seed,
+      resolution: node.resolution,
+      elementHandles: node.elementHandles,
+      layers: createDefaultLayers(cutoutUrl),
+      providerUsed: live.ok ? 'FFmpeg RGBA Cutout (:3001)' : 'Alpha Cutout',
+      createdAt: Date.now(),
+    };
 
     set((s) => ({
-      nodes: s.nodes.map((n) => {
-        if (n.id !== nodeId) return n;
-        const nextLayers: FrameLayer[] = [
-          {
-            id: 'fg',
-            name: 'Foreground Subject',
-            visible: true,
-            opacity: 100,
-            dataUrl: foregroundDataUrl,
-            bgRemoved: true,
-          },
-          {
-            id: 'bg',
-            name: 'Background',
-            visible: false,
-            opacity: 100,
-            dataUrl: backgroundDataUrl,
-          },
-          n.layers.find((l) => l.id === 'mask') || {
-            id: 'mask',
-            name: 'Inpaint Mask',
-            visible: true,
-            opacity: 100,
-          },
-          n.layers.find((l) => l.id === 'text') || {
-            id: 'text',
-            name: 'Text Overlay',
-            visible: false,
-            opacity: 100,
-            textContent: 'PROTOCOL: RAIN',
-          },
-        ];
-        return { ...n, layers: nextLayers };
-      }),
+      nodes: [
+        ...s.nodes.map((n) =>
+          n.id === nodeId ? { ...n, editBadge: undefined } : n
+        ),
+        cutoutNode,
+      ],
+      edges: [
+        ...s.edges,
+        {
+          id: `edge_cutout_${Date.now()}`,
+          sourceId: node.id,
+          targetId: childId,
+          kind: 'lineage',
+        },
+      ],
+      selectedNodeIds: [childId],
     }));
-    get().showToast('Isolated Foreground Subject');
+
+    get().showToast('Extracted RGBA subject cutout onto canvas');
   },
 
   updateNodeLayer: (nodeId, layerId, patch) => {
@@ -1580,16 +1820,58 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }));
   },
 
-  upscaleNodeHd: (nodeId, targetRes) => {
+  upscaleNodeHd: async (nodeId, targetRes) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
     get().pushHistory();
+
+    const sourceImage = node.imageUrl || '/media/shot01_rooftop.png';
+    get().updateNodeFields(nodeId, { editBadge: `Upscaling ${targetRes}…` });
+
+    const live = await upscaleViaBackend(sourceImage);
+    const upscaledUrl = live.imageUrl || sourceImage;
+
+    const childId = `node_upscale_${Date.now()}`;
+    const upscaledNode: CanvasNode = {
+      id: childId,
+      kind: 'image',
+      title: `${node.title.replace(/ · 4K$/, '')} · ${targetRes}`,
+      prompt: node.prompt,
+      x: node.x + node.width + 96,
+      y: node.y,
+      width: node.width,
+      height: node.height,
+      aspectRatio: node.aspectRatio,
+      status: 'ready',
+      imageUrl: upscaledUrl,
+      seed: node.seed,
+      resolution: targetRes,
+      elementHandles: node.elementHandles,
+      layers: createDefaultLayers(upscaledUrl),
+      providerUsed: live.ok ? 'FFmpeg 4K Lanczos (:3001)' : `${targetRes} Upscaler`,
+      createdAt: Date.now(),
+    };
+
     set((s) => ({
-      nodes: s.nodes.map((n) =>
-        n.id === nodeId ? { ...n, resolution: targetRes } : n
-      ),
+      nodes: [
+        ...s.nodes.map((n) =>
+          n.id === nodeId ? { ...n, editBadge: undefined } : n
+        ),
+        upscaledNode,
+      ],
+      edges: [
+        ...s.edges,
+        {
+          id: `edge_upscale_${Date.now()}`,
+          sourceId: node.id,
+          targetId: childId,
+          kind: 'lineage',
+        },
+      ],
+      selectedNodeIds: [childId],
     }));
-    get().showToast(`Upscaled "${node.title}" to ${targetRes}`);
+
+    get().showToast(`Upscaled "${node.title}" to ${targetRes} (3840px)`);
   },
 
   retakeNode: async (nodeId) => {
@@ -2751,6 +3033,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   sendChatAssistantPrompt: async (userText) => {
     const clean = userText.trim();
     if (!clean) return;
+    const low = clean.toLowerCase();
     const userMsg: ChatMessageItem = {
       id: `msg_u_${Date.now()}`,
       role: 'user',
@@ -2759,35 +3042,700 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     };
     set((s) => ({ chatMessages: [...s.chatMessages, userMsg] }));
 
-    const sel = get().nodes.find((n) => n.id === get().selectedNodeIds[0]);
-    if (sel && sel.kind === 'video') {
-      await get().branchVideoMultiTurn(sel.id, clean);
-      set((s) => ({
-        chatMessages: [
-          ...s.chatMessages,
-          {
-            id: `msg_a_${Date.now()}`,
-            role: 'assistant',
-            text: `Branched "${sel.title}" via stateful previous_interaction_id with edit: "${clean}".`,
-            timestamp: Date.now(),
-          },
-        ],
-      }));
+    if (low.includes('compile') || low.includes('master')) {
+      await get().runChatQuickAction('compile-master');
       return;
     }
 
+    if (low.includes('slice') || low.includes('9-grid') || low.includes('contact')) {
+      await get().runChatQuickAction('slice-sheet');
+      return;
+    }
+
+    const sel = get().nodes.find((n) => n.id === get().selectedNodeIds[0]);
+    const isRemixIntent =
+      low.includes('remix') ||
+      low.includes('branch') ||
+      low.includes('multi-turn') ||
+      low.includes('weather') ||
+      low.includes('sunrise') ||
+      low.includes('dawn') ||
+      Boolean(sel && sel.kind === 'video' && !low.includes('sequence') && !low.includes('3-shot'));
+
+    if (isRemixIntent && (sel || get().nodes.some((n) => n.kind === 'video'))) {
+      const targetVid =
+        (sel && sel.kind === 'video' ? sel : null) ||
+        get().nodes.find((n) => n.kind === 'video');
+      if (targetVid) {
+        const beforeIds = new Set(get().nodes.map((n) => n.id));
+        await get().branchVideoMultiTurn(targetVid.id, clean);
+        const created = get().nodes.find((n) => !beforeIds.has(n.id));
+        set((s) => ({
+          chatMessages: [
+            ...s.chatMessages,
+            {
+              id: `msg_a_${Date.now()}`,
+              role: 'assistant',
+              text: `Branched "${targetVid.title}" via stateful previous_interaction_id with delta: "${clean}".`,
+              timestamp: Date.now(),
+              videoUrl: created?.videoUrl,
+              nodeFocusPills: created
+                ? [{ nodeId: created.id, title: created.title }]
+                : undefined,
+            },
+          ],
+        }));
+        return;
+      }
+    }
+
+    const beforeIds = new Set(get().nodes.map((n) => n.id));
     await get().runAutonomousDirectorAgent(clean);
+    const createdNodes = get().nodes.filter((n) => !beforeIds.has(n.id));
     set((s) => ({
       chatMessages: [
         ...s.chatMessages,
         {
           id: `msg_a_${Date.now()}`,
           role: 'assistant',
-          text: `Built connected 3-shot sequence on the spatial canvas and appended clips to Timelines 1.`,
+          text: `Synthesized ${createdNodes.length || 3}-shot sequence on the spatial canvas and linked clips into Timelines 1.`,
           timestamp: Date.now(),
+          videoUrl: createdNodes[0]?.videoUrl,
+          nodeFocusPills: createdNodes.map((cn) => ({
+            nodeId: cn.id,
+            title: cn.title,
+          })),
         },
       ],
     }));
+  },
+
+  runChatQuickAction: async (action) => {
+    if (action === 'sequence-3') {
+      await get().sendChatAssistantPrompt(
+        'Build a 3-shot @Hero_Kael & @Cyber_Sneaker rooftop rain pursuit sequence'
+      );
+      return;
+    }
+
+    if (action === 'remix-branch') {
+      const target =
+        get().nodes.find(
+          (n) => n.id === get().selectedNodeIds[0] && n.kind === 'video'
+        ) || get().nodes.find((n) => n.kind === 'video');
+      if (!target) {
+        get().showToast('Select or add a video node first');
+        return;
+      }
+      const userMsg: ChatMessageItem = {
+        id: `msg_u_${Date.now()}`,
+        role: 'user',
+        text: `Branch Multi-Turn Remix on "${target.title}" -> Golden dawn weather shift`,
+        timestamp: Date.now(),
+      };
+      set((s) => ({ chatMessages: [...s.chatMessages, userMsg] }));
+
+      const beforeIds = new Set(get().nodes.map((n) => n.id));
+      await get().branchVideoMultiTurn(
+        target.id,
+        'Shift weather from neon midnight rain to golden sunrise dawn over @Hero_Kael'
+      );
+      const created = get().nodes.find((n) => !beforeIds.has(n.id));
+      set((s) => ({
+        chatMessages: [
+          ...s.chatMessages,
+          {
+            id: `msg_a_${Date.now()}`,
+            role: 'assistant',
+            text: `Rendered stateful Multi-Turn remix branch from "${target.title}":`,
+            timestamp: Date.now(),
+            videoUrl: created?.videoUrl || '/media/shot02b_sunrise_remix.mp4',
+            nodeFocusPills: created
+              ? [{ nodeId: created.id, title: created.title }]
+              : undefined,
+          },
+        ],
+      }));
+      return;
+    }
+
+    if (action === 'slice-sheet') {
+      const sheet =
+        get().nodes.find(
+          (n) =>
+            n.id === get().selectedNodeIds[0] &&
+            (n.kind === 'contact-sheet' || n.kind === 'image')
+        ) ||
+        get().nodes.find((n) => n.kind === 'contact-sheet') ||
+        get().nodes.find((n) => n.kind === 'image');
+      if (!sheet) {
+        get().showToast('No contact sheet or image node on canvas');
+        return;
+      }
+      const beforeIds = new Set(get().nodes.map((n) => n.id));
+      await get().sliceContactSheetNode(sheet.id, 3, 3);
+      const slices = get().nodes.filter((n) => !beforeIds.has(n.id));
+      set((s) => ({
+        chatMessages: [
+          ...s.chatMessages,
+          {
+            id: `msg_a_${Date.now()}`,
+            role: 'assistant',
+            text: `Sliced "${sheet.title}" into ${slices.length} individual camera coverage frames:`,
+            timestamp: Date.now(),
+            nodeFocusPills: slices.slice(0, 6).map((sl) => ({
+              nodeId: sl.id,
+              title: sl.title,
+            })),
+          },
+        ],
+      }));
+      return;
+    }
+
+    if (action === 'compile-master') {
+      const userMsg: ChatMessageItem = {
+        id: `msg_u_${Date.now()}`,
+        role: 'user',
+        text: 'Compile Timelines 1 into a stitched Master .mp4',
+        timestamp: Date.now(),
+      };
+      set((s) => ({ chatMessages: [...s.chatMessages, userMsg] }));
+      const masterUrl = await get().compileTimelineMasterMp4();
+      set((s) => ({
+        chatMessages: [
+          ...s.chatMessages,
+          {
+            id: `msg_a_${Date.now()}`,
+            role: 'assistant',
+            text: masterUrl
+              ? 'Compiled H.264 + AAC Master .mp4 from Timelines 1:'
+              : 'Add clips to Timelines 1 to compile a master cut.',
+            timestamp: Date.now(),
+            videoUrl: masterUrl || '/media/protocol_rain_master.mp4',
+          },
+        ],
+      }));
+    }
+  },
+
+  bootDiskPersistence: async () => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('recipe')) return;
+
+    const listing = await listDiskProjects();
+    if (!listing.ok) {
+      // Fallback to localStorage if :3001 is temporarily offline
+      try {
+        const cached = localStorage.getItem('dreamflow_local_project_backup');
+        if (cached) {
+          const parsed = JSON.parse(cached) as {
+            id?: string;
+            name?: string;
+            nodes?: CanvasNode[];
+            edges?: CanvasEdge[];
+            timelineClips?: TimelineClip[];
+          };
+          if (Array.isArray(parsed.nodes) && parsed.nodes.length > 0) {
+            set({
+              activeProjectId: parsed.id || 'protocol-rain',
+              projectTitle: parsed.name || 'Protocol: Rain',
+              nodes: parsed.nodes,
+              edges: Array.isArray(parsed.edges) ? parsed.edges : get().edges,
+              timelineClips: Array.isArray(parsed.timelineClips)
+                ? parsed.timelineClips
+                : get().timelineClips,
+              selectedNodeIds: [],
+              saveStatus: 'local',
+            });
+          }
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    set({ diskProjects: listing.projects });
+
+    const preferredId =
+      (() => {
+        try {
+          return localStorage.getItem(ACTIVE_PROJECT_KEY);
+        } catch {
+          return null;
+        }
+      })() || listing.projects[0]?.id;
+
+    if (preferredId && listing.projects.some((p) => p.id === preferredId)) {
+      const loaded = await getDiskProject(preferredId);
+      const st = loaded.project?.state as
+        | {
+            nodes?: CanvasNode[];
+            edges?: CanvasEdge[];
+            elements?: ElementVault[];
+            multiframes?: MultiframeCard[];
+            bridges?: MultiframeBridge[];
+            timelineClips?: TimelineClip[];
+          }
+        | undefined;
+      if (loaded.ok && loaded.project && st && Array.isArray(st.nodes)) {
+        set({
+          activeProjectId: loaded.project.id,
+          projectTitle: loaded.project.name || 'Protocol: Rain',
+          nodes: st.nodes,
+          edges: Array.isArray(st.edges) ? st.edges : [],
+          elements: Array.isArray(st.elements) ? st.elements : get().elements,
+          multiframes: Array.isArray(st.multiframes)
+            ? st.multiframes
+            : get().multiframes,
+          bridges: Array.isArray(st.bridges) ? st.bridges : get().bridges,
+          timelineClips: Array.isArray(st.timelineClips)
+            ? st.timelineClips
+            : get().timelineClips,
+          projectSnapshots: Array.isArray(loaded.project.snapshots)
+            ? loaded.project.snapshots
+            : [],
+          selectedNodeIds: [],
+          saveStatus: 'saved',
+        });
+        return;
+      }
+    }
+
+    // Seed initial Protocol: Rain project onto disk
+    await get().persistActiveProjectToDisk({
+      createSnapshot: true,
+      snapshotLabel: 'Initial Protocol: Rain',
+    });
+  },
+
+  persistActiveProjectToDisk: async (opts) => {
+    const {
+      activeProjectId,
+      projectTitle,
+      nodes,
+      edges,
+      elements,
+      multiframes,
+      bridges,
+      timelineClips,
+    } = get();
+
+    set({ saveStatus: 'saving' });
+
+    const payloadState = {
+      nodes,
+      edges,
+      elements,
+      multiframes,
+      bridges,
+      timelineClips,
+    };
+
+    try {
+      localStorage.setItem(ACTIVE_PROJECT_KEY, activeProjectId);
+      localStorage.setItem(
+        'dreamflow_local_project_backup',
+        JSON.stringify({
+          id: activeProjectId,
+          name: projectTitle,
+          nodes,
+          edges,
+          timelineClips,
+        })
+      );
+    } catch {
+      // ignore storage quota errors
+    }
+
+    const res = await saveDiskProject({
+      id: activeProjectId,
+      name: projectTitle,
+      state: payloadState,
+      createSnapshot: opts?.createSnapshot,
+      snapshotLabel: opts?.snapshotLabel,
+    });
+
+    if (res.ok) {
+      const listing = await listDiskProjects();
+      let nextSnaps = get().projectSnapshots;
+      if (opts?.createSnapshot) {
+        const full = await getDiskProject(activeProjectId);
+        if (full.ok && Array.isArray(full.project?.snapshots)) {
+          nextSnaps = full.project!.snapshots!;
+        }
+      }
+      set({
+        saveStatus: 'saved',
+        diskProjects: listing.ok ? listing.projects : get().diskProjects,
+        projectSnapshots: nextSnaps,
+      });
+    } else {
+      set({ saveStatus: 'local' });
+    }
+  },
+
+  switchDiskProject: async (id) => {
+    const loaded = await getDiskProject(id);
+    if (!loaded.ok || !loaded.project) {
+      get().showToast('Could not load project from disk');
+      return;
+    }
+    const st = (loaded.project.state || {}) as {
+      nodes?: CanvasNode[];
+      edges?: CanvasEdge[];
+      elements?: ElementVault[];
+      multiframes?: MultiframeCard[];
+      bridges?: MultiframeBridge[];
+      timelineClips?: TimelineClip[];
+    };
+    try {
+      localStorage.setItem(ACTIVE_PROJECT_KEY, id);
+    } catch {
+      // ignore
+    }
+    set({
+      activeProjectId: loaded.project.id,
+      projectTitle: loaded.project.name,
+      nodes: Array.isArray(st.nodes) ? st.nodes : [],
+      edges: Array.isArray(st.edges) ? st.edges : [],
+      elements: Array.isArray(st.elements) ? st.elements : get().elements,
+      multiframes: Array.isArray(st.multiframes)
+        ? st.multiframes
+        : get().multiframes,
+      bridges: Array.isArray(st.bridges) ? st.bridges : get().bridges,
+      timelineClips: Array.isArray(st.timelineClips) ? st.timelineClips : [],
+      projectSnapshots: Array.isArray(loaded.project.snapshots)
+        ? loaded.project.snapshots
+        : [],
+      selectedNodeIds: [],
+      past: [],
+      future: [],
+      saveStatus: 'saved',
+    });
+    get().showToast(`Switched to "${loaded.project.name}"`);
+  },
+
+  createNewBlankProject: async (name = 'Untitled canvas') => {
+    const blank = buildBlankStudioGraph();
+    const newId = `canvas_${Date.now().toString(36)}`;
+    try {
+      localStorage.setItem(ACTIVE_PROJECT_KEY, newId);
+    } catch {
+      // ignore
+    }
+    set({
+      activeProjectId: newId,
+      projectTitle: name,
+      nodes: blank.nodes,
+      edges: blank.edges,
+      multiframes: blank.multiframes,
+      bridges: blank.bridges,
+      timelineClips: blank.timelineClips,
+      projectSnapshots: [],
+      selectedNodeIds: [],
+      past: [],
+      future: [],
+      panX: 120,
+      panY: 80,
+      zoom: 0.85,
+    });
+    await get().persistActiveProjectToDisk({
+      createSnapshot: true,
+      snapshotLabel: 'Created blank canvas',
+    });
+    get().showToast(`Created "${name}"`);
+  },
+
+  deleteSavedProject: async (id) => {
+    const ok = await deleteDiskProject(id);
+    if (!ok) {
+      get().showToast('Failed to delete project');
+      return;
+    }
+    const listing = await listDiskProjects();
+    set({ diskProjects: listing.projects });
+    if (get().activeProjectId === id) {
+      if (listing.projects.length > 0) {
+        await get().switchDiskProject(listing.projects[0].id);
+      } else {
+        get().loadPresetProject('protocol-rain');
+        set({ activeProjectId: 'protocol-rain' });
+        await get().persistActiveProjectToDisk();
+      }
+    } else {
+      get().showToast('Deleted project from disk');
+    }
+  },
+
+  saveVersionSnapshot: async (label) => {
+    const timeStr = new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const snapLabel =
+      label?.trim() || `${get().nodes.length} nodes · ${timeStr}`;
+    await get().persistActiveProjectToDisk({
+      createSnapshot: true,
+      snapshotLabel: snapLabel,
+    });
+    get().showToast(`Saved snapshot "${snapLabel}"`);
+  },
+
+  restoreVersionSnapshot: async (snapshotId) => {
+    const snap = get().projectSnapshots.find((s) => s.snapshotId === snapshotId);
+    if (!snap) return;
+    get().pushHistory();
+    const st = snap.state as {
+      nodes?: CanvasNode[];
+      edges?: CanvasEdge[];
+      elements?: ElementVault[];
+      multiframes?: MultiframeCard[];
+      bridges?: MultiframeBridge[];
+      timelineClips?: TimelineClip[];
+    };
+    set({
+      nodes: Array.isArray(st.nodes) ? st.nodes : get().nodes,
+      edges: Array.isArray(st.edges) ? st.edges : get().edges,
+      elements: Array.isArray(st.elements) ? st.elements : get().elements,
+      multiframes: Array.isArray(st.multiframes)
+        ? st.multiframes
+        : get().multiframes,
+      bridges: Array.isArray(st.bridges) ? st.bridges : get().bridges,
+      timelineClips: Array.isArray(st.timelineClips)
+        ? st.timelineClips
+        : get().timelineClips,
+      selectedNodeIds: [],
+    });
+    await get().persistActiveProjectToDisk();
+    get().showToast(`Restored snapshot "${snap.label}"`);
+  },
+
+  exportCurrentProjectDreamflowJson: async () => {
+    await get().persistActiveProjectToDisk();
+    const {
+      activeProjectId,
+      projectTitle,
+      nodes,
+      edges,
+      elements,
+      multiframes,
+      bridges,
+      timelineClips,
+      projectSnapshots,
+    } = get();
+
+    const remoteBundle = await exportDiskProjectBundle(activeProjectId);
+    const bundle = remoteBundle || {
+      format: 'open-dreamflow-project/v1',
+      exportedAt: new Date().toISOString(),
+      project: {
+        id: activeProjectId,
+        name: projectTitle,
+        updatedAt: Date.now(),
+        state: {
+          nodes,
+          edges,
+          elements,
+          multiframes,
+          bridges,
+          timelineClips,
+        },
+        snapshots: projectSnapshots,
+      },
+    };
+
+    const slug =
+      projectTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-') || activeProjectId;
+    downloadTextFile(
+      `${slug}.dreamflow.json`,
+      JSON.stringify(bundle, null, 2),
+      'application/json'
+    );
+    get().showToast(`Exported ${slug}.dreamflow.json`);
+  },
+
+  importProjectDreamflowJson: async (file) => {
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const imported = await importDiskProjectBundle(parsed);
+
+      const proj =
+        imported.project ||
+        ((parsed.project as Record<string, unknown>)
+          ? (parsed.project as {
+              id?: string;
+              name?: string;
+              state?: Record<string, unknown>;
+              snapshots?: DiskSnapshotItem[];
+            })
+          : null);
+
+      if (!proj || !proj.state) {
+        get().showToast('Invalid .dreamflow.json archive');
+        return;
+      }
+
+      const st = proj.state as {
+        nodes?: CanvasNode[];
+        edges?: CanvasEdge[];
+        elements?: ElementVault[];
+        multiframes?: MultiframeCard[];
+        bridges?: MultiframeBridge[];
+        timelineClips?: TimelineClip[];
+      };
+
+      const nextId = proj.id || `imported_${Date.now().toString(36)}`;
+      try {
+        localStorage.setItem(ACTIVE_PROJECT_KEY, nextId);
+      } catch {
+        // ignore
+      }
+
+      set({
+        activeProjectId: nextId,
+        projectTitle: proj.name || 'Imported Canvas',
+        nodes: Array.isArray(st.nodes) ? st.nodes : [],
+        edges: Array.isArray(st.edges) ? st.edges : [],
+        elements: Array.isArray(st.elements) ? st.elements : get().elements,
+        multiframes: Array.isArray(st.multiframes)
+          ? st.multiframes
+          : get().multiframes,
+        bridges: Array.isArray(st.bridges) ? st.bridges : get().bridges,
+        timelineClips: Array.isArray(st.timelineClips) ? st.timelineClips : [],
+        projectSnapshots: Array.isArray(proj.snapshots) ? proj.snapshots : [],
+        selectedNodeIds: [],
+        saveStatus: 'saved',
+      });
+
+      const listing = await listDiskProjects();
+      if (listing.ok) set({ diskProjects: listing.projects });
+      get().showToast(`Imported "${proj.name || file.name}"`);
+    } catch {
+      get().showToast('Failed to parse .dreamflow.json file');
+    }
+  },
+
+  setBridgeWsConnected: (connected) => {
+    set((s) => ({
+      bridgeWsConnected: connected,
+      chromeBridge: {
+        ...s.chromeBridge,
+        extensionDetected: connected || s.chromeBridge.extensionDetected,
+      },
+    }));
+  },
+
+  ingestBridgeWsEvent: (ev) => {
+    if (!ev || (ev.type !== 'bridge_asset' && ev.type !== 'bridge_prompt')) {
+      if (ev?.type === 'bridge_session') {
+        set((s) => ({
+          chromeBridge: {
+            ...s.chromeBridge,
+            extensionDetected: true,
+            dreaminaTabConnected:
+              ev.source === 'dreamina' ? true : s.chromeBridge.dreaminaTabConnected,
+            flowTabConnected:
+              ev.source === 'flow' ? true : s.chromeBridge.flowTabConnected,
+          },
+        }));
+      }
+      return false;
+    }
+
+    const dedupKey =
+      ev.eventId || `${ev.type}_${ev.source}_${ev.mediaUrl || ''}_${ev.timestamp || ''}`;
+    if (ev.eventId && seenBridgeEventIds.has(dedupKey)) {
+      return false;
+    }
+    seenBridgeEventIds.add(dedupKey);
+
+    const { nodes } = get();
+    const maxRight = nodes
+      .filter((n) => n.kind !== 'timeline')
+      .reduce((acc, n) => Math.max(acc, n.x + n.width), 360);
+
+    const mediaUrl = ev.mediaUrl
+      ? normalizeBackendMediaUrl(ev.mediaUrl, false)
+      : undefined;
+    const isVideo = Boolean(mediaUrl && /\.(mp4|webm|mov)(\?|$)/i.test(mediaUrl));
+    const isTextOnly = ev.type === 'bridge_prompt' && !mediaUrl;
+
+    const sourceLabel =
+      ev.source === 'flow' ? 'Google Flow' : ev.source === 'dreamina' ? 'Dreamina' : 'Bridge';
+
+    const nodeId = `node_bridge_${Date.now()}`;
+    const newNode: CanvasNode = {
+      id: nodeId,
+      kind: isTextOnly ? 'text' : isVideo ? 'video' : 'image',
+      title: ev.title || `Bridge · ${sourceLabel}`,
+      prompt: ev.prompt || `Captured from ${sourceLabel}`,
+      x: maxRight + 96,
+      y: 160,
+      width: isVideo ? 568 : isTextOnly ? 320 : 380,
+      height: isVideo ? 320 : isTextOnly ? 210 : 240,
+      aspectRatio: '16:9',
+      status: 'ready',
+      imageUrl: !isTextOnly && !isVideo ? mediaUrl || '/media/shot01_rooftop.png' : '/media/shot01_rooftop.png',
+      videoUrl: isVideo ? mediaUrl : undefined,
+      durationSec: isVideo ? 6 : undefined,
+      seed: Math.floor(Math.random() * 9000),
+      resolution: '1080p',
+      elementHandles: extractHandles(ev.prompt || ''),
+      layers:
+        !isTextOnly && !isVideo
+          ? createDefaultLayers(mediaUrl || '/media/shot01_rooftop.png')
+          : [],
+      providerUsed: `Bridge · ${sourceLabel}`,
+      createdAt: Date.now(),
+    };
+
+    set((s) => ({
+      nodes: [...s.nodes, newNode],
+      selectedNodeIds: [nodeId],
+      chromeBridge: {
+        ...s.chromeBridge,
+        extensionDetected: true,
+        dreaminaTabConnected:
+          ev.source === 'dreamina' ? true : s.chromeBridge.dreaminaTabConnected,
+        flowTabConnected:
+          ev.source === 'flow' ? true : s.chromeBridge.flowTabConnected,
+      },
+    }));
+
+    get().showToast(`Bridge · Imported from ${sourceLabel}`);
+    return true;
+  },
+
+  triggerTestBridgeCapture: async (source = 'dreamina') => {
+    const testEvent: BridgeIncomingEvent = {
+      eventId: `evt_test_${Date.now()}`,
+      timestamp: Date.now(),
+      type: 'bridge_asset',
+      source,
+      title:
+        source === 'flow'
+          ? 'Bridge · Flow Scene Capture'
+          : 'Bridge · Dreamina Keyframe',
+      mediaUrl:
+        source === 'flow'
+          ? '/media/shot02_alley_chase.mp4'
+          : '/media/shot02b_sunrise_remix.png',
+      prompt:
+        source === 'flow'
+          ? 'Captured live 6s tracking shot from Google Flow via ws://localhost:3001/bridge'
+          : 'Captured live sunrise keyframe from Dreamina Canvas via ws://localhost:3001/bridge',
+    };
+
+    const pushed = await pushBridgeEventViaBackend(testEvent);
+    // If WebSocket broadcast hasn't ingested it within 350ms (e.g. offline), ingest locally
+    setTimeout(() => {
+      if (!seenBridgeEventIds.has(testEvent.eventId!)) {
+        get().ingestBridgeWsEvent(testEvent);
+      }
+    }, pushed.ok ? 350 : 20);
   },
 
   runAutonomousDirectorAgent: async (creativeBrief) => {

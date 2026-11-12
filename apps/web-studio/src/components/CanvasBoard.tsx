@@ -171,6 +171,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
   const branchVideoMultiTurn = useStudioStore((s) => s.branchVideoMultiTurn);
   const executeMcpToolNode = useStudioStore((s) => s.executeMcpToolNode);
   const applyInpaintToNode = useStudioStore((s) => s.applyInpaintToNode);
+  const openInlineEditor = useStudioStore((s) => s.openInlineEditor);
   const tidyUpNodes = useStudioStore((s) => s.tidyUpNodes);
   const fitAllNodesInViewport = useStudioStore((s) => s.fitAllNodesInViewport);
   const setCameraDirectorOpen = useStudioStore((s) => s.setCameraDirectorOpen);
@@ -973,7 +974,18 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                 {(node.kind === 'image' ||
                   node.kind === 'contact-sheet' ||
                   node.kind === 'element') && (
-                  <div className="relative w-full h-full bg-[#141414]">
+                  <div
+                    style={
+                      node.isTransparentCutout
+                        ? {
+                            backgroundImage:
+                              'repeating-conic-gradient(#1b1b1b 0% 25%, #111111 0% 50%)',
+                            backgroundSize: '18px 18px',
+                          }
+                        : undefined
+                    }
+                    className="relative w-full h-full bg-[#141414]"
+                  >
                     <SmartMediaImage
                       src={node.imageUrl}
                       alt={node.title}
@@ -981,7 +993,9 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                       fallbackPrompt={node.prompt}
                       fallbackSeed={node.seed}
                       isContactSheet={node.kind === 'contact-sheet'}
-                      className="w-full h-full object-cover"
+                      className={`w-full h-full ${
+                        node.isTransparentCutout ? 'object-contain' : 'object-cover'
+                      }`}
                     />
 
                     {node.kind === 'element' && node.elementHandles[0] && (
@@ -1135,7 +1149,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   </div>
                 )}
 
-                {/* Generating Progress Overlay */}
+                {/* Generating / Active Edit Progress Overlay */}
                 {node.status === 'generating' && (
                   <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center gap-2 z-20">
                     <Loader2
@@ -1143,7 +1157,20 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                       strokeWidth={1.75}
                     />
                     <span className="font-mono text-[12px] text-white/90">
-                      Rendering {node.progress ? `${node.progress}%` : '…'}
+                      {node.editBadge ||
+                        `Rendering ${node.progress ? `${node.progress}%` : '…'}`}
+                    </span>
+                  </div>
+                )}
+
+                {node.status !== 'generating' && node.editBadge && (
+                  <div className="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-[7px] bg-[#191919]/95 border border-white/[0.15] backdrop-blur-md flex items-center gap-1.5 z-20 pointer-events-none">
+                    <Loader2
+                      className="w-3 h-3 text-[#20D5EC] animate-spin"
+                      strokeWidth={2}
+                    />
+                    <span className="font-mono text-[11px] text-white/90">
+                      {node.editBadge}
                     </span>
                   </div>
                 )}
@@ -1439,6 +1466,35 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                     <Film className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
                     <span>Send to Timeline</span>
                   </button>
+                )}
+
+                {(contextNode.kind === 'image' ||
+                  contextNode.kind === 'contact-sheet' ||
+                  contextNode.kind === 'element') && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openInlineEditor('inpaint', contextNode.id);
+                        setContextMenu(null);
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                      <span>Inpaint Brush…</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openInlineEditor('outpaint', contextNode.id);
+                        setContextMenu(null);
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
+                    >
+                      <Maximize2 className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                      <span>Expand (Outpaint)…</span>
+                    </button>
+                  </>
                 )}
 
                 {(contextNode.kind === 'image' ||
