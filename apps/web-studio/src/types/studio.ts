@@ -1,11 +1,30 @@
 export type AspectRatio = '16:9' | '9:16' | '21:9' | '1:1';
 
 export type NodeKind =
+  | 'text'
   | 'image'
   | 'video'
-  | 'contact-sheet'
+  | 'audio'
+  | 'timeline'
+  | 'element'
   | 'style-dna'
+  | 'contact-sheet'
+  | 'sticky'
   | 'mcp-tool';
+
+export type DreaminaToolId =
+  | 'text'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'timeline'
+  | 'element'
+  | 'cinema-kit'
+  | 'camera-3d'
+  | 'image-editor'
+  | 'sticky'
+  | 'assets'
+  | 'upload';
 
 export type ResolutionTier = '360p' | '720p' | '1080p' | '2K' | '4K';
 
@@ -64,7 +83,14 @@ export interface CanvasNode {
   progress?: number;
   imageUrl?: string;
   videoUrl?: string;
-  videoTheme?: 'cyberpunk-rain' | 'sneaker-macro' | 'drone-canyon' | 'neon-orbit' | 'product-ugc' | 'night-remix';
+  audioUrl?: string;
+  videoTheme?:
+    | 'cyberpunk-rain'
+    | 'sneaker-macro'
+    | 'drone-canyon'
+    | 'neon-orbit'
+    | 'product-ugc'
+    | 'night-remix';
   seed: number;
   resolution: ResolutionTier;
   durationSec?: number;
@@ -233,6 +259,13 @@ export interface TimelineClip {
   audioFreqHz?: number;
   sfxKind?: 'rain-ambience' | 'whoosh-transition' | 'sub-impact' | 'cyber-synth';
   color: string;
+}
+
+export interface ChatMessageItem {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  timestamp: number;
 }
 
 export interface StudioHistorySnapshot {

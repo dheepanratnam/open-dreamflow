@@ -223,12 +223,30 @@ function verifyWebStudioBundle() {
   assert(jsFiles.length >= 1, 'No compiled JS bundle in apps/web-studio/dist/assets');
   assert(cssFiles.length >= 1, 'No compiled CSS bundle in apps/web-studio/dist/assets');
 
-  const jsSizeKb = (fs.statSync(path.join(assetsDir, jsFiles[0])).size / 1024).toFixed(1);
-  const cssSizeKb = (fs.statSync(path.join(assetsDir, cssFiles[0])).size / 1024).toFixed(1);
+  const jsPath = path.join(assetsDir, jsFiles[0]);
+  const cssPath = path.join(assetsDir, cssFiles[0]);
+  const jsSizeKb = (fs.statSync(jsPath).size / 1024).toFixed(1);
+  const cssSizeKb = (fs.statSync(cssPath).size / 1024).toFixed(1);
+
+  const jsBundle = fs.readFileSync(jsPath, 'utf8');
+  for (const marker of ['Create new', 'Timelines 1', 'Tidy up nodes', '#20D5EC']) {
+    assert(
+      jsBundle.toLowerCase().includes(marker.toLowerCase()),
+      `Dreamina Canvas UI marker missing in compiled bundle: ${marker}`
+    );
+  }
+
+  const distMedia = path.join(distDir, 'media');
+  if (fs.existsSync(path.join(ROOT, 'apps/web-studio/public/media/protocol_rain_master.mp4'))) {
+    assert(
+      fs.existsSync(path.join(distMedia, 'protocol_rain_master.mp4')),
+      'dist/media/protocol_rain_master.mp4 missing from production build'
+    );
+  }
 
   logStep(
     'web-studio',
-    `Production Vite bundle verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
+    `Dreamina 1:1 Vite bundle + dist/media verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
   );
 }
 

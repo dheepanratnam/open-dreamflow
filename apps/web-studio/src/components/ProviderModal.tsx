@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import {
-  CheckCircle2,
+  Check,
   Chrome,
-  Cpu,
   Eye,
   EyeOff,
   KeyRound,
@@ -12,7 +11,6 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
-  Workflow,
   X,
 } from 'lucide-react';
 import { useStudioStore } from '../store/useStudioStore';
@@ -30,6 +28,7 @@ export const ProviderModal: React.FC = () => {
     updateByok,
     clearByokKeys,
     mcpServers,
+    mcpHealth,
     addMcpServer,
     refreshMcpServer,
     spawnMcpToolAsCanvasNode,
@@ -38,7 +37,7 @@ export const ProviderModal: React.FC = () => {
   } = useStudioStore();
 
   const [showSecrets, setShowSecrets] = useState(false);
-  const [mcpName, setMcpName] = useState('ComfyUI + Flow MCP Server');
+  const [mcpName, setMcpName] = useState('Local ComfyUI / Studio MCP');
   const [mcpUrl, setMcpUrl] = useState('http://localhost:3001/mcp');
   const [mcpTransport, setMcpTransport] = useState<'websocket' | 'http-sse'>(
     'http-sse'
@@ -54,249 +53,237 @@ export const ProviderModal: React.FC = () => {
   }> = [
     {
       id: 'local-canvas',
-      label: 'Open-DreamFlow Instant Studio Engine',
-      tag: '$0.00 OFFLINE',
-      desc: 'Deterministic HTML5 procedural cinema frames, 9-grid slicing & live 30fps preview with zero API keys.',
+      label: 'Local FFmpeg 8.0 + Studio Engine',
+      tag: '$0.00 LOCAL',
+      desc: 'Real local MP4 rendering, 9-grid slicing, frame extraction & timeline concat with zero API keys.',
+    },
+    {
+      id: 'mcp-router',
+      label: 'Model Context Protocol (MCP) Pipeline',
+      tag: '$0.00 MCP',
+      desc: 'Routes generation & post-processing directly through connected JSON-RPC 2.0 MCP tools.',
     },
     {
       id: 'gemini-omni',
       label: 'Google AI Studio · Gemini Omni 1.2 Flash',
       tag: '$0 MARKUP BYOK',
-      desc: 'Direct POST /v1beta/interactions: 3–15s video, 6 ref images, First/Last frame & previous_interaction_id.',
+      desc: 'Direct POST /v1beta/interactions: 4–15s video, 6 @Element refs & previous_interaction_id.',
     },
     {
       id: 'seedance',
-      label: 'BytePlus Ark · Seedream 3.0 & Seedance 1.0',
+      label: 'BytePlus Ark · Seedream 3.0 & Seedance 2.0',
       tag: '$0 MARKUP BYOK',
-      desc: 'Native 2–10 keyframe Smart Multiframes, 9-grid contact sheets & regional brush inpainting.',
+      desc: 'Native 2–10 keyframe Smart Multiframes, 9-grid contact sheets & regional inpainting.',
     },
     {
       id: 'fal',
-      label: 'Fal.ai · Wan 2.1 / HunyuanVideo / Flux',
+      label: 'Fal.ai · Wan 2.1 Pro / Flux',
       tag: '$0 MARKUP BYOK',
-      desc: 'Raw pass-through open-weight video & image endpoints billed directly to your Fal account.',
+      desc: 'Direct browser-to-Fal queue execution with raw pass-through billing.',
     },
     {
       id: 'comfyui',
-      label: 'Local GPU · ComfyUI API (127.0.0.1:8188)',
-      tag: '100% LOCAL GPU',
-      desc: 'Run Wan 2.1, LTX-Video & Flux locally on Apple Silicon or NVIDIA RTX at zero cloud cost.',
-    },
-    {
-      id: 'chrome-bridge-flow',
-      label: 'Chrome Bridge · flow.google.com Credits',
-      tag: 'SUBSCRIPTION BRIDGE',
-      desc: 'Routes prompts & @Elements through your active Google AI Pro/Ultra browser session at $0 API cost.',
+      label: 'ComfyUI Local API (:8188)',
+      tag: '$0.00 LOCAL GPU',
+      desc: 'Connects directly to local ComfyUI workflow graph endpoint.',
     },
     {
       id: 'chrome-bridge-dreamina',
-      label: 'Chrome Bridge · dreamina.capcut.com Credits',
-      tag: 'SUBSCRIPTION BRIDGE',
-      desc: 'Queues Dreamina 2.0 Smart Canvas & Seedance jobs via your existing consumer web subscription.',
+      label: 'Chrome Extension · Dreamina Canvas Bridge',
+      tag: 'BROWSER CREDITS',
+      desc: 'Routes jobs through your logged-in dreamina.capcut.com browser tab.',
+    },
+    {
+      id: 'chrome-bridge-flow',
+      label: 'Chrome Extension · Google Flow Bridge',
+      tag: 'BROWSER CREDITS',
+      desc: 'Routes jobs through your logged-in labs.google/fx/tools/flow browser tab.',
     },
   ];
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="w-full max-w-4xl max-h-[88vh] rounded-2xl bg-[#0C0F17] border border-slate-700/80 shadow-2xl flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 bg-[#101420] border-b border-slate-800">
+    <div
+      className="fixed inset-0 z-50 bg-black/65 backdrop-blur-sm flex items-center justify-center p-4 select-none"
+      onClick={closeProviderModal}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-[780px] max-h-[86vh] rounded-[16px] dreamina-menu flex flex-col overflow-hidden text-[#f5f5f5]"
+      >
+        {/* Modal Header */}
+        <div className="h-[52px] px-5 border-b border-white/[0.08] flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-violet-600 to-sky-500 flex items-center justify-center">
-              <ShieldCheck className="w-4 h-4 text-white" />
-            </div>
-            <div>
-              <h2 className="text-sm sm:text-base font-bold text-white">
-                Zero-Markup Execution Router · BYOK + MCP + Browser Credits
-              </h2>
-              <p className="text-xs text-slate-400">
-                $0 SaaS middleman tax. Keys stay 100% in your browser `localStorage` and
-                call endpoints directly.
-              </p>
-            </div>
+            <ShieldCheck className="w-4 h-4 text-white/80" strokeWidth={1.5} />
+            <span className="text-[14px] font-semibold">
+              Zero-Markup Execution · BYOK, MCP & Browser Bridge
+            </span>
           </div>
           <button
+            type="button"
             onClick={closeProviderModal}
-            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white"
+            className="w-7 h-7 rounded-[7px] hover:bg-white/[0.08] flex items-center justify-center text-white/60 hover:text-white"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" strokeWidth={1.5} />
           </button>
         </div>
 
-        <div className="flex items-center gap-2 px-6 py-2.5 bg-[#0A0D14] border-b border-slate-800 text-xs">
-          <button
-            onClick={() => openProviderModal('byok')}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-semibold transition ${
-              providerModalTab === 'byok'
-                ? 'bg-violet-600 text-white'
-                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
-            }`}
-          >
-            <KeyRound className="w-3.5 h-3.5" />
-            <span>1. Zero-Markup BYOK APIs</span>
-          </button>
+        {/* Clean Matte Tabs */}
+        <div className="px-5 pt-3 pb-2 border-b border-white/[0.06] flex items-center justify-between gap-2 bg-[#161616] shrink-0">
+          <div className="flex items-center gap-1.5">
+            {(
+              [
+                { id: 'byok', label: 'BYOK Providers', icon: KeyRound },
+                { id: 'mcp', label: 'MCP Servers (:3001)', icon: Server },
+                { id: 'bridge', label: 'Browser Credit Bridge', icon: Chrome },
+              ] as const
+            ).map((tab) => {
+              const Icon = tab.icon;
+              const active = providerModalTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => openProviderModal(tab.id)}
+                  className={`h-8 px-3 rounded-[8px] text-[12px] font-medium flex items-center gap-1.5 transition-colors ${
+                    active
+                      ? 'bg-white text-[#0e0e0e]'
+                      : 'bg-[#252525] text-white/75 hover:text-white hover:bg-[#2e2e2e]'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
 
-          <button
-            onClick={() => openProviderModal('mcp')}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-semibold transition ${
-              providerModalTab === 'mcp'
-                ? 'bg-emerald-600 text-white'
-                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
-            }`}
-          >
-            <Workflow className="w-3.5 h-3.5" />
-            <span>2. MCP Server Manager ({mcpServers.length})</span>
-          </button>
-
-          <button
-            onClick={() => openProviderModal('bridge')}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-semibold transition ${
-              providerModalTab === 'bridge'
-                ? 'bg-sky-600 text-white'
-                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
-            }`}
-          >
-            <Chrome className="w-3.5 h-3.5" />
-            <span>3. Chrome Extension Bridge</span>
-          </button>
+          <div className="flex items-center gap-1.5 text-[11.5px] font-mono text-white/65">
+            <Sparkles className="w-3.5 h-3.5 text-[#face15]" strokeWidth={1.75} />
+            <span>0% Platform Markup</span>
+          </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-5">
           {providerModalTab === 'byok' && (
             <>
               <div className="space-y-2">
-                <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Active Canvas Synthesis Route
-                </label>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                  {providerOptions.map((opt) => (
-                    <button
-                      key={opt.id}
-                      onClick={() => setActiveProvider(opt.id)}
-                      className={`p-3 rounded-xl border text-left transition ${
-                        activeProvider === opt.id
-                          ? 'bg-violet-600/20 border-violet-400 shadow-glow-dream'
-                          : 'bg-slate-900/70 border-slate-800 hover:border-slate-600'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-bold text-white">
-                          {opt.label}
-                        </span>
-                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0">
-                          {opt.tag}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                        {opt.desc}
-                      </p>
-                    </button>
-                  ))}
+                <div className="text-[11.5px] font-medium text-white/50">
+                  Active Execution Route
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {providerOptions.map((opt) => {
+                    const selected = activeProvider === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setActiveProvider(opt.id)}
+                        className={`p-3 rounded-[11px] text-left border transition-all ${
+                          selected
+                            ? 'bg-[#252525] border-white/45'
+                            : 'bg-[#151515] border-white/[0.08] hover:border-white/20'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <span className="text-[12.5px] font-medium text-white truncate">
+                            {opt.label}
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded-[5px] bg-white/[0.07] font-mono text-[10px] text-white/75 shrink-0">
+                            {opt.tag}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-white/50 leading-relaxed">
+                          {opt.desc}
+                        </p>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <div className="p-4 rounded-2xl bg-slate-900/75 border border-slate-800 space-y-3.5">
+              {/* Local Browser-Only API Keys */}
+              <div className="p-4 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-white flex items-center gap-1.5">
-                    <Cpu className="w-4 h-4 text-violet-400" /> Direct Provider API
-                    Credentials (Stored in `localStorage` only)
+                  <span className="text-[12.5px] font-medium text-white/90">
+                    Browser-Local API Keys (Stored only in localStorage)
                   </span>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setShowSecrets((s) => !s)}
-                      className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 text-[11px] text-slate-300 hover:text-white"
+                      type="button"
+                      onClick={() => setShowSecrets(!showSecrets)}
+                      className="h-7 px-2.5 rounded-[7px] bg-[#252525] hover:bg-[#2e2e2e] text-[11.5px] text-white/75 flex items-center gap-1.5"
                     >
                       {showSecrets ? (
-                        <EyeOff className="w-3.5 h-3.5" />
+                        <EyeOff className="w-3.5 h-3.5" strokeWidth={1.5} />
                       ) : (
-                        <Eye className="w-3.5 h-3.5" />
+                        <Eye className="w-3.5 h-3.5" strokeWidth={1.5} />
                       )}
                       <span>{showSecrets ? 'Hide' : 'Reveal'}</span>
                     </button>
                     <button
+                      type="button"
                       onClick={clearByokKeys}
-                      className="flex items-center gap-1 px-2 py-1 rounded bg-rose-500/15 text-[11px] text-rose-300 hover:bg-rose-500/25"
+                      className="h-7 px-2.5 rounded-[7px] bg-[#252525] hover:bg-red-500/20 text-[11.5px] text-white/70 hover:text-red-300 flex items-center gap-1"
                     >
-                      <Trash2 className="w-3.5 h-3.5" /> Clear Keys
+                      <Trash2 className="w-3 h-3" strokeWidth={1.5} />
+                      <span>Clear</span>
                     </button>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                  <div className="space-y-1">
-                    <label className="text-slate-300 font-medium">
-                      Google AI Studio Key (`gemini-omni-1.2-flash`)
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-white/45 mb-1">
+                      Google AI Studio Key (Gemini Omni 1.2 Flash)
                     </label>
                     <input
                       type={showSecrets ? 'text' : 'password'}
                       value={byok.geminiApiKey}
-                      onChange={(e) => updateByok({ geminiApiKey: e.target.value })}
+                      onChange={(e) =>
+                        updateByok({ geminiApiKey: e.target.value })
+                      }
                       placeholder="AIzaSy..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 font-mono text-slate-100"
+                      className="w-full h-8 px-3 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] font-mono text-white outline-none focus:border-white/30"
                     />
                   </div>
-
-                  <div className="space-y-1">
-                    <label className="text-slate-300 font-medium">
-                      BytePlus Ark Key (`seedream-3-0` / `seedance-1-0-pro`)
+                  <div>
+                    <label className="block text-[11px] text-white/45 mb-1">
+                      BytePlus Ark Key (Seedream / Seedance)
                     </label>
                     <input
                       type={showSecrets ? 'text' : 'password'}
                       value={byok.seedanceApiKey}
-                      onChange={(e) => updateByok({ seedanceApiKey: e.target.value })}
+                      onChange={(e) =>
+                        updateByok({ seedanceApiKey: e.target.value })
+                      }
                       placeholder="ark-..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 font-mono text-slate-100"
+                      className="w-full h-8 px-3 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] font-mono text-white outline-none focus:border-white/30"
                     />
                   </div>
-
-                  <div className="space-y-1">
-                    <label className="text-slate-300 font-medium">
-                      Fal.ai Key (Wan 2.1 / HunyuanVideo / Flux)
+                  <div>
+                    <label className="block text-[11px] text-white/45 mb-1">
+                      Fal.ai Key
                     </label>
                     <input
                       type={showSecrets ? 'text' : 'password'}
                       value={byok.falApiKey}
                       onChange={(e) => updateByok({ falApiKey: e.target.value })}
                       placeholder="fal_..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 font-mono text-slate-100"
+                      className="w-full h-8 px-3 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] font-mono text-white outline-none focus:border-white/30"
                     />
                   </div>
-
-                  <div className="space-y-1">
-                    <label className="text-slate-300 font-medium">
-                      Replicate API Token
-                    </label>
-                    <input
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.replicateApiKey}
-                      onChange={(e) => updateByok({ replicateApiKey: e.target.value })}
-                      placeholder="r8_..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 font-mono text-slate-100"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-slate-300 font-medium">
-                      OpenAI API Key (`gpt-image-1` / Sora)
-                    </label>
-                    <input
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.openaiApiKey}
-                      onChange={(e) => updateByok({ openaiApiKey: e.target.value })}
-                      placeholder="sk-..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 font-mono text-slate-100"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-slate-300 font-medium">
+                  <div>
+                    <label className="block text-[11px] text-white/45 mb-1">
                       Local ComfyUI Endpoint
                     </label>
                     <input
                       type="text"
                       value={byok.comfyUiUrl}
-                      onChange={(e) => updateByok({ comfyUiUrl: e.target.value })}
-                      placeholder="http://127.0.0.1:8188"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 font-mono text-slate-100"
+                      onChange={(e) =>
+                        updateByok({ comfyUiUrl: e.target.value })
+                      }
+                      className="w-full h-8 px-3 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] font-mono text-white outline-none focus:border-white/30"
                     />
                   </div>
                 </div>
@@ -306,209 +293,191 @@ export const ProviderModal: React.FC = () => {
 
           {providerModalTab === 'mcp' && (
             <div className="space-y-4">
-              <div className="p-4 rounded-2xl bg-emerald-950/20 border border-emerald-500/30 space-y-2">
-                <div className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
-                  <Server className="w-4 h-4" /> Universal Model Context Protocol (MCP)
-                  Canvas Node Auto-Discovery
-                </div>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Connect any WebSocket or HTTP JSON-RPC 2.0 MCP server (such as{' '}
-                  <code className="font-mono text-emerald-200">
-                    packages/mcp-client/src/server-bridge.ts
-                  </code>{' '}
-                  on <code className="font-mono text-emerald-200">ws://localhost:3001/mcp</code>
-                  ). Discovered MCP tools automatically become interactive Canvas Nodes and{' '}
-                  <code className="font-mono text-emerald-200">/mcp:*</code> skills!
-                </p>
-
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 pt-2">
-                  <input
-                    type="text"
-                    value={mcpName}
-                    onChange={(e) => setMcpName(e.target.value)}
-                    placeholder="Server Name"
-                    className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white"
+              <div className="p-3.5 rounded-[12px] bg-[#151515] border border-white/[0.08] flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      mcpHealth.online ? 'bg-[#10b981]' : 'bg-[#f59e0b]'
+                    }`}
                   />
-                  <input
-                    type="text"
-                    value={mcpUrl}
-                    onChange={(e) => setMcpUrl(e.target.value)}
-                    placeholder="ws://localhost:3001/mcp"
-                    className="sm:col-span-2 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-emerald-200"
-                  />
-                  <div className="flex gap-1.5">
-                    <select
-                      value={mcpTransport}
-                      onChange={(e) =>
-                        setMcpTransport(e.target.value as 'websocket' | 'http-sse')
-                      }
-                      className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-2 text-xs text-slate-200"
-                    >
-                      <option value="websocket">WS</option>
-                      <option value="http-sse">HTTP</option>
-                    </select>
-                    <button
-                      onClick={() => addMcpServer(mcpName, mcpUrl, mcpTransport)}
-                      className="flex-1 px-3 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1"
-                    >
-                      <Plus className="w-3.5 h-3.5" /> Connect
-                    </button>
+                  <div>
+                    <div className="text-[12.5px] font-medium text-white">
+                      {mcpHealth.online
+                        ? `Live Local FFmpeg 8.0 + MCP Bridge (${mcpHealth.toolCount} tools)`
+                        : 'Local MCP Bridge Offline'}
+                    </div>
+                    <div className="text-[11px] font-mono text-white/45">
+                      {mcpHealth.baseUrl} · {mcpHealth.mediaFiles.length} media assets indexed
+                    </div>
                   </div>
                 </div>
+                <span className="px-2 py-0.5 rounded-[6px] bg-[#252525] font-mono text-[11px] text-white/75">
+                  {mcpHealth.pingMs ? `${mcpHealth.pingMs}ms` : 'JSON-RPC 2.0'}
+                </span>
               </div>
 
-              {mcpServers.map((srv) => (
-                <div
-                  key={srv.id}
-                  className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-3"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`w-2.5 h-2.5 rounded-full ${
-                          srv.status === 'connected'
-                            ? 'bg-emerald-400'
-                            : 'bg-amber-400'
-                        }`}
-                      />
-                      <span className="text-sm font-bold text-white">{srv.name}</span>
-                      <span className="font-mono text-xs text-slate-400">{srv.url}</span>
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-emerald-300">
-                        {srv.status === 'connected'
-                          ? `LIVE · ${srv.lastPingMs}ms`
-                          : 'SCHEMA PREVIEW READY'}
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => refreshMcpServer(srv.id)}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" /> Ping `tools/list`
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                    {srv.tools.map((tool) => (
-                      <div
-                        key={tool.name}
-                        className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 flex items-start justify-between gap-2"
-                      >
-                        <div className="space-y-1">
-                          <div className="font-mono text-xs font-bold text-emerald-300">
-                            {tool.name}
-                          </div>
-                          <p className="text-[11px] text-slate-400 leading-snug">
-                            {tool.description}
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => spawnMcpToolAsCanvasNode(tool)}
-                          className="shrink-0 px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500 text-emerald-200 hover:text-slate-950 border border-emerald-500/40 text-[11px] font-semibold transition"
-                        >
-                          + Canvas Node
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+              {/* Add New MCP Endpoint */}
+              <div className="p-3.5 rounded-[12px] bg-[#151515] border border-white/[0.08] flex flex-wrap items-end gap-2">
+                <div className="flex-1 min-w-[160px]">
+                  <label className="block text-[11px] text-white/45 mb-1">
+                    Server Name
+                  </label>
+                  <input
+                    value={mcpName}
+                    onChange={(e) => setMcpName(e.target.value)}
+                    className="w-full h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] text-white outline-none"
+                  />
                 </div>
-              ))}
+                <div className="flex-1 min-w-[200px]">
+                  <label className="block text-[11px] text-white/45 mb-1">
+                    Endpoint URL
+                  </label>
+                  <input
+                    value={mcpUrl}
+                    onChange={(e) => setMcpUrl(e.target.value)}
+                    className="w-full h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] font-mono text-white outline-none"
+                  />
+                </div>
+                <select
+                  value={mcpTransport}
+                  onChange={(e) =>
+                    setMcpTransport(e.target.value as 'websocket' | 'http-sse')
+                  }
+                  className="h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] text-white outline-none"
+                >
+                  <option value="http-sse">HTTP JSON-RPC</option>
+                  <option value="websocket">WebSocket</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => void addMcpServer(mcpName, mcpUrl, mcpTransport)}
+                  className="h-8 px-3.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[12px] font-semibold flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
+                  <span>Connect</span>
+                </button>
+              </div>
+
+              {/* Connected MCP Servers & Spawnable Tools */}
+              <div className="space-y-3">
+                {mcpServers.map((srv) => (
+                  <div
+                    key={srv.id}
+                    className="p-4 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-[13px] font-medium text-white flex items-center gap-2">
+                          <span>{srv.name}</span>
+                          <span className="px-1.5 py-0.5 rounded-[5px] bg-[#252525] font-mono text-[10px] text-white/70">
+                            {srv.status}
+                          </span>
+                        </div>
+                        <div className="text-[11px] font-mono text-white/45">
+                          {srv.url}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void refreshMcpServer(srv.id)}
+                        className="h-7 px-2.5 rounded-[7px] bg-[#252525] hover:bg-[#2e2e2e] text-[11.5px] text-white/80 flex items-center gap-1.5"
+                      >
+                        <RefreshCw className="w-3 h-3" strokeWidth={1.5} />
+                        <span>Refresh</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {srv.tools.map((tool) => (
+                        <div
+                          key={tool.name}
+                          className="p-2.5 rounded-[9px] bg-[#1d1d1d] border border-white/[0.06] flex items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-mono text-[11.5px] text-white/90 truncate">
+                              {tool.name}
+                            </div>
+                            <div className="text-[11px] text-white/45 truncate">
+                              {tool.description}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              spawnMcpToolAsCanvasNode(tool);
+                              closeProviderModal();
+                            }}
+                            className="h-7 px-2.5 rounded-[7px] bg-[#2b2b2b] hover:bg-white hover:text-[#0e0e0e] text-[11px] font-medium text-white/90 shrink-0 transition-colors"
+                          >
+                            + Node
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
           {providerModalTab === 'bridge' && (
             <div className="space-y-4">
-              <div className="p-4 rounded-2xl bg-sky-950/25 border border-sky-500/35 space-y-3">
+              <div className="p-4 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-3">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Chrome className="w-5 h-5 text-sky-400" />
-                    <div>
-                      <h3 className="text-sm font-bold text-white">
-                        Subscription Credit Bridge (`extensions/chrome-bridge`)
-                      </h3>
-                      <p className="text-xs text-slate-400">
-                        Use your existing Google AI Pro/Ultra (`flow.google.com`) &
-                        Dreamina (`dreamina.capcut.com`) web credits at $0 API cost.
-                      </p>
+                  <div>
+                    <div className="text-[13px] font-medium text-white">
+                      Manifest V3 Browser Subscription Bridge
+                    </div>
+                    <div className="text-[11.5px] text-white/50">
+                      Load <code className="font-mono text-white/80">extensions/chrome-bridge</code> in{' '}
+                      <code className="font-mono text-white/80">chrome://extensions</code> to reuse your
+                      existing Dreamina or Google Flow web credits.
                     </div>
                   </div>
                   <button
+                    type="button"
                     onClick={pingBridge}
-                    className="px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs flex items-center gap-1.5"
+                    className="h-8 px-3.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[12px] font-semibold"
                   >
-                    <RefreshCw className="w-3.5 h-3.5" /> Ping Extension
+                    Ping Extension
                   </button>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
-                  <div className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 space-y-1">
-                    <div className="text-[11px] text-slate-400">Extension Handshake</div>
-                    <div className="text-xs font-bold flex items-center gap-1.5 text-slate-200">
-                      <CheckCircle2
-                        className={`w-4 h-4 ${
-                          chromeBridge.extensionDetected
-                            ? 'text-emerald-400'
-                            : 'text-slate-500'
-                        }`}
-                      />
-                      <span>
-                        {chromeBridge.extensionDetected
-                          ? 'Connected (`content-studio.js`)'
-                          : 'Awaiting Unpacked Extension'}
+                <div className="grid grid-cols-3 gap-2 pt-1">
+                  {[
+                    {
+                      label: 'Extension Content Script',
+                      ok: chromeBridge.extensionDetected,
+                    },
+                    {
+                      label: 'Dreamina Canvas Tab',
+                      ok: chromeBridge.dreaminaTabConnected,
+                    },
+                    {
+                      label: 'Google Flow Tab',
+                      ok: chromeBridge.flowTabConnected,
+                    },
+                  ].map((item) => (
+                    <div
+                      key={item.label}
+                      className="p-3 rounded-[9px] bg-[#1d1d1d] border border-white/[0.06] flex items-center justify-between"
+                    >
+                      <span className="text-[11.5px] text-white/80">
+                        {item.label}
                       </span>
+                      {item.ok ? (
+                        <Check
+                          className="w-4 h-4 text-[#10b981]"
+                          strokeWidth={1.75}
+                        />
+                      ) : (
+                        <span className="text-[10.5px] font-mono text-white/35">
+                          Standby
+                        </span>
+                      )}
                     </div>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 space-y-1">
-                    <div className="text-[11px] text-slate-400">
-                      Google Flow (`flow.google.com`)
-                    </div>
-                    <div className="text-xs font-bold text-sky-300">
-                      {chromeBridge.flowTabConnected
-                        ? 'Active Session Ready'
-                        : 'Open flow.google.com Tab'}
-                    </div>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 space-y-1">
-                    <div className="text-[11px] text-slate-400">
-                      Dreamina (`dreamina.capcut.com`)
-                    </div>
-                    <div className="text-xs font-bold text-violet-300">
-                      {chromeBridge.dreaminaTabConnected
-                        ? 'Active Session Ready'
-                        : 'Open dreamina.capcut.com Tab'}
-                    </div>
-                  </div>
+                  ))}
                 </div>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2 text-xs text-slate-300">
-                <div className="font-bold text-white flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-amber-400" /> 30-Second Unpacked
-                  Extension Setup
-                </div>
-                <ol className="list-decimal list-inside space-y-1.5 text-slate-300">
-                  <li>
-                    Open <code className="font-mono text-sky-300">chrome://extensions</code>{' '}
-                    in Chrome / Arc / Brave and enable <strong>Developer mode</strong>.
-                  </li>
-                  <li>
-                    Click <strong>Load unpacked</strong> and select{' '}
-                    <code className="font-mono text-violet-300">
-                      open-dreamflow/extensions/chrome-bridge
-                    </code>
-                    .
-                  </li>
-                  <li>
-                    Keep a logged-in tab open to{' '}
-                    <code className="font-mono text-sky-300">https://flow.google.com</code>{' '}
-                    or{' '}
-                    <code className="font-mono text-violet-300">
-                      https://dreamina.capcut.com
-                    </code>
-                    , then select the Chrome Bridge route in Tab 1!
-                  </li>
-                </ol>
               </div>
             </div>
           )}

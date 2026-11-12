@@ -1,1235 +1,1688 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Brush,
-  Camera,
-  Check,
+  AudioLines,
+  ChevronRight,
   Clapperboard,
-  Dice5,
-  Eye,
-  EyeOff,
+  Compass,
+  Copy,
+  Cpu,
+  Download,
   Film,
   GitBranch,
   Grid3X3,
+  Image as ImageIcon,
   Layers,
-  Lock,
+  Loader2,
   Maximize2,
-  Play,
+  Palette,
   Pause,
+  Play,
   Plus,
-  Scissors,
+  Redo2,
   Sparkles,
+  StickyNote,
   Trash2,
-  Wand2,
-  Workflow,
+  Type,
+  Undo2,
+  Upload,
+  UserSquare2,
+  Volume2,
+  VolumeX,
   X,
+  type LucideIcon,
 } from 'lucide-react';
+import type { CanvasNode, DreaminaToolId } from '../types/studio';
 import { useStudioStore } from '../store/useStudioStore';
-import type { AspectRatio, CanvasEdge, CanvasNode, FrameLayerType } from '../types/studio';
 import { SmartMediaImage, SmartMediaVideo } from './SmartMedia';
+import { TimelineCanvasNode } from './TimelineCanvasNode';
 
-const LiveVideoNodeSurface: React.FC<{
-  node: CanvasNode;
-  playing: boolean;
-}> = ({ node, playing }) => {
-  return (
-    <SmartMediaVideo
-      videoUrl={node.videoUrl}
-      posterUrl={node.imageUrl}
-      playing={playing}
-      muted
-      loop
-      className="w-full h-full object-cover pointer-events-none"
-      fallbackPrompt={node.prompt}
-      fallbackSeed={node.seed}
-      fallbackTheme={node.videoTheme}
-      fallbackDurationSec={node.durationSec || 15}
-      fallbackMotionLabel={node.cameraMotion || 'OMNI 1.2'}
-      fallbackBadge={node.previousInteractionId ? 'MULTI-TURN' : 'OMNI 1.2 LIVE'}
-      aspectRatio={node.aspectRatio}
-    />
-  );
-};
+export interface CanvasBoardProps {
+  activeInpaintNodeId: string | null;
+  onCloseInpaint: () => void;
+}
 
-const InpaintMaskCanvas: React.FC<{
-  width: number;
-  height: number;
-  brushSize: number;
-  onMaskReady: (dataUrl: string) => void;
-  clearSignal: number;
-}> = ({ width, height, brushSize, onMaskReady, clearSignal }) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const drawingRef = useRef(false);
+interface WireDraftState {
+  sourceNodeId: string;
+  direction: 'left' | 'right';
+  startWorldX: number;
+  startWorldY: number;
+  curWorldX: number;
+  curWorldY: number;
+  menuScreenX?: number;
+  menuScreenY?: number;
+  frozenForMenu: boolean;
+}
 
-  useEffect(() => {
-    const c = canvasRef.current;
-    if (!c) return;
-    const ctx = c.getContext('2d');
-    if (ctx) {
-      ctx.clearRect(0, 0, c.width, c.height);
-    }
-  }, [clearSignal]);
+interface ContextMenuState {
+  kind: 'canvas' | 'node';
+  screenX: number;
+  screenY: number;
+  worldX: number;
+  worldY: number;
+  nodeId?: string;
+}
 
-  const paintAt = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const c = canvasRef.current;
-    if (!c) return;
-    const rect = c.getBoundingClientRect();
-    const scaleX = c.width / rect.width;
-    const scaleY = c.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
+const CREATE_FLYOUT_ITEMS: Array<{
+  id: DreaminaToolId;
+  label: string;
+  shortcut?: string;
+  icon: LucideIcon;
+}> = [
+  { id: 'text', label: 'Text', shortcut: 'T', icon: Type },
+  { id: 'image', label: 'Image', shortcut: 'I', icon: ImageIcon },
+  { id: 'video', label: 'Video', shortcut: 'G', icon: Clapperboard },
+  { id: 'audio', label: 'Audio', shortcut: 'A', icon: AudioLines },
+  { id: 'timeline', label: 'Timeline', icon: Film },
+  { id: 'element', label: 'Element', icon: UserSquare2 },
+  { id: 'cinema-kit', label: 'Cinema Kit', icon: Palette },
+  { id: 'camera-3d', label: '3D Director Console', icon: Compass },
+  { id: 'image-editor', label: '9-Grid Contact Sheet', icon: Layers },
+  { id: 'sticky', label: 'Sticky note', shortcut: 'S', icon: StickyNote },
+  { id: 'upload', label: 'Upload from device', icon: Upload },
+];
 
-    const ctx = c.getContext('2d');
-    if (!ctx) return;
-    ctx.fillStyle = 'rgba(236, 72, 153, 0.72)';
-    ctx.beginPath();
-    ctx.arc(x, y, brushSize, 0, Math.PI * 2);
-    ctx.fill();
-  };
+const WIRE_DROP_ITEMS: Array<{
+  id: DreaminaToolId | 'blend';
+  label: string;
+  icon: LucideIcon;
+}> = [
+  { id: 'text', label: 'Text', icon: Type },
+  { id: 'image', label: 'Image', icon: ImageIcon },
+  { id: 'video', label: 'Video', icon: Clapperboard },
+  { id: 'audio', label: 'Audio', icon: AudioLines },
+  { id: 'timeline', label: 'Timeline', icon: Film },
+  { id: 'element', label: 'Element', icon: UserSquare2 },
+  { id: 'camera-3d', label: '3D Director Console', icon: Compass },
+  { id: 'blend', label: 'Blend · Multi-Turn', icon: GitBranch },
+];
 
-  return (
-    <canvas
-      ref={canvasRef}
-      width={width * 2}
-      height={height * 2}
-      onPointerDown={(e) => {
-        e.stopPropagation();
-        drawingRef.current = true;
-        e.currentTarget.setPointerCapture(e.pointerId);
-        paintAt(e);
-      }}
-      onPointerMove={(e) => {
-        if (!drawingRef.current) return;
-        e.stopPropagation();
-        paintAt(e);
-      }}
-      onPointerUp={(e) => {
-        e.stopPropagation();
-        drawingRef.current = false;
-        if (canvasRef.current) {
-          onMaskReady(canvasRef.current.toDataURL('image/png'));
-        }
-      }}
-      className="absolute inset-0 w-full h-full cursor-crosshair z-20"
-    />
-  );
-};
+function getNodeKindIcon(kind: CanvasNode['kind']): LucideIcon {
+  switch (kind) {
+    case 'video':
+      return Clapperboard;
+    case 'image':
+      return ImageIcon;
+    case 'contact-sheet':
+      return Grid3X3;
+    case 'element':
+      return UserSquare2;
+    case 'timeline':
+      return Film;
+    case 'text':
+      return Type;
+    case 'sticky':
+      return StickyNote;
+    case 'audio':
+      return AudioLines;
+    case 'style-dna':
+      return Palette;
+    case 'mcp-tool':
+      return Cpu;
+    default:
+      return ImageIcon;
+  }
+}
 
-export const CanvasBoard: React.FC = () => {
-  const {
-    nodes,
-    edges,
-    selectedNodeIds,
-    panX,
-    panY,
-    zoom,
-    snapToGrid,
-    setViewport,
-    toggleSnapToGrid,
-    resetViewport,
-    selectNodes,
-    moveNodes,
-    commitNodePositions,
-    connectNodes,
-    deleteSelectedNodes,
-    pushHistory,
-    applyInpaintToNode,
-    expandOutpaintNode,
-    removeBgAndDecomposeLayers,
-    updateNodeLayer,
-    upscaleNodeHd,
-    retakeNode,
-    sliceContactSheetNode,
-    generateFourAngleCoverage,
-    convertImageToOmniVideo,
-    branchVideoMultiTurn,
-    executeMcpToolNode,
-    sendNodeToTimeline,
-    addMultiframeFromNodeOrBlank,
-  } = useStudioStore();
+function buildCubicBezierPath(x1: number, y1: number, x2: number, y2: number): string {
+  const dx = Math.max(72, Math.abs(x2 - x1) * 0.46);
+  const c1x = x2 >= x1 ? x1 + dx : x1 - dx;
+  const c2x = x2 >= x1 ? x2 - dx : x2 + dx;
+  return `M ${x1} ${y1} C ${c1x} ${y1}, ${c2x} ${y2}, ${x2} ${y2}`;
+}
+
+function formatDurationPill(sec?: number): string {
+  const s = Math.max(1, Math.round(sec || 6));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
+}
+
+export const CanvasBoard: React.FC<CanvasBoardProps> = ({
+  activeInpaintNodeId,
+  onCloseInpaint,
+}) => {
+  const nodes = useStudioStore((s) => s.nodes);
+  const edges = useStudioStore((s) => s.edges);
+  const selectedNodeIds = useStudioStore((s) => s.selectedNodeIds);
+  const clipboardNode = useStudioStore((s) => s.clipboardNode);
+  const past = useStudioStore((s) => s.past);
+  const future = useStudioStore((s) => s.future);
+
+  const panX = useStudioStore((s) => s.panX);
+  const panY = useStudioStore((s) => s.panY);
+  const zoom = useStudioStore((s) => s.zoom);
+  const canvasToolMode = useStudioStore((s) => s.canvasToolMode);
+  const showConnections = useStudioStore((s) => s.showConnections);
+
+  const setViewport = useStudioStore((s) => s.setViewport);
+  const selectNodes = useStudioStore((s) => s.selectNodes);
+  const moveNodes = useStudioStore((s) => s.moveNodes);
+  const commitNodePositions = useStudioStore((s) => s.commitNodePositions);
+  const connectNodes = useStudioStore((s) => s.connectNodes);
+  const updateNodeFields = useStudioStore((s) => s.updateNodeFields);
+  const deleteSelectedNodes = useStudioStore((s) => s.deleteSelectedNodes);
+  const copySelectedNode = useStudioStore((s) => s.copySelectedNode);
+  const pasteClipboardNode = useStudioStore((s) => s.pasteClipboardNode);
+  const duplicateNodes = useStudioStore((s) => s.duplicateNodes);
+  const spawnDreaminaNodeAt = useStudioStore((s) => s.spawnDreaminaNodeAt);
+  const uploadLocalMediaNode = useStudioStore((s) => s.uploadLocalMediaNode);
+  const sendNodeToTimeline = useStudioStore((s) => s.sendNodeToTimeline);
+  const sliceContactSheetNode = useStudioStore((s) => s.sliceContactSheetNode);
+  const branchVideoMultiTurn = useStudioStore((s) => s.branchVideoMultiTurn);
+  const executeMcpToolNode = useStudioStore((s) => s.executeMcpToolNode);
+  const applyInpaintToNode = useStudioStore((s) => s.applyInpaintToNode);
+  const tidyUpNodes = useStudioStore((s) => s.tidyUpNodes);
+  const fitAllNodesInViewport = useStudioStore((s) => s.fitAllNodesInViewport);
+  const setCameraDirectorOpen = useStudioStore((s) => s.setCameraDirectorOpen);
+  const undo = useStudioStore((s) => s.undo);
+  const redo = useStudioStore((s) => s.redo);
+  const showToast = useStudioStore((s) => s.showToast);
 
   const boardRef = useRef<HTMLDivElement | null>(null);
+  const fileUploadRef = useRef<HTMLInputElement | null>(null);
+  const pendingUploadWorldRef = useRef<{ x: number; y: number } | null>(null);
 
-  const [isPanning, setIsPanning] = useState(false);
   const [spacePressed, setSpacePressed] = useState(false);
-  const panStartRef = useRef({ x: 0, y: 0, origPanX: 0, origPanY: 0 });
-
-  const draggingNodeRef = useRef<{
-    active: boolean;
-    ids: string[];
-    lastClientX: number;
-    lastClientY: number;
-    moved: boolean;
-  }>({ active: false, ids: [], lastClientX: 0, lastClientY: 0, moved: false });
+  const [isPanning, setIsPanning] = useState(false);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [renamingNodeId, setRenamingNodeId] = useState<string | null>(null);
+  const [unmutedNodeIds, setUnmutedNodeIds] = useState<Record<string, boolean>>({});
+  const [pausedNodeIds, setPausedNodeIds] = useState<Record<string, boolean>>({});
 
   const [marquee, setMarquee] = useState<{
-    x1: number;
-    y1: number;
-    x2: number;
-    y2: number;
-  } | null>(null);
-
-  const [draftEdge, setDraftEdge] = useState<{
-    sourceId: string;
     startX: number;
     startY: number;
-    currX: number;
-    currY: number;
+    curX: number;
+    curY: number;
   } | null>(null);
 
-  const [activeSubTool, setActiveSubTool] = useState<
-    'none' | 'inpaint' | 'outpaint' | 'layers' | 'upscale' | 'branch'
-  >('none');
-  const [inpaintPrompt, setInpaintPrompt] = useState(
-    'Glowing holographic cyber-visor & neon raindrop speculars'
-  );
-  const [brushSize, setBrushSize] = useState(26);
-  const [maskDataUrl, setMaskDataUrl] = useState<string>('');
-  const [clearMaskCounter, setClearMaskCounter] = useState(0);
-  const [branchPrompt, setBranchPrompt] = useState(
-    'Shift street lighting to crimson cyberpunk neon rain, orbit camera 90° right, keep @Hero_Kael motion locked'
-  );
-  const [playingNodeIds, setPlayingNodeIds] = useState<Record<string, boolean>>({
-    'node-video-omni-1': true,
-  });
+  const [wireDraft, setWireDraft] = useState<WireDraftState | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [createSubmenuOpen, setCreateSubmenuOpen] = useState(false);
 
-  const primarySelectedNode =
-    selectedNodeIds.length === 1
-      ? nodes.find((n) => n.id === selectedNodeIds[0])
-      : undefined;
+  const screenToWorld = (clientX: number, clientY: number) => {
+    const rect = boardRef.current?.getBoundingClientRect();
+    const sx = clientX - (rect?.left || 0);
+    const sy = clientY - (rect?.top || 0);
+    const state = useStudioStore.getState();
+    return {
+      x: (sx - state.panX) / state.zoom,
+      y: (sy - state.panY) / state.zoom,
+    };
+  };
 
+  // Native non-passive wheel listener for butter-smooth trackpad pan + pinch zoom
   useEffect(() => {
-    setActiveSubTool('none');
-    setMaskDataUrl('');
-  }, [primarySelectedNode?.id]);
+    const el = boardRef.current;
+    if (!el) return;
 
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const state = useStudioStore.getState();
+      const rect = el.getBoundingClientRect();
+      const cursorX = e.clientX - rect.left;
+      const cursorY = e.clientY - rect.top;
+
+      if (e.ctrlKey || e.metaKey) {
+        const factor = Math.exp(-e.deltaY * 0.0045);
+        const nextZoom = Math.max(0.2, Math.min(2.5, state.zoom * factor));
+        const scale = nextZoom / state.zoom;
+        const nextPanX = cursorX - (cursorX - state.panX) * scale;
+        const nextPanY = cursorY - (cursorY - state.panY) * scale;
+        state.setViewport(nextPanX, nextPanY, nextZoom);
+      } else {
+        state.setViewport(state.panX - e.deltaX, state.panY - e.deltaY, state.zoom);
+      }
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  // Keyboard shortcuts (Space pan, V/H tool, Copy/Paste/Duplicate/Delete/Undo/Redo/Escape)
   useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName.toLowerCase();
+      return (
+        tag === 'input' ||
+        tag === 'textarea' ||
+        target.isContentEditable
+      );
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      const inInput =
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.tagName === 'SELECT' ||
-          target.isContentEditable);
+      if (e.key === 'Escape') {
+        setContextMenu(null);
+        setWireDraft(null);
+        setRenamingNodeId(null);
+        onCloseInpaint();
+        return;
+      }
 
-      if (e.code === 'Space' && !inInput) {
-        setSpacePressed(true);
-      }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !inInput) {
-        deleteSelectedNodes();
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !inInput) {
+      if (isTypingTarget(e.target)) return;
+
+      if (e.code === 'Space') {
         e.preventDefault();
-        if (e.shiftKey) {
-          useStudioStore.getState().redo();
-        } else {
-          useStudioStore.getState().undo();
-        }
+        setSpacePressed(true);
+        return;
+      }
+
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        useStudioStore.getState().setSearchModalOpen(true);
+        return;
+      }
+      if (mod && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        copySelectedNode();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === 'v') {
+        e.preventDefault();
+        pasteClipboardNode();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        duplicateNodes();
+        return;
+      }
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        deleteSelectedNodes();
+        return;
+      }
+      if (!mod && e.key.toLowerCase() === 'v') {
+        useStudioStore.getState().setCanvasToolMode('select');
+      } else if (!mod && e.key.toLowerCase() === 'h') {
+        useStudioStore.getState().setCanvasToolMode('hand');
       }
     };
+
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space') setSpacePressed(false);
+      if (e.code === 'Space') {
+        setSpacePressed(false);
+      }
     };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [deleteSelectedNodes]);
+  }, [
+    copySelectedNode,
+    pasteClipboardNode,
+    duplicateNodes,
+    deleteSelectedNodes,
+    undo,
+    redo,
+    onCloseInpaint,
+  ]);
 
-  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const rect = boardRef.current?.getBoundingClientRect();
-    if (!rect) return;
+  const nodeMap = useMemo(() => {
+    const m = new Map<string, CanvasNode>();
+    nodes.forEach((n) => m.set(n.id, n));
+    return m;
+  }, [nodes]);
 
-    if (e.ctrlKey || e.metaKey || Math.abs(e.deltaY) > 45) {
-      const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
-      const nextZoom = Math.min(2.4, Math.max(0.22, zoom * zoomFactor));
-      const cursorX = e.clientX - rect.left;
-      const cursorY = e.clientY - rect.top;
-      const worldX = (cursorX - panX) / zoom;
-      const worldY = (cursorY - panY) / zoom;
-      const nextPanX = cursorX - worldX * nextZoom;
-      const nextPanY = cursorY - worldY * nextZoom;
-      setViewport(nextPanX, nextPanY, nextZoom);
-    } else {
-      setViewport(panX - e.deltaX, panY - e.deltaY, zoom);
+  const handleCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button === 2) return; // handled by onContextMenu
+
+    setContextMenu(null);
+    setCreateSubmenuOpen(false);
+    if (wireDraft?.frozenForMenu) {
+      setWireDraft(null);
     }
-  };
 
-  const clientToWorld = (clientX: number, clientY: number) => {
-    const rect = boardRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 0, y: 0 };
-    return {
-      x: (clientX - rect.left - panX) / zoom,
-      y: (clientY - rect.top - panY) / zoom,
-    };
-  };
+    const shouldPan =
+      e.button === 1 || spacePressed || canvasToolMode === 'hand';
 
-  const handleBoardPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.target !== boardRef.current && !(e.target as HTMLElement).dataset.canvasBg) {
+    if (shouldPan) {
+      e.preventDefault();
+      setIsPanning(true);
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const initPanX = panX;
+      const initPanY = panY;
+
+      const onMove = (ev: PointerEvent) => {
+        setViewport(
+          initPanX + (ev.clientX - startX),
+          initPanY + (ev.clientY - startY),
+          useStudioStore.getState().zoom
+        );
+      };
+      const onUp = () => {
+        setIsPanning(false);
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
       return;
     }
 
-    if (e.shiftKey) {
-      const pt = clientToWorld(e.clientX, e.clientY);
-      setMarquee({ x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y });
-      return;
-    }
-
-    if (!spacePressed && e.button === 0) {
+    // Left click on empty canvas: clear selection & start marquee drag
+    if (!e.shiftKey) {
       selectNodes([]);
     }
-    setIsPanning(true);
-    panStartRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      origPanX: panX,
-      origPanY: panY,
-    };
-  };
 
-  const handleBoardPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (isPanning) {
-      const dx = e.clientX - panStartRef.current.x;
-      const dy = e.clientY - panStartRef.current.y;
-      setViewport(
-        panStartRef.current.origPanX + dx,
-        panStartRef.current.origPanY + dy,
-        zoom
-      );
-      return;
-    }
+    const rect = boardRef.current?.getBoundingClientRect();
+    const sx = e.clientX - (rect?.left || 0);
+    const sy = e.clientY - (rect?.top || 0);
 
-    if (marquee) {
-      const pt = clientToWorld(e.clientX, e.clientY);
-      setMarquee((m) => (m ? { ...m, x2: pt.x, y2: pt.y } : null));
-      return;
-    }
+    const onMove = (ev: PointerEvent) => {
+      const cx = ev.clientX - (rect?.left || 0);
+      const cy = ev.clientY - (rect?.top || 0);
+      if (Math.hypot(cx - sx, cy - sy) < 4) return;
 
-    if (draftEdge) {
-      const pt = clientToWorld(e.clientX, e.clientY);
-      setDraftEdge((de) => (de ? { ...de, currX: pt.x, currY: pt.y } : null));
-      return;
-    }
+      setMarquee({ startX: sx, startY: sy, curX: cx, curY: cy });
 
-    if (draggingNodeRef.current.active) {
-      const dx = (e.clientX - draggingNodeRef.current.lastClientX) / zoom;
-      const dy = (e.clientY - draggingNodeRef.current.lastClientY) / zoom;
-      if (Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2) {
-        if (!draggingNodeRef.current.moved) {
-          pushHistory();
-          draggingNodeRef.current.moved = true;
-        }
-        moveNodes(draggingNodeRef.current.ids, dx, dy);
-        draggingNodeRef.current.lastClientX = e.clientX;
-        draggingNodeRef.current.lastClientY = e.clientY;
-      }
-    }
-  };
+      const st = useStudioStore.getState();
+      const minWX = (Math.min(sx, cx) - st.panX) / st.zoom;
+      const maxWX = (Math.max(sx, cx) - st.panX) / st.zoom;
+      const minWY = (Math.min(sy, cy) - st.panY) / st.zoom;
+      const maxWY = (Math.max(sy, cy) - st.panY) / st.zoom;
 
-  const handleBoardPointerUp = () => {
-    if (isPanning) setIsPanning(false);
-
-    if (marquee) {
-      const minX = Math.min(marquee.x1, marquee.x2);
-      const maxX = Math.max(marquee.x1, marquee.x2);
-      const minY = Math.min(marquee.y1, marquee.y2);
-      const maxY = Math.max(marquee.y1, marquee.y2);
-      const hitIds = nodes
+      const hits = st.nodes
         .filter(
           (n) =>
-            n.x + n.width >= minX &&
-            n.x <= maxX &&
-            n.y + n.height >= minY &&
-            n.y <= maxY
+            n.x + n.width >= minWX &&
+            n.x <= maxWX &&
+            n.y + n.height >= minWY &&
+            n.y <= maxWY
         )
         .map((n) => n.id);
-      selectNodes(hitIds);
+      selectNodes(hits);
+    };
+
+    const onUp = () => {
       setMarquee(null);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  const handleNodePointerDown = (
+    e: React.PointerEvent<HTMLDivElement>,
+    node: CanvasNode
+  ) => {
+    if (e.button === 2) return;
+    e.stopPropagation();
+
+    setContextMenu(null);
+    if (wireDraft?.frozenForMenu) {
+      setWireDraft(null);
     }
 
-    if (draftEdge) {
-      setDraftEdge(null);
+    if (spacePressed || canvasToolMode === 'hand' || e.button === 1) {
+      handleCanvasPointerDown(e);
+      return;
     }
 
-    if (draggingNodeRef.current.active) {
-      if (draggingNodeRef.current.moved) {
+    const state = useStudioStore.getState();
+    const alreadySelected = state.selectedNodeIds.includes(node.id);
+    let movingIds = state.selectedNodeIds;
+
+    if (e.shiftKey) {
+      selectNodes([node.id], true);
+      movingIds = useStudioStore.getState().selectedNodeIds;
+    } else if (!alreadySelected) {
+      selectNodes([node.id], false);
+      movingIds = [node.id];
+    }
+
+    let lastClientX = e.clientX;
+    let lastClientY = e.clientY;
+    let moved = false;
+
+    const onMove = (ev: PointerEvent) => {
+      const z = useStudioStore.getState().zoom;
+      const dx = (ev.clientX - lastClientX) / z;
+      const dy = (ev.clientY - lastClientY) / z;
+      if (Math.abs(ev.clientX - lastClientX) > 1 || Math.abs(ev.clientY - lastClientY) > 1) {
+        moved = true;
+      }
+      lastClientX = ev.clientX;
+      lastClientY = ev.clientY;
+      moveNodes(movingIds, dx, dy);
+    };
+
+    const onUp = () => {
+      if (moved) {
         commitNodePositions();
       }
-      draggingNodeRef.current.active = false;
-    }
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
   };
 
-  const renderEdgeStroke = (kind: CanvasEdge['kind']) => {
-    switch (kind) {
-      case 'style-dna':
-        return '#F43F5E';
-      case 'multi-turn-branch':
-        return '#38BDF8';
-      case 'grid-slice':
-        return '#A855F7';
-      case 'mcp-pipe':
-        return '#10B981';
-      default:
-        return '#8B5CF6';
-    }
+  // Port (+) PointerDown: drag Bezier wire OR click to open Dreamina Wire-Drop Creation Menu
+  const handlePortPointerDown = (
+    e: React.PointerEvent<HTMLButtonElement>,
+    node: CanvasNode,
+    direction: 'left' | 'right'
+  ) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setContextMenu(null);
+
+    const startWorldX = direction === 'right' ? node.x + node.width : node.x;
+    const startWorldY = node.y + node.height / 2;
+
+    const initialDraft: WireDraftState = {
+      sourceNodeId: node.id,
+      direction,
+      startWorldX,
+      startWorldY,
+      curWorldX: startWorldX + (direction === 'right' ? 140 : -140),
+      curWorldY: startWorldY,
+      frozenForMenu: false,
+    };
+    setWireDraft(initialDraft);
+
+    const downClientX = e.clientX;
+    const downClientY = e.clientY;
+    let dragged = false;
+
+    const onMove = (ev: PointerEvent) => {
+      if (Math.hypot(ev.clientX - downClientX, ev.clientY - downClientY) > 5) {
+        dragged = true;
+      }
+      if (!dragged) return;
+      const pt = screenToWorld(ev.clientX, ev.clientY);
+      setWireDraft((prev) =>
+        prev
+          ? {
+              ...prev,
+              curWorldX: pt.x,
+              curWorldY: pt.y,
+            }
+          : null
+      );
+    };
+
+    const onUp = (ev: PointerEvent) => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+
+      const st = useStudioStore.getState();
+
+      if (!dragged) {
+        // Click on (+): project wire 150px outward and open Wire-Drop Creation Menu
+        const targetWorldX =
+          direction === 'right' ? startWorldX + 140 : startWorldX - 420;
+        const targetWorldY = startWorldY - 40;
+        const wireEndWorldX =
+          direction === 'right' ? startWorldX + 128 : startWorldX - 128;
+        const menuX = Math.min(
+          window.innerWidth - 236,
+          Math.max(76, st.panX + wireEndWorldX * st.zoom)
+        );
+        const menuY = Math.min(
+          window.innerHeight - 310,
+          Math.max(60, st.panY + startWorldY * st.zoom - 90)
+        );
+        setWireDraft({
+          sourceNodeId: node.id,
+          direction,
+          startWorldX,
+          startWorldY,
+          curWorldX: targetWorldX,
+          curWorldY: targetWorldY,
+          menuScreenX: menuX,
+          menuScreenY: menuY,
+          frozenForMenu: true,
+        });
+        return;
+      }
+
+      const dropWorld = screenToWorld(ev.clientX, ev.clientY);
+      const targetNode = st.nodes.find(
+        (n) =>
+          n.id !== node.id &&
+          dropWorld.x >= n.x - 20 &&
+          dropWorld.x <= n.x + n.width + 20 &&
+          dropWorld.y >= n.y - 20 &&
+          dropWorld.y <= n.y + n.height + 20
+      );
+
+      if (targetNode) {
+        if (direction === 'right') {
+          connectNodes(node.id, targetNode.id, 'lineage');
+        } else {
+          connectNodes(targetNode.id, node.id, 'lineage');
+        }
+        setWireDraft(null);
+        return;
+      }
+
+      // Dropped on empty canvas -> freeze wire & open Dreamina Wire-Drop Creation Menu!
+      const menuX = Math.min(window.innerWidth - 236, Math.max(76, ev.clientX));
+      const menuY = Math.min(window.innerHeight - 310, Math.max(60, ev.clientY - 40));
+      setWireDraft({
+        sourceNodeId: node.id,
+        direction,
+        startWorldX,
+        startWorldY,
+        curWorldX: dropWorld.x,
+        curWorldY: dropWorld.y,
+        menuScreenX: menuX,
+        menuScreenY: menuY,
+        frozenForMenu: true,
+      });
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
   };
 
-  const buildBezierPath = (x1: number, y1: number, x2: number, y2: number) => {
-    const dist = Math.max(60, Math.abs(x2 - x1) * 0.48);
-    return `M ${x1} ${y1} C ${x1 + dist} ${y1}, ${x2 - dist} ${y2}, ${x2} ${y2}`;
+  const handleCanvasContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setWireDraft(null);
+    setCreateSubmenuOpen(false);
+    const world = screenToWorld(e.clientX, e.clientY);
+    const sx = Math.min(window.innerWidth - 240, Math.max(16, e.clientX));
+    const sy = Math.min(window.innerHeight - 280, Math.max(16, e.clientY));
+    setContextMenu({
+      kind: 'canvas',
+      screenX: sx,
+      screenY: sy,
+      worldX: world.x,
+      worldY: world.y,
+    });
   };
+
+  const handleNodeContextMenu = (
+    e: React.MouseEvent<HTMLDivElement>,
+    node: CanvasNode
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setWireDraft(null);
+    if (!selectedNodeIds.includes(node.id)) {
+      selectNodes([node.id]);
+    }
+    const world = screenToWorld(e.clientX, e.clientY);
+    const sx = Math.min(window.innerWidth - 240, Math.max(16, e.clientX));
+    const sy = Math.min(window.innerHeight - 360, Math.max(16, e.clientY));
+    setContextMenu({
+      kind: 'node',
+      screenX: sx,
+      screenY: sy,
+      worldX: world.x,
+      worldY: world.y,
+      nodeId: node.id,
+    });
+  };
+
+  const handleDownloadNodeMedia = (node: CanvasNode) => {
+    const href = node.videoUrl || node.imageUrl || node.audioUrl;
+    if (!href) {
+      showToast('No downloadable media URL on this node yet.');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = href;
+    const ext = node.videoUrl ? 'mp4' : node.audioUrl ? 'mp3' : 'png';
+    a.download = `${node.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const gridSpacing = Math.max(12, Math.round(20 * zoom));
+  const contextNode = contextMenu?.nodeId
+    ? nodeMap.get(contextMenu.nodeId) || null
+    : null;
 
   return (
     <div
       ref={boardRef}
-      data-canvas-bg="true"
-      onWheel={handleWheel}
-      onPointerDown={handleBoardPointerDown}
-      onPointerMove={handleBoardPointerMove}
-      onPointerUp={handleBoardPointerUp}
-      className={`relative w-full h-full overflow-hidden bg-[#07080C] ${
-        isPanning || spacePressed ? 'cursor-grabbing' : 'cursor-default'
-      }`}
+      onPointerDown={handleCanvasPointerDown}
+      onContextMenu={handleCanvasContextMenu}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('Files')) {
+          e.preventDefault();
+        }
+      }}
+      onDrop={(e) => {
+        const file = e.dataTransfer.files?.[0];
+        if (file) {
+          e.preventDefault();
+          const world = screenToWorld(e.clientX, e.clientY);
+          uploadLocalMediaNode(file, world.x, world.y);
+        }
+      }}
       style={{
-        backgroundImage: snapToGrid
-          ? `radial-gradient(rgba(148, 163, 184, 0.16) 1px, transparent 1px)`
-          : 'none',
-        backgroundSize: `${24 * zoom}px ${24 * zoom}px`,
+        backgroundColor: '#0e0e0e',
+        backgroundImage:
+          'radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px)',
+        backgroundSize: `${gridSpacing}px ${gridSpacing}px`,
         backgroundPosition: `${panX}px ${panY}px`,
       }}
+      className={`relative w-full h-full overflow-hidden select-none ${
+        isPanning
+          ? 'cursor-grabbing'
+          : spacePressed || canvasToolMode === 'hand'
+          ? 'cursor-grab'
+          : 'cursor-default'
+      }`}
     >
+      {/* Hidden File Input for Context Menu Upload */}
+      <input
+        ref={fileUploadRef}
+        type="file"
+        accept="image/*,video/*,audio/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            const pt = pendingUploadWorldRef.current || { x: 400, y: 260 };
+            uploadLocalMediaNode(file, pt.x, pt.y);
+            e.target.value = '';
+          }
+        }}
+      />
+
+      {/* Transformed World Plane */}
       <div
-        data-canvas-bg="true"
         style={{
-          transform: `translate(${panX}px, ${panY}px) scale(${zoom})`,
+          transform: `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`,
           transformOrigin: '0 0',
         }}
-        className="absolute top-0 left-0 w-[6000px] h-[4000px] pointer-events-none"
+        className="absolute top-0 left-0 w-0 h-0"
       >
-        <svg className="absolute top-0 left-0 w-[6000px] h-[4000px] overflow-visible pointer-events-none">
-          <defs>
-            <filter id="edge-glow" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="2.5" result="blur" />
-              <feMerge>
-                <feMergeNode in="blur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
-          </defs>
+        {/* Bezier Node Connection Wires (#20D5EC) */}
+        <svg
+          className="overflow-visible pointer-events-none"
+          style={{ position: 'absolute', left: 0, top: 0, width: 1, height: 1 }}
+        >
+          {showConnections &&
+            edges.map((edge) => {
+              const src = nodeMap.get(edge.sourceId);
+              const dst = nodeMap.get(edge.targetId);
+              if (!src || !dst) return null;
 
-          {edges.map((edge) => {
-            const src = nodes.find((n) => n.id === edge.sourceId);
-            const dst = nodes.find((n) => n.id === edge.targetId);
-            if (!src || !dst) return null;
-            const x1 = src.x + src.width;
-            const y1 = src.y + src.height / 2 + 16;
-            const x2 = dst.x;
-            const y2 = dst.y + dst.height / 2 + 16;
-            const path = buildBezierPath(x1, y1, x2, y2);
-            const color = renderEdgeStroke(edge.kind);
-            const midX = (x1 + x2) / 2;
-            const midY = (y1 + y2) / 2;
+              const x1 = src.x + src.width;
+              const y1 = src.y + src.height / 2;
+              const x2 = dst.x;
+              const y2 = dst.y + dst.height / 2;
+              const path = buildCubicBezierPath(x1, y1, x2, y2);
 
-            return (
-              <g key={edge.id}>
-                <path
-                  d={path}
-                  fill="none"
-                  stroke={color}
-                  strokeOpacity={0.22}
-                  strokeWidth={5}
-                  filter="url(#edge-glow)"
-                />
-                <path
-                  d={path}
-                  fill="none"
-                  stroke={color}
-                  strokeWidth={2}
-                  className="animate-edge-flow"
-                />
-                {edge.label && (
-                  <g transform={`translate(${midX}, ${midY})`}>
-                    <rect
-                      x={-(edge.label.length * 3.3 + 10)}
-                      y={-10}
-                      width={edge.label.length * 6.6 + 20}
-                      height={20}
-                      rx={6}
-                      fill="#0C0E14"
-                      stroke={color}
-                      strokeOpacity={0.55}
-                      strokeWidth={1}
-                    />
-                    <text
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fill="#E2E8F0"
-                      fontSize="10"
-                      fontFamily="JetBrains Mono, monospace"
-                    >
-                      {edge.label}
-                    </text>
-                  </g>
+              const isHighlighted =
+                selectedNodeIds.includes(src.id) ||
+                selectedNodeIds.includes(dst.id) ||
+                dst.status === 'generating';
+
+              return (
+                <g key={edge.id}>
+                  <path
+                    d={path}
+                    fill="none"
+                    stroke="#20D5EC"
+                    strokeWidth={isHighlighted ? 2 : 1.75}
+                    strokeOpacity={isHighlighted ? 0.92 : 0.45}
+                    className={dst.status === 'generating' ? 'animate-wire-active' : ''}
+                  />
+                  <circle
+                    cx={x1}
+                    cy={y1}
+                    r={3}
+                    fill="#20D5EC"
+                    fillOpacity={isHighlighted ? 0.95 : 0.5}
+                  />
+                  <circle
+                    cx={x2}
+                    cy={y2}
+                    r={3}
+                    fill="#20D5EC"
+                    fillOpacity={isHighlighted ? 0.95 : 0.5}
+                  />
+                </g>
+              );
+            })}
+
+          {/* Live / Frozen Draft Wire from (+) Port */}
+          {wireDraft && (
+            <g>
+              <path
+                d={buildCubicBezierPath(
+                  wireDraft.startWorldX,
+                  wireDraft.startWorldY,
+                  wireDraft.curWorldX,
+                  wireDraft.curWorldY
                 )}
-              </g>
-            );
-          })}
-
-          {draftEdge && (
-            <path
-              d={buildBezierPath(
-                draftEdge.startX,
-                draftEdge.startY,
-                draftEdge.currX,
-                draftEdge.currY
-              )}
-              fill="none"
-              stroke="#38BDF8"
-              strokeWidth={2.5}
-              strokeDasharray="5 5"
-            />
-          )}
-
-          {marquee && (
-            <rect
-              x={Math.min(marquee.x1, marquee.x2)}
-              y={Math.min(marquee.y1, marquee.y2)}
-              width={Math.abs(marquee.x2 - marquee.x1)}
-              height={Math.abs(marquee.y2 - marquee.y1)}
-              fill="rgba(139, 92, 246, 0.14)"
-              stroke="#8B5CF6"
-              strokeWidth={1.5}
-              strokeDasharray="4 4"
-            />
+                fill="none"
+                stroke="#20D5EC"
+                strokeWidth={2}
+                strokeDasharray="6 5"
+                className="animate-wire-active"
+              />
+              <circle
+                cx={wireDraft.curWorldX}
+                cy={wireDraft.curWorldY}
+                r={4.5}
+                fill="#20D5EC"
+              />
+            </g>
           )}
         </svg>
 
+        {/* Spatial Canvas Nodes */}
         {nodes.map((node) => {
           const isSelected = selectedNodeIds.includes(node.id);
-          const isPrimary = primarySelectedNode?.id === node.id;
-          const fgLayer = node.layers.find((l) => l.id === 'fg');
-          const bgLayer = node.layers.find((l) => l.id === 'bg');
-          const maskLayer = node.layers.find((l) => l.id === 'mask');
-          const textLayer = node.layers.find((l) => l.id === 'text');
-          const hasSplitBgRemoved = Boolean(fgLayer?.bgRemoved);
+          const isHovered = hoveredNodeId === node.id;
+          const showPorts = isSelected || isHovered || wireDraft?.sourceNodeId === node.id;
+          const KindIcon = getNodeKindIcon(node.kind);
+          const isUnmuted = Boolean(unmutedNodeIds[node.id]);
+          const isPaused = Boolean(pausedNodeIds[node.id]);
 
           return (
             <div
               key={node.id}
               style={{
-                left: node.x,
-                top: node.y,
-                width: node.width,
+                left: `${node.x}px`,
+                top: `${node.y}px`,
+                width: `${node.width}px`,
+                height: `${node.height}px`,
               }}
-              onPointerDown={(e) => {
-                if (spacePressed) return;
-                e.stopPropagation();
-                const nextSelection = e.shiftKey
-                  ? selectedNodeIds.includes(node.id)
-                    ? selectedNodeIds
-                    : [...selectedNodeIds, node.id]
-                  : selectedNodeIds.includes(node.id) && selectedNodeIds.length > 1
-                  ? selectedNodeIds
-                  : [node.id];
-
-                if (e.shiftKey) {
-                  selectNodes([node.id], true);
-                } else if (!selectedNodeIds.includes(node.id)) {
-                  selectNodes([node.id], false);
-                }
-
-                draggingNodeRef.current = {
-                  active: true,
-                  ids: nextSelection,
-                  lastClientX: e.clientX,
-                  lastClientY: e.clientY,
-                  moved: false,
-                };
-              }}
-              className={`absolute pointer-events-auto rounded-2xl transition-shadow duration-150 ${
-                isSelected
-                  ? 'ring-2 ring-violet-400 shadow-glow-dream z-30'
-                  : 'ring-1 ring-slate-700/60 hover:ring-slate-500/80 z-10'
-              } bg-[#0D1017]/95 backdrop-blur-md`}
+              onMouseEnter={() => setHoveredNodeId(node.id)}
+              onMouseLeave={() =>
+                setHoveredNodeId((cur) => (cur === node.id ? null : cur))
+              }
+              onPointerDown={(e) => handleNodePointerDown(e, node)}
+              onContextMenu={(e) => handleNodeContextMenu(e, node)}
+              className="absolute group"
             >
-              {isPrimary && node.kind !== 'style-dna' && node.kind !== 'mcp-tool' && (
-                <div
-                  onPointerDown={(e) => e.stopPropagation()}
-                  className="absolute -top-14 left-1/2 -translate-x-1/2 flex items-center gap-1 px-2 py-1.5 rounded-xl bg-[#111520]/95 border border-violet-500/40 shadow-2xl backdrop-blur-xl whitespace-nowrap z-50"
-                >
-                  <button
-                    onClick={() =>
-                      setActiveSubTool(activeSubTool === 'inpaint' ? 'none' : 'inpaint')
-                    }
-                    title="Interactive Brush Mask + Regional Redraw"
-                    className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition ${
-                      activeSubTool === 'inpaint'
-                        ? 'bg-pink-500/25 text-pink-200 border border-pink-400/50'
-                        : 'text-slate-200 hover:bg-slate-800'
+              {/* Outside Top-Left Node Header Label (-24px above frame) */}
+              <div
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setRenamingNodeId(node.id);
+                }}
+                className="absolute -top-[24px] left-0 right-0 h-[20px] flex items-center justify-between gap-2 pointer-events-auto"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <KindIcon
+                    className={`w-[13px] h-[13px] shrink-0 transition-colors ${
+                      isSelected ? 'text-white/90' : 'text-white/45'
                     }`}
-                  >
-                    <Brush className="w-3.5 h-3.5 text-pink-400" />
-                    <span>🖌️ Inpaint</span>
-                  </button>
-
-                  <button
-                    onClick={() =>
-                      setActiveSubTool(activeSubTool === 'outpaint' ? 'none' : 'outpaint')
-                    }
-                    title="Expand Aspect Ratio & Outpaint Boundaries"
-                    className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition ${
-                      activeSubTool === 'outpaint'
-                        ? 'bg-sky-500/25 text-sky-200 border border-sky-400/50'
-                        : 'text-slate-200 hover:bg-slate-800'
-                    }`}
-                  >
-                    <Maximize2 className="w-3.5 h-3.5 text-sky-400" />
-                    <span>⤢ Expand</span>
-                  </button>
-
-                  <button
-                    onClick={() =>
-                      setActiveSubTool(activeSubTool === 'layers' ? 'none' : 'layers')
-                    }
-                    title="Remove BG & Non-Destructive Layer Stack"
-                    className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition ${
-                      activeSubTool === 'layers'
-                        ? 'bg-emerald-500/25 text-emerald-200 border border-emerald-400/50'
-                        : 'text-slate-200 hover:bg-slate-800'
-                    }`}
-                  >
-                    <Layers className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>✂️ Remove BG & Layers</span>
-                  </button>
-
-                  <div className="w-px h-4 bg-slate-700/70 mx-0.5" />
-
-                  <button
-                    onClick={() =>
-                      upscaleNodeHd(node.id, node.resolution === '2K' ? '4K' : '2K')
-                    }
-                    title="HD Upscale (2K / 4K Master)"
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium text-slate-200 hover:bg-slate-800 transition"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                    <span>💎 {node.resolution === '2K' ? '4K' : '2K'}</span>
-                  </button>
-
-                  <button
-                    onClick={() => retakeNode(node.id)}
-                    title="Retake Shot (New Seed, Locked @Elements)"
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium text-slate-200 hover:bg-slate-800 transition"
-                  >
-                    <Dice5 className="w-3.5 h-3.5 text-violet-400" />
-                    <span>🎲 Retake</span>
-                  </button>
-
-                  <div className="w-px h-4 bg-slate-700/70 mx-0.5" />
-
-                  <button
-                    onClick={() => sliceContactSheetNode(node.id, 3, 3)}
-                    title="9-Grid Contact Sheet Slicer (3×3 → 9 Linked Frames)"
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-violet-500/15 hover:bg-violet-500/30 text-violet-200 border border-violet-500/30 transition"
-                  >
-                    <Grid3X3 className="w-3.5 h-3.5 text-violet-300" />
-                    <span>⊞ 9-Grid Slicer</span>
-                  </button>
-
-                  <button
-                    onClick={() => generateFourAngleCoverage(node.id)}
-                    title="4-Angle Multi-Cam Coverage (2×2 → 4 Linked Angles)"
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium text-slate-200 hover:bg-slate-800 transition"
-                  >
-                    <Camera className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>4-Angle</span>
-                  </button>
-
-                  <div className="w-px h-4 bg-slate-700/70 mx-0.5" />
-
-                  <button
-                    onClick={() => convertImageToOmniVideo(node.id, 15)}
-                    title="Synthesize 15s Gemini Omni 1.2 Flash Shot"
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-sky-500/15 hover:bg-sky-500/30 text-sky-200 border border-sky-400/30 transition"
-                  >
-                    <Clapperboard className="w-3.5 h-3.5 text-sky-300" />
-                    <span>🎬 15s Omni</span>
-                  </button>
-
-                  <button
-                    onClick={() =>
-                      setActiveSubTool(activeSubTool === 'branch' ? 'none' : 'branch')
-                    }
-                    title="Stateful Multi-Turn Video Branch (previous_interaction_id)"
-                    className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition ${
-                      activeSubTool === 'branch'
-                        ? 'bg-cyan-500/30 text-cyan-100 border border-cyan-400/60'
-                        : 'text-cyan-200 hover:bg-slate-800'
-                    }`}
-                  >
-                    <GitBranch className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>🌿 Multi-Turn</span>
-                  </button>
-                </div>
-              )}
-
-              {isPrimary && activeSubTool === 'inpaint' && (
-                <div
-                  onPointerDown={(e) => e.stopPropagation()}
-                  className="absolute -top-44 left-0 w-[370px] p-3 rounded-xl bg-[#111521]/98 border border-pink-500/40 shadow-2xl z-50 space-y-2"
-                >
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-semibold text-pink-300 flex items-center gap-1.5">
-                      <Brush className="w-3.5 h-3.5" /> Paint Mask Directly on Frame Below
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-slate-400 font-mono">
-                        Brush {brushSize}px
-                      </span>
-                      <input
-                        type="range"
-                        min={10}
-                        max={64}
-                        value={brushSize}
-                        onChange={(e) => setBrushSize(Number(e.target.value))}
-                        className="w-16 accent-pink-500"
-                      />
-                      <button
-                        onClick={() => {
-                          setClearMaskCounter((c) => c + 1);
-                          setMaskDataUrl('');
-                        }}
-                        className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 hover:text-white"
-                      >
-                        Clear
-                      </button>
-                    </div>
-                  </div>
-                  <div className="flex gap-1.5">
+                    strokeWidth={1.5}
+                  />
+                  {renamingNodeId === node.id ? (
                     <input
-                      type="text"
-                      value={inpaintPrompt}
-                      onChange={(e) => setInpaintPrompt(e.target.value)}
-                      placeholder="Describe regional redraw..."
-                      className="flex-1 bg-slate-900/90 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-pink-400"
-                    />
-                    <button
-                      onClick={async () => {
-                        if (!maskDataUrl) {
-                          const autoCanvas = document.createElement('canvas');
-                          autoCanvas.width = node.width * 2;
-                          autoCanvas.height = node.height * 2;
-                          const c = autoCanvas.getContext('2d')!;
-                          c.fillStyle = 'rgba(236,72,153,0.9)';
-                          c.beginPath();
-                          c.arc(node.width, node.height * 0.9, 95, 0, Math.PI * 2);
-                          c.fill();
-                          await applyInpaintToNode(
-                            node.id,
-                            autoCanvas.toDataURL('image/png'),
-                            inpaintPrompt
-                          );
-                        } else {
-                          await applyInpaintToNode(node.id, maskDataUrl, inpaintPrompt);
+                      autoFocus
+                      value={node.title}
+                      onChange={(e) =>
+                        updateNodeFields(node.id, { title: e.target.value })
+                      }
+                      onBlur={() => setRenamingNodeId(null)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === 'Escape') {
+                          setRenamingNodeId(null);
                         }
-                        setActiveSubTool('none');
                       }}
-                      className="px-3 py-1.5 rounded-lg bg-pink-600 hover:bg-pink-500 text-white text-xs font-semibold flex items-center gap-1"
-                    >
-                      <Check className="w-3.5 h-3.5" /> Redraw
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {isPrimary && activeSubTool === 'outpaint' && (
-                <div
-                  onPointerDown={(e) => e.stopPropagation()}
-                  className="absolute -top-28 left-1/2 -translate-x-1/2 p-2.5 rounded-xl bg-[#111521]/98 border border-sky-500/40 shadow-2xl z-50 flex items-center gap-2"
-                >
-                  <span className="text-[11px] font-semibold text-sky-300 px-1">
-                    Expand Ratio:
-                  </span>
-                  {(['16:9', '21:9', '9:16', '1:1'] as AspectRatio[]).map((ratio) => (
-                    <button
-                      key={ratio}
-                      onClick={async () => {
-                        await expandOutpaintNode(node.id, ratio);
-                        setActiveSubTool('none');
-                      }}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-mono font-medium transition ${
-                        node.aspectRatio === ratio
-                          ? 'bg-sky-500 text-slate-950 font-bold'
-                          : 'bg-slate-800 text-slate-200 hover:bg-sky-500/25'
+                      onPointerDown={(e) => e.stopPropagation()}
+                      className="bg-[#252525] text-[12px] text-white px-1.5 py-0.5 rounded-[5px] outline-none border border-white/25"
+                    />
+                  ) : (
+                    <span
+                      className={`text-[12px] font-medium truncate transition-colors ${
+                        isSelected
+                          ? 'text-white/95'
+                          : 'text-white/55 group-hover:text-white/80'
                       }`}
                     >
-                      {ratio}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {isPrimary && activeSubTool === 'layers' && (
-                <div
-                  onPointerDown={(e) => e.stopPropagation()}
-                  className="absolute -right-[275px] top-0 w-[264px] p-3 rounded-xl bg-[#111521]/98 border border-emerald-500/40 shadow-2xl z-50 space-y-2.5"
-                >
-                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                    <span className="text-xs font-semibold text-emerald-300 flex items-center gap-1.5">
-                      <Layers className="w-3.5 h-3.5" /> Non-Destructive Layers
+                      {node.title}
                     </span>
-                    <button
-                      onClick={() => setActiveSubTool('none')}
-                      className="text-slate-400 hover:text-white"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  <button
-                    onClick={() => removeBgAndDecomposeLayers(node.id)}
-                    className="w-full py-1.5 px-2.5 rounded-lg bg-emerald-600/25 hover:bg-emerald-600/40 border border-emerald-500/40 text-emerald-200 text-xs font-medium flex items-center justify-center gap-1.5 transition"
-                  >
-                    <Scissors className="w-3.5 h-3.5" />
-                    <span>Isolate Subject (Remove BG)</span>
-                  </button>
-
-                  <div className="space-y-1.5">
-                    {node.layers.map((layer) => (
-                      <div
-                        key={layer.id}
-                        className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 space-y-1.5"
-                      >
-                        <div className="flex items-center justify-between text-[11px]">
-                          <button
-                            onClick={() =>
-                              updateNodeLayer(node.id, layer.id as FrameLayerType, {
-                                visible: !layer.visible,
-                              })
-                            }
-                            className="flex items-center gap-1.5 text-slate-200 hover:text-white font-medium"
-                          >
-                            {layer.visible ? (
-                              <Eye className="w-3.5 h-3.5 text-emerald-400" />
-                            ) : (
-                              <EyeOff className="w-3.5 h-3.5 text-slate-500" />
-                            )}
-                            <span>{layer.name}</span>
-                          </button>
-                          <span className="font-mono text-[10px] text-slate-400">
-                            {layer.opacity}%
-                          </span>
-                        </div>
-                        <input
-                          type="range"
-                          min={0}
-                          max={100}
-                          value={layer.opacity}
-                          onChange={(e) =>
-                            updateNodeLayer(node.id, layer.id as FrameLayerType, {
-                              opacity: Number(e.target.value),
-                            })
-                          }
-                          className="w-full h-1 accent-emerald-400"
-                        />
-                        {layer.id === 'text' && (
-                          <input
-                            type="text"
-                            value={layer.textContent || ''}
-                            onChange={(e) =>
-                              updateNodeLayer(node.id, 'text', {
-                                visible: true,
-                                textContent: e.target.value,
-                              })
-                            }
-                            placeholder="Title graphic text..."
-                            className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-[11px] text-slate-200"
-                          />
-                        )}
-                      </div>
-                    ))}
-                  </div>
+                  )}
                 </div>
-              )}
 
-              {isPrimary && activeSubTool === 'branch' && (
-                <div
-                  onPointerDown={(e) => e.stopPropagation()}
-                  className="absolute -top-36 left-0 w-[390px] p-3 rounded-xl bg-[#111521]/98 border border-cyan-500/45 shadow-2xl z-50 space-y-2"
-                >
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="font-semibold text-cyan-300 flex items-center gap-1.5">
-                      <GitBranch className="w-3.5 h-3.5" /> Multi-Turn Stateful Video Branch
-                    </span>
-                    <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-500/30">
-                      prev_id: {node.interactionId || `int_omni_${node.seed}`}
-                    </span>
-                  </div>
-                  <div className="flex gap-1.5">
-                    <input
-                      type="text"
-                      value={branchPrompt}
-                      onChange={(e) => setBranchPrompt(e.target.value)}
-                      placeholder="Conversational edit delta (lighting, camera, weather)..."
-                      className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-cyan-400"
-                    />
-                    <button
-                      onClick={async () => {
-                        await branchVideoMultiTurn(node.id, branchPrompt);
-                        setActiveSubTool('none');
-                      }}
-                      className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold"
-                    >
-                      Branch
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800/80">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span
-                    className={`w-2 h-2 rounded-full shrink-0 ${
-                      node.kind === 'style-dna'
-                        ? 'bg-rose-400'
-                        : node.kind === 'video'
-                        ? 'bg-sky-400'
-                        : node.kind === 'contact-sheet'
-                        ? 'bg-violet-400'
-                        : node.kind === 'mcp-tool'
-                        ? 'bg-emerald-400'
-                        : 'bg-amber-400'
-                    }`}
-                  />
-                  <span className="text-xs font-semibold text-slate-100 truncate">
-                    {node.title}
+                {node.resolution && node.kind !== 'timeline' && node.kind !== 'sticky' && (
+                  <span className="font-mono text-[10.5px] text-white/32 shrink-0">
+                    {node.resolution}
                   </span>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800/90 text-slate-300">
-                    {node.kind === 'style-dna'
-                      ? 'DNA LOCK'
-                      : node.kind === 'mcp-tool'
-                      ? 'MCP'
-                      : `${node.aspectRatio} · ${node.resolution}`}
-                  </span>
-                </div>
+                )}
               </div>
 
-              {node.kind === 'style-dna' && node.styleDna ? (
-                <div className="p-3 space-y-2.5 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-medium text-rose-300 flex items-center gap-1">
-                      <Lock className="w-3 h-3" /> {node.styleDna.presetName}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {node.styleDna.palette.map((hex, idx) => (
-                      <div key={idx} className="flex-1 space-y-1 text-center">
-                        <div
-                          className="h-7 rounded-md border border-white/15 shadow-inner"
-                          style={{ backgroundColor: hex }}
-                        />
-                        <span className="block font-mono text-[9px] text-slate-400">
-                          {hex}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="grid grid-cols-1 gap-1 text-[11px] bg-slate-900/80 p-2 rounded-lg border border-slate-800/80">
-                    <div className="truncate">
-                      <span className="text-slate-400">Light: </span>
-                      <span className="text-slate-200">{node.styleDna.lighting}</span>
-                    </div>
-                    <div className="truncate">
-                      <span className="text-slate-400">Lens: </span>
-                      <span className="text-slate-200">{node.styleDna.lens}</span>
-                    </div>
-                    <div className="truncate">
-                      <span className="text-slate-400">Stock: </span>
-                      <span className="text-slate-200">{node.styleDna.filmStock}</span>
-                    </div>
-                  </div>
-                </div>
-              ) : node.kind === 'mcp-tool' && node.mcpTool ? (
-                <div className="p-3 space-y-2.5 text-xs">
-                  <div className="flex items-center gap-1.5 text-emerald-300 font-mono text-[11px]">
-                    <Workflow className="w-3.5 h-3.5" />
-                    <span>{node.mcpTool.serverUrl}</span>
-                  </div>
-                  <p className="text-slate-300 text-[11px] leading-relaxed">
-                    {node.mcpTool.description}
-                  </p>
-                  <button
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={() => executeMcpToolNode(node.id)}
-                    className="w-full py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs flex items-center justify-center gap-1.5 transition"
-                  >
-                    <Wand2 className="w-3.5 h-3.5" /> Invoke MCP `tools/call`
-                  </button>
-                </div>
-              ) : (
-                <div
-                  style={{ height: node.height }}
-                  className="relative w-full overflow-hidden bg-[#090C14]"
-                >
-                  <div
-                    className="absolute inset-0"
-                    style={{
-                      backgroundImage:
-                        'linear-gradient(45deg, #161b26 25%, transparent 25%), linear-gradient(-45deg, #161b26 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #161b26 75%), linear-gradient(-45deg, transparent 75%, #161b26 75%)',
-                      backgroundSize: '16px 16px',
-                      backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0px',
-                    }}
-                  />
+              {/* Left (+) Circular Port Handle */}
+              <button
+                type="button"
+                onPointerDown={(e) => handlePortPointerDown(e, node, 'left')}
+                title="Drag wire or click to place upstream node"
+                className={`absolute -left-[34px] top-1/2 -translate-y-1/2 w-[26px] h-[26px] rounded-full bg-[#191919] border border-white/25 hover:border-[#20D5EC] text-white/75 hover:text-[#20D5EC] hover:shadow-[0_0_0_4px_rgba(32,213,236,0.18)] flex items-center justify-center transition-all z-20 ${
+                  showPorts
+                    ? 'opacity-100 scale-100'
+                    : 'opacity-0 scale-90 pointer-events-none'
+                }`}
+              >
+                <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
+              </button>
 
-                  {node.kind === 'video' ? (
-                    <LiveVideoNodeSurface
-                      node={node}
-                      playing={playingNodeIds[node.id] ?? true}
+              {/* Right (+) Circular Port Handle */}
+              <button
+                type="button"
+                onPointerDown={(e) => handlePortPointerDown(e, node, 'right')}
+                title="Drag wire or click to spawn connected node"
+                className={`absolute -right-[34px] top-1/2 -translate-y-1/2 w-[26px] h-[26px] rounded-full bg-[#191919] border border-white/25 hover:border-[#20D5EC] text-white/75 hover:text-[#20D5EC] hover:shadow-[0_0_0_4px_rgba(32,213,236,0.18)] flex items-center justify-center transition-all z-20 ${
+                  showPorts
+                    ? 'opacity-100 scale-100'
+                    : 'opacity-0 scale-90 pointer-events-none'
+                }`}
+              >
+                <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
+              </button>
+
+              {/* Full-Bleed Matte Card Container */}
+              <div
+                className={`relative w-full h-full rounded-[12px] overflow-hidden bg-[#191919] transition-shadow ${
+                  isSelected
+                    ? 'border border-white/[0.45] shadow-node-selected'
+                    : 'border border-white/[0.08] hover:border-white/[0.2] shadow-[0_12px_34px_rgba(0,0,0,0.48)]'
+                }`}
+              >
+                {/* 1. TIMELINE NODE */}
+                {node.kind === 'timeline' && <TimelineCanvasNode node={node} />}
+
+                {/* 2. VIDEO NODE */}
+                {node.kind === 'video' && (
+                  <div className="relative w-full h-full bg-[#141414]">
+                    <SmartMediaVideo
+                      videoUrl={node.videoUrl}
+                      posterUrl={node.imageUrl}
+                      playing={!isPaused}
+                      muted={!isUnmuted}
+                      fallbackPrompt={node.prompt}
+                      fallbackSeed={node.seed}
+                      fallbackTheme={node.videoTheme}
+                      fallbackDurationSec={node.durationSec || 6}
+                      aspectRatio={node.aspectRatio}
+                      className="w-full h-full object-cover"
                     />
-                  ) : hasSplitBgRemoved ? (
-                    <>
-                      {bgLayer?.visible && bgLayer.dataUrl && (
-                        <img
-                          src={bgLayer.dataUrl}
-                          alt="Background Plate"
-                          style={{ opacity: (bgLayer.opacity ?? 100) / 100 }}
-                          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                        />
-                      )}
-                      {fgLayer?.visible && fgLayer.dataUrl && (
-                        <img
-                          src={fgLayer.dataUrl}
-                          alt="Isolated Subject"
-                          style={{ opacity: (fgLayer.opacity ?? 100) / 100 }}
-                          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                        />
-                      )}
-                    </>
-                  ) : (
-                    node.imageUrl &&
-                    fgLayer?.visible !== false && (
-                      <SmartMediaImage
-                        src={node.imageUrl}
-                        alt={node.title}
-                        style={{ opacity: (fgLayer?.opacity ?? 100) / 100 }}
-                        className="relative w-full h-full object-cover pointer-events-none"
-                        aspectRatio={node.aspectRatio}
-                        fallbackPrompt={node.prompt}
-                        fallbackSeed={node.seed}
-                        isContactSheet={node.kind === 'contact-sheet'}
-                        draggable={false}
-                      />
-                    )
-                  )}
 
-                  {maskLayer && !maskLayer.visible && (
-                    <div className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-slate-900/80 text-[10px] text-slate-400">
-                      Inpaint Mask Hidden
-                    </div>
-                  )}
-
-                  {textLayer?.visible && textLayer.textContent && (
+                    {/* Subtle Hover Audio & Play Micro-Controls */}
                     <div
-                      style={{ opacity: textLayer.opacity / 100 }}
-                      className="absolute inset-x-3 bottom-9 text-center pointer-events-none"
-                    >
-                      <span className="px-3 py-1 rounded bg-black/70 border border-white/15 font-mono font-bold tracking-widest text-xs text-white uppercase shadow-lg">
-                        {textLayer.textContent}
-                      </span>
-                    </div>
-                  )}
-
-                  {isPrimary && activeSubTool === 'inpaint' && (
-                    <InpaintMaskCanvas
-                      width={node.width}
-                      height={node.height}
-                      brushSize={brushSize}
-                      onMaskReady={setMaskDataUrl}
-                      clearSignal={clearMaskCounter}
-                    />
-                  )}
-
-                  {node.kind === 'video' && (
-                    <button
                       onPointerDown={(e) => e.stopPropagation()}
-                      onClick={() =>
-                        setPlayingNodeIds((p) => ({
-                          ...p,
-                          [node.id]: !(p[node.id] ?? true),
-                        }))
-                      }
-                      className="absolute bottom-2 left-2 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/75 hover:bg-violet-600/90 text-white text-[11px] font-mono backdrop-blur-md transition z-10"
+                      className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
                     >
-                      {(playingNodeIds[node.id] ?? true) ? (
-                        <Pause className="w-3 h-3" />
-                      ) : (
-                        <Play className="w-3 h-3" />
-                      )}
-                      <span>{node.durationSec || 15}s MP4</span>
-                    </button>
-                  )}
-
-                  {node.kind === 'contact-sheet' && (
-                    <button
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={() =>
-                        sliceContactSheetNode(
-                          node.id,
-                          node.gridSpec?.rows || 3,
-                          node.gridSpec?.cols || 3
-                        )
-                      }
-                      className="absolute bottom-2 right-2 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-violet-600/95 hover:bg-violet-500 text-white text-[11px] font-semibold shadow-lg transition z-10"
-                    >
-                      <Grid3X3 className="w-3.5 h-3.5" />
-                      <span>
-                        Slice {(node.gridSpec?.rows || 3) * (node.gridSpec?.cols || 3)}{' '}
-                        Frames
-                      </span>
-                    </button>
-                  )}
-                </div>
-              )}
-
-              <div className="px-3 py-2 bg-[#0A0D14] rounded-b-2xl border-t border-slate-800/70 space-y-1.5">
-                <p className="text-[11px] text-slate-400 line-clamp-1">{node.prompt}</p>
-                <div className="flex items-center justify-between gap-1">
-                  <div className="flex items-center gap-1 flex-wrap overflow-hidden">
-                    {node.elementHandles.slice(0, 3).map((h) => (
-                      <span
-                        key={h}
-                        className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/25"
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPausedNodeIds((p) => ({
+                            ...p,
+                            [node.id]: !p[node.id],
+                          }))
+                        }
+                        className="w-7 h-7 rounded-full bg-black/65 hover:bg-black/85 backdrop-blur-md flex items-center justify-center text-white/90"
+                        title={isPaused ? 'Play video' : 'Pause video'}
                       >
-                        {h}
-                      </span>
-                    ))}
-                    {node.previousInteractionId && (
-                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/25">
-                        ↳ {node.previousInteractionId.slice(-6)}
-                      </span>
+                        {isPaused ? (
+                          <Play className="w-3.5 h-3.5 ml-0.5" strokeWidth={1.75} />
+                        ) : (
+                          <Pause className="w-3.5 h-3.5" strokeWidth={1.75} />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setUnmutedNodeIds((m) => ({
+                            ...m,
+                            [node.id]: !m[node.id],
+                          }))
+                        }
+                        className="w-7 h-7 rounded-full bg-black/65 hover:bg-black/85 backdrop-blur-md flex items-center justify-center text-white/90"
+                        title={isUnmuted ? 'Mute clip audio' : 'Unmute clip audio'}
+                      >
+                        {isUnmuted ? (
+                          <Volume2 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.75} />
+                        ) : (
+                          <VolumeX className="w-3.5 h-3.5 text-white/75" strokeWidth={1.75} />
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Dreamina Minimal Bottom-Right Duration Pill */}
+                    <div className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-[6px] bg-black/65 backdrop-blur-md font-mono text-[11px] tabular-nums text-white/90 pointer-events-none">
+                      {formatDurationPill(node.durationSec)}
+                    </div>
+                  </div>
+                )}
+
+                {/* 3. IMAGE / CONTACT-SHEET / ELEMENT NODE */}
+                {(node.kind === 'image' ||
+                  node.kind === 'contact-sheet' ||
+                  node.kind === 'element') && (
+                  <div className="relative w-full h-full bg-[#141414]">
+                    <SmartMediaImage
+                      src={node.imageUrl}
+                      alt={node.title}
+                      aspectRatio={node.aspectRatio}
+                      fallbackPrompt={node.prompt}
+                      fallbackSeed={node.seed}
+                      isContactSheet={node.kind === 'contact-sheet'}
+                      className="w-full h-full object-cover"
+                    />
+
+                    {node.kind === 'element' && node.elementHandles[0] && (
+                      <div className="absolute bottom-2.5 left-2.5 px-2 py-0.5 rounded-[6px] bg-black/70 backdrop-blur-md border border-white/[0.12] text-[11px] font-medium text-white/90 pointer-events-none">
+                        {node.elementHandles[0]}
+                      </div>
+                    )}
+
+                    {node.kind === 'contact-sheet' && (
+                      <button
+                        type="button"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={() => void sliceContactSheetNode(node.id, 3, 3)}
+                        className="absolute bottom-2.5 right-2.5 h-7 px-2.5 rounded-[7px] bg-black/75 hover:bg-white hover:text-[#0e0e0e] backdrop-blur-md border border-white/[0.14] text-[11.5px] font-medium text-white/90 flex items-center gap-1.5 transition-colors"
+                      >
+                        <Grid3X3 className="w-3.5 h-3.5" strokeWidth={1.5} />
+                        <span>Slice 3×3 Grid</span>
+                      </button>
+                    )}
+
+                    {/* Interactive Brush Mask Overlay when Inpaint is active */}
+                    {activeInpaintNodeId === node.id && (
+                      <InpaintMaskOverlay
+                        node={node}
+                        onCancel={onCloseInpaint}
+                        onApply={(maskUrl, regionalPrompt) => {
+                          void applyInpaintToNode(node.id, maskUrl, regionalPrompt);
+                          onCloseInpaint();
+                        }}
+                      />
                     )}
                   </div>
+                )}
 
-                  {node.kind !== 'style-dna' && node.kind !== 'mcp-tool' && (
-                    <div
-                      onPointerDown={(e) => e.stopPropagation()}
-                      className="flex items-center gap-1 shrink-0"
-                    >
-                      <button
-                        onClick={() => addMultiframeFromNodeOrBlank(node.id)}
-                        title="Add Keyframe to Smart Multiframes Chain"
-                        className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-violet-300 transition"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => sendNodeToTimeline(node.id)}
-                        title="Append Shot to Rough-Cut Timeline"
-                        className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800/90 hover:bg-violet-600/80 text-[10px] text-slate-200 hover:text-white transition"
-                      >
-                        <Film className="w-3 h-3" />
-                        <span>Timeline</span>
-                      </button>
+                {/* 4. TEXT NODE */}
+                {node.kind === 'text' && (
+                  <div
+                    onPointerDown={(e) => {
+                      if (isSelected) e.stopPropagation();
+                    }}
+                    className="w-full h-full p-4 bg-[#191919] flex flex-col justify-between"
+                  >
+                    <textarea
+                      value={node.prompt}
+                      onChange={(e) =>
+                        updateNodeFields(node.id, { prompt: e.target.value })
+                      }
+                      placeholder="Write script notes, camera beats, or dialogue…"
+                      className="w-full flex-1 bg-transparent resize-none outline-none text-[14px] leading-relaxed text-white/90 placeholder:text-white/30"
+                    />
+                    <div className="text-[11px] text-white/30 flex items-center justify-between pt-2 border-t border-white/[0.06]">
+                      <span>Script / Prompt Node</span>
+                      <span>{node.prompt.length} chars</span>
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
+
+                {/* 5. STICKY NOTE NODE */}
+                {node.kind === 'sticky' && (
+                  <div
+                    onPointerDown={(e) => {
+                      if (isSelected) e.stopPropagation();
+                    }}
+                    className="w-full h-full p-4 bg-[#232019] flex flex-col justify-between"
+                  >
+                    <textarea
+                      value={node.prompt}
+                      onChange={(e) =>
+                        updateNodeFields(node.id, { prompt: e.target.value })
+                      }
+                      placeholder="Director note…"
+                      className="w-full flex-1 bg-transparent resize-none outline-none text-[13.5px] leading-relaxed text-[#f3ead3] placeholder:text-[#f3ead3]/35"
+                    />
+                    <span className="text-[10.5px] text-[#f3ead3]/40">
+                      Sticky Note
+                    </span>
+                  </div>
+                )}
+
+                {/* 6. AUDIO NODE */}
+                {node.kind === 'audio' && (
+                  <AudioCanvasCard node={node} />
+                )}
+
+                {/* 7. STYLE DNA / CINEMA KIT NODE */}
+                {node.kind === 'style-dna' && (
+                  <div className="w-full h-full p-4 bg-[#191919] flex flex-col justify-between">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[12.5px] font-medium text-white/90">
+                        {node.styleDna?.presetName || 'Cinema Grade DNA'}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] text-[10.5px] text-white/65">
+                        Locked
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-5 gap-1.5 my-2">
+                      {(
+                        node.styleDna?.palette || [
+                          '#0F172A',
+                          '#1E293B',
+                          '#20D5EC',
+                          '#F59E0B',
+                          '#F8FAFC',
+                        ]
+                      ).map((hex, idx) => (
+                        <div
+                          key={idx}
+                          style={{ backgroundColor: hex }}
+                          className="h-9 rounded-[7px] border border-white/15"
+                        />
+                      ))}
+                    </div>
+
+                    <div className="space-y-1 text-[11.5px] text-white/60">
+                      <div className="truncate">
+                        Lens: {node.styleDna?.lens || '35mm Anamorphic Prime'}
+                      </div>
+                      <div className="truncate">
+                        Stock: {node.styleDna?.filmStock || 'Kodak Vision3 500T'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 8. MCP TOOL NODE */}
+                {node.kind === 'mcp-tool' && (
+                  <div className="w-full h-full p-4 bg-[#191919] flex flex-col justify-between">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] font-mono text-[11px] text-white/85">
+                          {node.mcpTool?.name || 'mcp_tool'}
+                        </span>
+                        <span className="text-[10.5px] text-[#10b981] font-mono">
+                          :3001/mcp
+                        </span>
+                      </div>
+                      <p className="text-[12px] text-white/60 line-clamp-3 leading-relaxed">
+                        {node.mcpTool?.description || node.prompt}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={() => void executeMcpToolNode(node.id)}
+                      className="h-8 w-full rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                    >
+                      <Play className="w-3.5 h-3.5" strokeWidth={1.75} />
+                      <span>Execute MCP Tool</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Generating Progress Overlay */}
+                {node.status === 'generating' && (
+                  <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center gap-2 z-20">
+                    <Loader2
+                      className="w-6 h-6 text-white animate-spin"
+                      strokeWidth={1.75}
+                    />
+                    <span className="font-mono text-[12px] text-white/90">
+                      Rendering {node.progress ? `${node.progress}%` : '…'}
+                    </span>
+                  </div>
+                )}
               </div>
-
-              <div
-                onPointerUp={(e) => {
-                  e.stopPropagation();
-                  if (draftEdge && draftEdge.sourceId !== node.id) {
-                    connectNodes(draftEdge.sourceId, node.id);
-                    setDraftEdge(null);
-                  }
-                }}
-                title="Drop connection here"
-                className="absolute -left-2 top-1/2 w-4 h-4 rounded-full bg-slate-900 border-2 border-slate-500 hover:border-cyan-400 hover:scale-125 transition cursor-crosshair"
-              />
-
-              <div
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  const startX = node.x + node.width;
-                  const startY = node.y + node.height / 2 + 16;
-                  setDraftEdge({
-                    sourceId: node.id,
-                    startX,
-                    startY,
-                    currX: startX,
-                    currY: startY,
-                  });
-                }}
-                title="Drag to connect to another frame"
-                className="absolute -right-2 top-1/2 w-4 h-4 rounded-full bg-violet-500 border-2 border-slate-950 hover:bg-cyan-400 hover:scale-125 transition cursor-crosshair shadow"
-              />
             </div>
           );
         })}
       </div>
 
-      <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#0D1017]/90 border border-slate-800/80 backdrop-blur-md text-xs text-slate-300 z-30">
-        <button
-          onClick={() => setViewport(panX, panY, zoom * 0.85)}
-          className="px-1.5 py-0.5 rounded hover:bg-slate-800 font-mono"
-          title="Zoom Out"
-        >
-          −
-        </button>
-        <span className="font-mono text-[11px] w-12 text-center">
-          {Math.round(zoom * 100)}%
-        </span>
-        <button
-          onClick={() => setViewport(panX, panY, zoom * 1.15)}
-          className="px-1.5 py-0.5 rounded hover:bg-slate-800 font-mono"
-          title="Zoom In"
-        >
-          +
-        </button>
-        <div className="w-px h-3.5 bg-slate-700 mx-0.5" />
-        <button
-          onClick={resetViewport}
-          className="px-2 py-0.5 rounded hover:bg-slate-800 text-[11px]"
-        >
-          Fit
-        </button>
-        <button
-          onClick={toggleSnapToGrid}
-          className={`px-2 py-0.5 rounded text-[11px] transition ${
-            snapToGrid
-              ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
-              : 'text-slate-400 hover:bg-slate-800'
-          }`}
-        >
-          Snap Grid
-        </button>
-        {selectedNodeIds.length > 1 && (
-          <span className="ml-1 px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono text-[10px]">
-            {selectedNodeIds.length} Selected
-          </span>
-        )}
-        {selectedNodeIds.length > 0 && (
-          <button
-            onClick={deleteSelectedNodes}
-            title="Delete selected nodes"
-            className="p-1 rounded hover:bg-rose-500/20 text-slate-400 hover:text-rose-400"
+      {/* Marquee Selection Box */}
+      {marquee && (
+        <div
+          style={{
+            left: `${Math.min(marquee.startX, marquee.curX)}px`,
+            top: `${Math.min(marquee.startY, marquee.curY)}px`,
+            width: `${Math.abs(marquee.curX - marquee.startX)}px`,
+            height: `${Math.abs(marquee.curY - marquee.startY)}px`,
+          }}
+          className="absolute border border-white/45 bg-white/[0.05] rounded-[4px] pointer-events-none z-30"
+        />
+      )}
+
+      {/* Dreamina (+) Wire-Drop Creation Menu (#1e1e1e) */}
+      {wireDraft?.frozenForMenu &&
+        wireDraft.menuScreenX !== undefined &&
+        wireDraft.menuScreenY !== undefined && (
+          <div
+            style={{
+              left: `${wireDraft.menuScreenX}px`,
+              top: `${wireDraft.menuScreenY}px`,
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            className="fixed w-[216px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5"
           >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
+            <div className="px-2.5 py-1 text-[11px] font-medium text-white/45 flex items-center justify-between">
+              <span>Connect to new</span>
+              <button
+                type="button"
+                onClick={() => setWireDraft(null)}
+                className="text-white/40 hover:text-white"
+              >
+                <X className="w-3 h-3" strokeWidth={1.5} />
+              </button>
+            </div>
+            {WIRE_DROP_ITEMS.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    if (item.id === 'camera-3d') {
+                      selectNodes([wireDraft.sourceNodeId]);
+                      setCameraDirectorOpen(true);
+                    } else {
+                      spawnDreaminaNodeAt(
+                        item.id,
+                        wireDraft.curWorldX,
+                        wireDraft.curWorldY,
+                        {
+                          wireFromNodeId: wireDraft.sourceNodeId,
+                          wireDirection: wireDraft.direction,
+                        }
+                      );
+                    }
+                    setWireDraft(null);
+                  }}
+                  className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-left text-[12.5px] text-white/90 flex items-center gap-2.5 transition-colors"
+                >
+                  <Icon className="w-4 h-4 text-white/65" strokeWidth={1.5} />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
         )}
+
+      {/* Dreamina Right-Click Context Menus (#1e1e1e) */}
+      {contextMenu && (
+        <div
+          style={{
+            left: `${contextMenu.screenX}px`,
+            top: `${contextMenu.screenY}px`,
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="fixed w-[224px] p-1.5 rounded-[12px] dreamina-menu z-50 text-[12.5px] select-none"
+        >
+          {contextMenu.kind === 'canvas' ? (
+            <>
+              {/* Create new ▸ with 11-item Dreamina side flyout */}
+              <div
+                className="relative"
+                onMouseEnter={() => setCreateSubmenuOpen(true)}
+                onMouseLeave={() => setCreateSubmenuOpen(false)}
+              >
+                <button
+                  type="button"
+                  onClick={() => setCreateSubmenuOpen(!createSubmenuOpen)}
+                  className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center justify-between"
+                >
+                  <span className="flex items-center gap-2">
+                    <Plus className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
+                    <span>Create new</span>
+                  </span>
+                  <ChevronRight
+                    className="w-3.5 h-3.5 text-white/45"
+                    strokeWidth={1.5}
+                  />
+                </button>
+
+                {createSubmenuOpen && (
+                  <div
+                    className={`absolute top-0 ${
+                      contextMenu.screenX + 448 > window.innerWidth
+                        ? 'right-full mr-1.5'
+                        : 'left-full ml-1.5'
+                    } w-[220px] p-1.5 rounded-[12px] dreamina-menu space-y-0.5`}
+                  >
+                    {CREATE_FLYOUT_ITEMS.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => {
+                            if (item.id === 'upload') {
+                              pendingUploadWorldRef.current = {
+                                x: contextMenu.worldX,
+                                y: contextMenu.worldY,
+                              };
+                              fileUploadRef.current?.click();
+                            } else if (item.id === 'camera-3d') {
+                              setCameraDirectorOpen(true);
+                            } else {
+                              spawnDreaminaNodeAt(
+                                item.id,
+                                contextMenu.worldX,
+                                contextMenu.worldY
+                              );
+                            }
+                            setContextMenu(null);
+                          }}
+                          className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-left text-white/90 flex items-center justify-between"
+                        >
+                          <span className="flex items-center gap-2.5">
+                            <Icon
+                              className="w-4 h-4 text-white/65"
+                              strokeWidth={1.5}
+                            />
+                            <span>{item.label}</span>
+                          </span>
+                          {item.shortcut && (
+                            <span className="font-mono text-[11px] text-white/35">
+                              {item.shortcut}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="my-1 h-px bg-white/[0.07]" />
+
+              <button
+                type="button"
+                disabled={!clipboardNode}
+                onClick={() => {
+                  pasteClipboardNode(contextMenu.worldX, contextMenu.worldY);
+                  setContextMenu(null);
+                }}
+                className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] disabled:opacity-35 text-white/90 flex items-center justify-between"
+              >
+                <span>Paste</span>
+                <span className="font-mono text-[11px] text-white/40">⌘V</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={past.length === 0}
+                onClick={() => {
+                  undo();
+                  setContextMenu(null);
+                }}
+                className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] disabled:opacity-35 text-white/90 flex items-center justify-between"
+              >
+                <span className="flex items-center gap-2">
+                  <Undo2 className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                  <span>Undo</span>
+                </span>
+                <span className="font-mono text-[11px] text-white/40">⌘Z</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={future.length === 0}
+                onClick={() => {
+                  redo();
+                  setContextMenu(null);
+                }}
+                className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] disabled:opacity-35 text-white/90 flex items-center justify-between"
+              >
+                <span className="flex items-center gap-2">
+                  <Redo2 className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                  <span>Redo</span>
+                </span>
+                <span className="font-mono text-[11px] text-white/40">⇧⌘Z</span>
+              </button>
+
+              <div className="my-1 h-px bg-white/[0.07]" />
+
+              <button
+                type="button"
+                onClick={() => {
+                  tidyUpNodes();
+                  setContextMenu(null);
+                }}
+                className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/85 flex items-center gap-2"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                <span>Tidy up nodes</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  fitAllNodesInViewport();
+                  setContextMenu(null);
+                }}
+                className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/85 flex items-center gap-2"
+              >
+                <Maximize2 className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                <span>Fit all in view</span>
+              </button>
+            </>
+          ) : (
+            contextNode && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    copySelectedNode(contextNode.id);
+                    setContextMenu(null);
+                  }}
+                  className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center justify-between"
+                >
+                  <span className="flex items-center gap-2">
+                    <Copy className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                    <span>Copy</span>
+                  </span>
+                  <span className="font-mono text-[11px] text-white/40">⌘C</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    duplicateNodes(contextNode.id);
+                    setContextMenu(null);
+                  }}
+                  className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center justify-between"
+                >
+                  <span>Duplicate</span>
+                  <span className="font-mono text-[11px] text-white/40">⌘D</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!clipboardNode}
+                  onClick={() => {
+                    pasteClipboardNode(contextNode.x + 48, contextNode.y + 48);
+                    setContextMenu(null);
+                  }}
+                  className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] disabled:opacity-35 text-white/90 flex items-center justify-between"
+                >
+                  <span>Paste</span>
+                  <span className="font-mono text-[11px] text-white/40">⌘V</span>
+                </button>
+
+                <div className="my-1 h-px bg-white/[0.07]" />
+
+                {(contextNode.kind === 'video' ||
+                  contextNode.kind === 'image' ||
+                  contextNode.kind === 'contact-sheet') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sendNodeToTimeline(contextNode.id);
+                      setContextMenu(null);
+                    }}
+                    className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
+                  >
+                    <Film className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                    <span>Send to Timeline</span>
+                  </button>
+                )}
+
+                {(contextNode.kind === 'image' ||
+                  contextNode.kind === 'contact-sheet') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void sliceContactSheetNode(contextNode.id, 3, 3);
+                      setContextMenu(null);
+                    }}
+                    className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
+                  >
+                    <Grid3X3 className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                    <span>Slice 9-Grid Sheet</span>
+                  </button>
+                )}
+
+                {contextNode.kind === 'video' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void branchVideoMultiTurn(
+                        contextNode.id,
+                        'Shift weather from neon rain to golden dawn light'
+                      );
+                      setContextMenu(null);
+                    }}
+                    className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
+                  >
+                    <GitBranch className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                    <span>Branch Multi-Turn Edit</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleDownloadNodeMedia(contextNode);
+                    setContextMenu(null);
+                  }}
+                  className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
+                >
+                  <Download className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                  <span>Download</span>
+                </button>
+
+                <div className="my-1 h-px bg-white/[0.07]" />
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    deleteSelectedNodes(contextNode.id);
+                    setContextMenu(null);
+                  }}
+                  className="w-full h-8 px-2.5 rounded-[8px] hover:bg-red-500/15 text-red-400 flex items-center justify-between"
+                >
+                  <span className="flex items-center gap-2">
+                    <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} />
+                    <span>Delete</span>
+                  </span>
+                  <span className="font-mono text-[11px] opacity-70">⌫</span>
+                </button>
+              </>
+            )
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const InpaintMaskOverlay: React.FC<{
+  node: CanvasNode;
+  onCancel: () => void;
+  onApply: (maskDataUrl: string, regionalPrompt: string) => void;
+}> = ({ node, onCancel, onApply }) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [regionalPrompt, setRegionalPrompt] = useState(
+    'Add glowing cyan visor reflection and rain droplets'
+  );
+  const drawingRef = useRef(false);
+
+  const drawDot = (clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = ((clientX - rect.left) / Math.max(1, rect.width)) * canvas.width;
+    const y = ((clientY - rect.top) / Math.max(1, rect.height)) * canvas.height;
+    ctx.fillStyle = 'rgba(32, 213, 236, 0.55)';
+    ctx.beginPath();
+    ctx.arc(x, y, 22, 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  return (
+    <div
+      onPointerDown={(e) => e.stopPropagation()}
+      className="absolute inset-0 z-20 flex flex-col justify-end"
+    >
+      <canvas
+        ref={canvasRef}
+        width={node.width}
+        height={node.height}
+        onPointerDown={(e) => {
+          drawingRef.current = true;
+          drawDot(e.clientX, e.clientY);
+        }}
+        onPointerMove={(e) => {
+          if (drawingRef.current) drawDot(e.clientX, e.clientY);
+        }}
+        onPointerUp={() => {
+          drawingRef.current = false;
+        }}
+        onPointerLeave={() => {
+          drawingRef.current = false;
+        }}
+        className="absolute inset-0 w-full h-full cursor-crosshair"
+      />
+      <div className="relative m-2.5 p-2 rounded-[10px] bg-[#191919]/95 backdrop-blur-md border border-white/[0.12] flex items-center gap-2">
+        <input
+          value={regionalPrompt}
+          onChange={(e) => setRegionalPrompt(e.target.value)}
+          placeholder="Describe regional redraw…"
+          className="flex-1 h-7 px-2.5 rounded-[6px] bg-[#252525] text-[12px] text-white outline-none"
+        />
+        <button
+          type="button"
+          onClick={onCancel}
+          className="h-7 px-2.5 rounded-[6px] bg-[#252525] text-[11.5px] text-white/75 hover:text-white"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const maskUrl = canvasRef.current?.toDataURL('image/png') || '';
+            onApply(maskUrl, regionalPrompt);
+          }}
+          className="h-7 px-3 rounded-[6px] bg-white text-[#0e0e0e] text-[11.5px] font-semibold"
+        >
+          Redraw
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
+  const [playing, setPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const oscCtxRef = useRef<AudioContext | null>(null);
+
+  const togglePlay = () => {
+    if (node.audioUrl) {
+      if (!audioRef.current) return;
+      if (playing) {
+        audioRef.current.pause();
+        setPlaying(false);
+      } else {
+        void audioRef.current.play();
+        setPlaying(true);
+      }
+      return;
+    }
+
+    if (playing) {
+      oscCtxRef.current?.close().catch(() => undefined);
+      oscCtxRef.current = null;
+      setPlaying(false);
+      return;
+    }
+
+    try {
+      const Ctor =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      const ctx = new Ctor();
+      oscCtxRef.current = ctx;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(110, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(55, ctx.currentTime + 2.5);
+      gain.gain.setValueAtTime(0.06, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 2.5);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 2.5);
+      setPlaying(true);
+      setTimeout(() => setPlaying(false), 2500);
+    } catch {
+      setPlaying(false);
+    }
+  };
+
+  const bars = [28, 52, 74, 44, 88, 64, 38, 82, 58, 92, 48, 70, 42, 60, 34, 76, 50, 30];
+
+  return (
+    <div
+      onPointerDown={(e) => e.stopPropagation()}
+      className="w-full h-full px-4 py-3.5 bg-[#191919] flex flex-col justify-between"
+    >
+      {node.audioUrl && (
+        <audio
+          ref={audioRef}
+          src={node.audioUrl}
+          onEnded={() => setPlaying(false)}
+        />
+      )}
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={togglePlay}
+          className="w-9 h-9 rounded-full bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] flex items-center justify-center shrink-0 transition-colors"
+        >
+          {playing ? (
+            <Pause className="w-4 h-4" strokeWidth={1.75} />
+          ) : (
+            <Play className="w-4 h-4 ml-0.5" strokeWidth={1.75} />
+          )}
+        </button>
+
+        <div className="flex-1 h-9 flex items-center gap-1">
+          {bars.map((h, i) => (
+            <div
+              key={i}
+              style={{ height: `${playing ? Math.min(100, h + ((i * 13) % 20)) : h}%` }}
+              className={`flex-1 rounded-full transition-all ${
+                playing ? 'bg-[#20D5EC]' : 'bg-white/25'
+              }`}
+            />
+          ))}
+        </div>
+
+        <span className="font-mono text-[11px] text-white/50">
+          {formatDurationPill(node.durationSec || 6)}
+        </span>
       </div>
 
-      <div className="hidden xl:flex absolute top-3 right-3 items-center gap-3 px-3 py-1.5 rounded-xl bg-[#0D1017]/85 border border-slate-800/80 backdrop-blur-md text-[11px] text-slate-400 z-20">
-        <span>Scroll/Space: Pan</span>
-        <span>·</span>
-        <span>Shift+Drag: Multi-Select</span>
-        <span>·</span>
-        <span>Drag Port ●→●: Link Style DNA / Branch</span>
-      </div>
+      <div className="text-[11.5px] text-white/55 truncate">{node.prompt}</div>
     </div>
   );
 };

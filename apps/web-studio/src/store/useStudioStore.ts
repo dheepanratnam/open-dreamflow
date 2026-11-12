@@ -5,8 +5,10 @@ import type {
   CameraTransitionCurve,
   CanvasEdge,
   CanvasNode,
+  ChatMessageItem,
   ChromeBridgeState,
   DreaminaSkill,
+  DreaminaToolId,
   ElementVault,
   FrameLayer,
   FrameLayerType,
@@ -23,9 +25,11 @@ import type {
 } from '../types/studio';
 import {
   BUILTIN_SKILLS,
+  buildBlankStudioGraph,
   buildInitialElements,
   buildInitialStudioGraph,
   createDefaultLayers,
+  type MediaCatalogItem,
 } from '../presets/studioPresets';
 import {
   FOUR_ANGLE_LABELS,
@@ -114,7 +118,18 @@ export interface ShareableBeatInput {
 export interface StudioState {
   projectTitle: string;
   activeView: ActiveWorkspaceView;
+  canvasToolMode: 'select' | 'hand';
+  showMinimap: boolean;
+  showConnections: boolean;
+
   timelineExpanded: boolean;
+  fullscreenTimelineOpen: boolean;
+  cameraDirectorOpen: boolean;
+  assetDrawerOpen: boolean;
+  chatDrawerOpen: boolean;
+  searchModalOpen: boolean;
+  historyPanelOpen: boolean;
+
   providerModalOpen: boolean;
   providerModalTab: 'byok' | 'mcp' | 'bridge';
   directorModalOpen: boolean;
@@ -130,12 +145,14 @@ export interface StudioState {
   nodes: CanvasNode[];
   edges: CanvasEdge[];
   selectedNodeIds: string[];
+  clipboardNode: CanvasNode | null;
 
   past: StudioHistorySnapshot[];
   future: StudioHistorySnapshot[];
 
   promptText: string;
   promptMode: 'image' | 'video' | '9-grid' | '4-angle' | 'multi-turn';
+  promptSubMode: 'omni-ref' | 'keyframe-bridge' | 'multi-turn';
   promptAspect: AspectRatio;
   promptDurationSec: number;
   promptResolution: ResolutionTier;
@@ -154,14 +171,26 @@ export interface StudioState {
   timelineClips: TimelineClip[];
   playheadSec: number;
   isPlayingTimeline: boolean;
+  timelineMuted: boolean;
   masterRenderUrl: string | null;
   isRenderingMasterMp4: boolean;
   appSynthesizing: boolean;
   appRenderLog: string[];
+  chatMessages: ChatMessageItem[];
 
   setProjectTitle: (title: string) => void;
   setActiveView: (view: ActiveWorkspaceView) => void;
+  setCanvasToolMode: (mode: 'select' | 'hand') => void;
+  toggleMinimap: () => void;
+  toggleShowConnections: () => void;
   setTimelineExpanded: (expanded: boolean) => void;
+  setFullscreenTimelineOpen: (open: boolean) => void;
+  setCameraDirectorOpen: (open: boolean) => void;
+  setAssetDrawerOpen: (open: boolean) => void;
+  setChatDrawerOpen: (open: boolean) => void;
+  setSearchModalOpen: (open: boolean) => void;
+  setHistoryPanelOpen: (open: boolean) => void;
+
   openProviderModal: (tab?: 'byok' | 'mcp' | 'bridge') => void;
   closeProviderModal: () => void;
   setDirectorModalOpen: (open: boolean) => void;
@@ -169,6 +198,9 @@ export interface StudioState {
   setViewport: (panX: number, panY: number, zoom: number) => void;
   toggleSnapToGrid: () => void;
   resetViewport: () => void;
+  fitAllNodesInViewport: (vpWidth?: number, vpHeight?: number) => void;
+  tidyUpNodes: () => void;
+  loadPresetProject: (preset: 'protocol-rain' | 'blank') => void;
 
   pushHistory: () => void;
   undo: () => void;
@@ -179,21 +211,52 @@ export interface StudioState {
   selectNodes: (ids: string[], additive?: boolean) => void;
   moveNodes: (ids: string[], dx: number, dy: number) => void;
   commitNodePositions: () => void;
-  connectNodes: (sourceId: string, targetId: string, kind?: CanvasEdge['kind'], label?: string) => void;
-  deleteSelectedNodes: () => void;
+  connectNodes: (
+    sourceId: string,
+    targetId: string,
+    kind?: CanvasEdge['kind'],
+    label?: string
+  ) => void;
+  deleteSelectedNodes: (explicitId?: string) => void;
+  updateNodeFields: (nodeId: string, patch: Partial<CanvasNode>) => void;
+  copySelectedNode: (explicitId?: string) => void;
+  pasteClipboardNode: (worldX?: number, worldY?: number) => void;
+  duplicateNodes: (explicitId?: string) => void;
+
+  spawnDreaminaNodeAt: (
+    tool: DreaminaToolId | 'blend',
+    worldX: number,
+    worldY: number,
+    opts?: {
+      wireFromNodeId?: string;
+      wireDirection?: 'left' | 'right';
+      asset?: MediaCatalogItem;
+    }
+  ) => string | null;
+  uploadLocalMediaNode: (file: File, worldX?: number, worldY?: number) => void;
 
   setPromptText: (text: string) => void;
   setPromptMode: (mode: StudioState['promptMode']) => void;
+  setPromptSubMode: (sub: StudioState['promptSubMode']) => void;
   setPromptAspect: (aspect: AspectRatio) => void;
   setPromptDurationSec: (sec: number) => void;
   setPromptResolution: (res: ResolutionTier) => void;
   applySkillPreset: (skill: DreaminaSkill) => void;
-  submitPromptGeneration: () => Promise<void>;
+  submitPromptGeneration: (sourceNodeId?: string) => Promise<void>;
+  injectCameraPromptToSelection: (cameraTag: string) => void;
 
-  applyInpaintToNode: (nodeId: string, maskDataUrl: string, regionalPrompt: string) => Promise<void>;
+  applyInpaintToNode: (
+    nodeId: string,
+    maskDataUrl: string,
+    regionalPrompt: string
+  ) => Promise<void>;
   expandOutpaintNode: (nodeId: string, targetAspect: AspectRatio) => Promise<void>;
   removeBgAndDecomposeLayers: (nodeId: string) => void;
-  updateNodeLayer: (nodeId: string, layerId: FrameLayerType, patch: Partial<FrameLayer>) => void;
+  updateNodeLayer: (
+    nodeId: string,
+    layerId: FrameLayerType,
+    patch: Partial<FrameLayer>
+  ) => void;
   upscaleNodeHd: (nodeId: string, targetRes: '2K' | '4K') => void;
   retakeNode: (nodeId: string) => Promise<void>;
   sliceContactSheetNode: (nodeId: string, rows?: number, cols?: number) => Promise<void>;
@@ -202,7 +265,12 @@ export interface StudioState {
   branchVideoMultiTurn: (nodeId: string, deltaPrompt: string) => Promise<void>;
   executeMcpToolNode: (nodeId: string) => Promise<void>;
 
-  addElementVault: (handle: string, name: string, category: ElementVault['category'], description: string) => void;
+  addElementVault: (
+    handle: string,
+    name: string,
+    category: ElementVault['category'],
+    description: string
+  ) => void;
   addReferenceImageToVault: (vaultId: string, label: string, dataUrl: string) => void;
   removeReferenceFromVault: (vaultId: string, refId: string) => void;
   spawnStyleDnaNode: (sourceNodeId?: string) => void;
@@ -218,7 +286,11 @@ export interface StudioState {
   setActiveProvider: (provider: ProviderId) => void;
   updateByok: (patch: Partial<BYOKCredentials>) => void;
   clearByokKeys: () => void;
-  addMcpServer: (name: string, url: string, transport: 'websocket' | 'http-sse') => Promise<void>;
+  addMcpServer: (
+    name: string,
+    url: string,
+    transport: 'websocket' | 'http-sse'
+  ) => Promise<void>;
   refreshMcpServer: (serverId: string) => Promise<void>;
   spawnMcpToolAsCanvasNode: (tool: MCPToolDefinition) => void;
   pingBridge: () => void;
@@ -229,10 +301,17 @@ export interface StudioState {
 
   setPlayheadSec: (sec: number) => void;
   setIsPlayingTimeline: (playing: boolean) => void;
+  setTimelineMuted: (muted: boolean) => void;
   sendNodeToTimeline: (nodeId: string) => void;
-  addVoiceOrSfxClip: (track: 'voice' | 'sfx', title: string, dialogueOrSfx: string, durationSec?: number) => void;
+  splitTimelineClipAtPlayhead: (clipId?: string) => void;
+  addVoiceOrSfxClip: (
+    track: 'voice' | 'sfx',
+    title: string,
+    dialogueOrSfx: string,
+    durationSec?: number
+  ) => void;
   removeTimelineClip: (clipId: string) => void;
-  extractLastFrameToNextShot: (clipId?: string) => Promise<void>;
+  extractLastFrameToNextShot: (clipIdOrNodeId?: string) => Promise<void>;
   compileTimelineMasterMp4: () => Promise<string | null>;
   synthesizeShareableAppFilm: (params: {
     title: string;
@@ -241,6 +320,7 @@ export interface StudioState {
     aspectRatio: AspectRatio;
     resolution: ResolutionTier;
   }) => Promise<string | null>;
+  sendChatAssistantPrompt: (userText: string) => Promise<void>;
   runAutonomousDirectorAgent: (creativeBrief: string) => Promise<void>;
 }
 
@@ -253,9 +333,20 @@ const defaultMcpTools = getDefaultDiscoveredMcpTools(
 );
 
 export const useStudioStore = create<StudioState>((set, get) => ({
-  projectTitle: 'PROTOCOL: RAIN — AeroFlux X-99',
+  projectTitle: 'Protocol: Rain',
   activeView: 'canvas',
-  timelineExpanded: true,
+  canvasToolMode: 'select',
+  showMinimap: false,
+  showConnections: true,
+
+  timelineExpanded: false,
+  fullscreenTimelineOpen: false,
+  cameraDirectorOpen: false,
+  assetDrawerOpen: false,
+  chatDrawerOpen: false,
+  searchModalOpen: false,
+  historyPanelOpen: false,
+
   providerModalOpen: false,
   providerModalTab: 'byok',
   directorModalOpen: false,
@@ -263,24 +354,27 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   directorStepLog: [],
   toastMessage: null,
 
-  panX: 36,
-  panY: 28,
-  zoom: 0.88,
+  panX: 84,
+  panY: 54,
+  zoom: 0.68,
   snapToGrid: true,
 
   nodes: initialGraph.nodes,
   edges: initialGraph.edges,
-  selectedNodeIds: ['node-shot-hero'],
+  // Golden Rule #1: Start with NO node selected so initial load is 95% open charcoal canvas!
+  selectedNodeIds: [],
+  clipboardNode: null,
 
   past: [],
   future: [],
 
   promptText:
-    '@Hero_Kael sprinting across wet cyberpunk rooftop wearing @Cyber_Sneaker, @Brand_Style anamorphic halation',
+    '@Hero_Kael sprinting across wet Neo-Tokyo rooftop wearing @Cyber_Sneaker, Panavision 40mm anamorphic',
   promptMode: 'video',
+  promptSubMode: 'omni-ref',
   promptAspect: '16:9',
-  promptDurationSec: 8,
-  promptResolution: '1080p',
+  promptDurationSec: 6,
+  promptResolution: '720p',
   elements: initialElements,
   skills: BUILTIN_SKILLS,
 
@@ -297,7 +391,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       transport: 'http-sse',
       status: 'simulated',
       tools: defaultMcpTools,
-      lastPingMs: 12,
+      lastPingMs: 8,
     },
   ],
   mcpHealth: {
@@ -320,14 +414,33 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   timelineClips: initialGraph.timelineClips,
   playheadSec: 0,
   isPlayingTimeline: false,
+  timelineMuted: true,
   masterRenderUrl: '/media/protocol_rain_master.mp4',
   isRenderingMasterMp4: false,
   appSynthesizing: false,
   appRenderLog: [],
+  chatMessages: [
+    {
+      id: 'chat-welcome',
+      role: 'assistant',
+      text: 'Dreamina Director Chat ready. Describe a multi-shot scene to build on the canvas, or select a video node and describe a multi-turn edit.',
+      timestamp: Date.now(),
+    },
+  ],
 
   setProjectTitle: (projectTitle) => set({ projectTitle }),
   setActiveView: (activeView) => set({ activeView }),
+  setCanvasToolMode: (canvasToolMode) => set({ canvasToolMode }),
+  toggleMinimap: () => set((s) => ({ showMinimap: !s.showMinimap })),
+  toggleShowConnections: () => set((s) => ({ showConnections: !s.showConnections })),
   setTimelineExpanded: (timelineExpanded) => set({ timelineExpanded }),
+  setFullscreenTimelineOpen: (fullscreenTimelineOpen) => set({ fullscreenTimelineOpen }),
+  setCameraDirectorOpen: (cameraDirectorOpen) => set({ cameraDirectorOpen }),
+  setAssetDrawerOpen: (assetDrawerOpen) => set({ assetDrawerOpen }),
+  setChatDrawerOpen: (chatDrawerOpen) => set({ chatDrawerOpen }),
+  setSearchModalOpen: (searchModalOpen) => set({ searchModalOpen }),
+  setHistoryPanelOpen: (historyPanelOpen) => set({ historyPanelOpen }),
+
   openProviderModal: (tab = 'byok') =>
     set({ providerModalOpen: true, providerModalTab: tab }),
   closeProviderModal: () => set({ providerModalOpen: false }),
@@ -339,13 +452,115 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       if (get().toastMessage === msg) {
         set({ toastMessage: null });
       }
-    }, 3600);
+    }, 3200);
   },
 
   setViewport: (panX, panY, zoom) =>
-    set({ panX, panY, zoom: Math.min(2.4, Math.max(0.22, zoom)) }),
+    set({ panX, panY, zoom: Math.min(2.5, Math.max(0.2, zoom)) }),
   toggleSnapToGrid: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
-  resetViewport: () => set({ panX: 36, panY: 28, zoom: 0.88 }),
+  resetViewport: () => set({ panX: 84, panY: 54, zoom: 0.68 }),
+
+  fitAllNodesInViewport: (vpWidth = window.innerWidth, vpHeight = window.innerHeight) => {
+    const { nodes } = get();
+    if (nodes.length === 0) {
+      set({ panX: 84, panY: 54, zoom: 0.74 });
+      return;
+    }
+    const minX = Math.min(...nodes.map((n) => n.x));
+    const minY = Math.min(...nodes.map((n) => n.y));
+    const maxX = Math.max(...nodes.map((n) => n.x + n.width));
+    const maxY = Math.max(...nodes.map((n) => n.y + n.height));
+    const contentW = Math.max(400, maxX - minX);
+    const contentH = Math.max(300, maxY - minY);
+    const padX = 140;
+    const padY = 120;
+    const nextZoom = Math.min(
+      1.15,
+      Math.max(0.28, Math.min((vpWidth - padX * 2) / contentW, (vpHeight - padY * 2) / contentH))
+    );
+    const panX = (vpWidth - contentW * nextZoom) / 2 - minX * nextZoom;
+    const panY = (vpHeight - contentH * nextZoom) / 2 - minY * nextZoom;
+    set({ panX, panY, zoom: nextZoom });
+  },
+
+  tidyUpNodes: () => {
+    const { nodes } = get();
+    if (nodes.length === 0) return;
+    get().pushHistory();
+
+    const timelineNodes = nodes.filter((n) => n.kind === 'timeline');
+    const regularNodes = nodes.filter((n) => n.kind !== 'timeline');
+
+    const cols = 3;
+    const colX = [100, 620, 1280];
+    const rowHeights: number[] = [];
+
+    regularNodes.forEach((n, idx) => {
+      const r = Math.floor(idx / cols);
+      rowHeights[r] = Math.max(rowHeights[r] || 0, n.height);
+    });
+
+    const positioned: CanvasNode[] = regularNodes.map((n, idx) => {
+      const r = Math.floor(idx / cols);
+      const c = idx % cols;
+      const yOffset =
+        110 +
+        rowHeights.slice(0, r).reduce((acc, h) => acc + h + 110, 0);
+      return {
+        ...n,
+        x: colX[c] ?? 100 + c * 620,
+        y: yOffset,
+      };
+    });
+
+    const bottomY =
+      positioned.reduce((acc, n) => Math.max(acc, n.y + n.height), 360) + 120;
+
+    timelineNodes.forEach((tn, i) => {
+      positioned.push({
+        ...tn,
+        x: 420,
+        y: bottomY + i * 230,
+      });
+    });
+
+    set({ nodes: positioned });
+    get().fitAllNodesInViewport();
+    get().showToast('Tidied up canvas nodes');
+  },
+
+  loadPresetProject: (preset) => {
+    get().pushHistory();
+    if (preset === 'blank') {
+      const blank = buildBlankStudioGraph();
+      set({
+        projectTitle: 'Untitled Canvas',
+        nodes: blank.nodes,
+        edges: blank.edges,
+        timelineClips: blank.timelineClips,
+        selectedNodeIds: [],
+        panX: 120,
+        panY: 80,
+        zoom: 0.78,
+      });
+      get().showToast('Created New Blank Canvas');
+    } else {
+      const full = buildInitialStudioGraph();
+      set({
+        projectTitle: 'Protocol: Rain',
+        nodes: full.nodes,
+        edges: full.edges,
+        multiframes: full.multiframes,
+        bridges: full.bridges,
+        timelineClips: full.timelineClips,
+        selectedNodeIds: [],
+        panX: 84,
+        panY: 54,
+        zoom: 0.68,
+      });
+      get().showToast('Loaded Protocol: Rain preset');
+    }
+  },
 
   pushHistory: () => {
     const { nodes, edges, multiframes, bridges, timelineClips, past } = get();
@@ -382,7 +597,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       past: past.slice(0, -1),
       future: [currentSnapshot, ...future.slice(0, 19)],
     });
-    get().showToast('Undid canvas action');
+    get().showToast('Undo');
   },
 
   redo: () => {
@@ -405,7 +620,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       past: [...past.slice(-19), currentSnapshot],
       future: future.slice(1),
     });
-    get().showToast('Redid canvas action');
+    get().showToast('Redo');
   },
 
   hydrateFromUrlRecipe: () => {
@@ -417,19 +632,19 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     const restoredNodes: CanvasNode[] = decoded.nodes.map((n) => {
       const dims =
-        n.kind === 'style-dna'
-          ? { width: 290, height: 220 }
-          : getDimensionsForAspect(n.aspectRatio, 360);
+        n.kind === 'timeline'
+          ? { width: 1120, height: 168 }
+          : n.kind === 'style-dna'
+          ? { width: 300, height: 210 }
+          : n.kind === 'video'
+          ? { width: 568, height: 320 }
+          : getDimensionsForAspect(n.aspectRatio, 340);
       const imageUrl =
-        n.kind === 'style-dna' || n.kind === 'mcp-tool'
+        n.kind === 'style-dna' || n.kind === 'mcp-tool' || n.kind === 'timeline'
           ? undefined
           : n.kind === 'contact-sheet'
           ? '/media/contact_sheet_9grid.png'
-          : renderShotDataUrl(n.aspectRatio, {
-              prompt: n.prompt,
-              seed: n.seed,
-              cameraLabel: n.title,
-            });
+          : '/media/shot01_rooftop.png';
       return {
         id: n.id,
         kind: n.kind,
@@ -442,6 +657,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         aspectRatio: n.aspectRatio,
         status: 'ready',
         imageUrl,
+        videoUrl: n.kind === 'video' ? '/media/shot01_rooftop.mp4' : undefined,
         seed: n.seed,
         resolution: n.resolution,
         durationSec: n.durationSec,
@@ -458,12 +674,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     });
 
     set({
-      projectTitle: decoded.title || 'Shared Recipe Scene',
+      projectTitle: decoded.title || 'Shared Recipe',
       nodes: restoredNodes,
       edges: decoded.edges || [],
-      selectedNodeIds: restoredNodes[0] ? [restoredNodes[0].id] : [],
+      selectedNodeIds: [],
     });
-    get().showToast(`Loaded shared recipe "${decoded.title}"`);
+    get().showToast(`Loaded "${decoded.title}"`);
   },
 
   copyShareableRecipeUrl: () => {
@@ -502,13 +718,26 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const fullUrl = url.toString();
     window.history.replaceState({}, '', fullUrl);
     navigator.clipboard?.writeText(fullUrl).catch(() => undefined);
-    get().showToast('Copied ?recipe= URL to clipboard!');
+    get().showToast('Copied shareable ?recipe= link');
     return fullUrl;
   },
 
   selectNodes: (ids, additive = false) =>
     set((s) => {
-      if (!additive) return { selectedNodeIds: ids };
+      if (!additive) {
+        const primary = s.nodes.find((n) => n.id === ids[0]);
+        return {
+          selectedNodeIds: ids,
+          promptText:
+            primary && primary.kind !== 'timeline' ? primary.prompt : s.promptText,
+          promptMode:
+            primary?.kind === 'contact-sheet'
+              ? '9-grid'
+              : primary?.kind === 'image'
+              ? 'image'
+              : 'video',
+        };
+      }
       const merged = new Set(s.selectedNodeIds);
       ids.forEach((id) => {
         if (merged.has(id)) merged.delete(id);
@@ -527,7 +756,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   commitNodePositions: () => {
     const { snapToGrid, nodes, selectedNodeIds } = get();
     if (!snapToGrid) return;
-    const grid = 16;
+    const grid = 10;
     set({
       nodes: nodes.map((n) =>
         selectedNodeIds.includes(n.id)
@@ -548,14 +777,17 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (exists) return;
     get().pushHistory();
     const sourceNode = nodes.find((n) => n.id === sourceId);
+    const targetNode = nodes.find((n) => n.id === targetId);
     const resolvedKind = sourceNode?.kind === 'style-dna' ? 'style-dna' : kind;
+
     const newEdge: CanvasEdge = {
       id: `edge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       sourceId,
       targetId,
       kind: resolvedKind,
-      label: label || (resolvedKind === 'style-dna' ? 'Style DNA Lock' : 'Connected'),
+      label,
     };
+
     set((s) => ({
       edges: [...s.edges, newEdge],
       nodes:
@@ -565,40 +797,507 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             )
           : s.nodes,
     }));
+
+    // If wired into a Timeline node, automatically append source media to timelineClips!
+    if (
+      targetNode?.kind === 'timeline' &&
+      sourceNode &&
+      (sourceNode.kind === 'video' || sourceNode.kind === 'image')
+    ) {
+      get().sendNodeToTimeline(sourceNode.id);
+    }
   },
 
-  deleteSelectedNodes: () => {
-    const { selectedNodeIds } = get();
-    if (selectedNodeIds.length === 0) return;
+  deleteSelectedNodes: (explicitId) => {
+    const idsToDelete = explicitId ? [explicitId] : get().selectedNodeIds;
+    if (idsToDelete.length === 0) return;
     get().pushHistory();
     set((s) => ({
-      nodes: s.nodes.filter((n) => !selectedNodeIds.includes(n.id)),
+      nodes: s.nodes.filter((n) => !idsToDelete.includes(n.id)),
       edges: s.edges.filter(
-        (e) => !selectedNodeIds.includes(e.sourceId) && !selectedNodeIds.includes(e.targetId)
+        (e) => !idsToDelete.includes(e.sourceId) && !idsToDelete.includes(e.targetId)
       ),
-      selectedNodeIds: [],
+      selectedNodeIds: s.selectedNodeIds.filter((id) => !idsToDelete.includes(id)),
     }));
   },
 
-  setPromptText: (promptText) => set({ promptText }),
+  updateNodeFields: (nodeId, patch) =>
+    set((s) => ({
+      nodes: s.nodes.map((n) => (n.id === nodeId ? { ...n, ...patch } : n)),
+    })),
+
+  copySelectedNode: (explicitId) => {
+    const id = explicitId || get().selectedNodeIds[0];
+    const node = get().nodes.find((n) => n.id === id);
+    if (!node) return;
+    set({ clipboardNode: structuredClone(node) });
+    get().showToast(`Copied "${node.title}"`);
+  },
+
+  pasteClipboardNode: (worldX, worldY) => {
+    const { clipboardNode } = get();
+    if (!clipboardNode) {
+      get().showToast('Clipboard is empty');
+      return;
+    }
+    get().pushHistory();
+    const newId = `node_paste_${Date.now()}`;
+    const pasted: CanvasNode = {
+      ...structuredClone(clipboardNode),
+      id: newId,
+      title: `${clipboardNode.title} Copy`,
+      x: worldX !== undefined ? worldX : clipboardNode.x + 56,
+      y: worldY !== undefined ? worldY : clipboardNode.y + 56,
+      createdAt: Date.now(),
+    };
+    set((s) => ({
+      nodes: [...s.nodes, pasted],
+      selectedNodeIds: [newId],
+    }));
+    get().showToast(`Pasted "${pasted.title}"`);
+  },
+
+  duplicateNodes: (explicitId) => {
+    const ids = explicitId ? [explicitId] : get().selectedNodeIds;
+    if (ids.length === 0) return;
+    get().pushHistory();
+    const { nodes } = get();
+    const clones: CanvasNode[] = [];
+    ids.forEach((id, i) => {
+      const orig = nodes.find((n) => n.id === id);
+      if (!orig) return;
+      clones.push({
+        ...structuredClone(orig),
+        id: `node_dup_${Date.now()}_${i}`,
+        title: `${orig.title} Copy`,
+        x: orig.x + 48,
+        y: orig.y + 48,
+        createdAt: Date.now() + i,
+      });
+    });
+    set((s) => ({
+      nodes: [...s.nodes, ...clones],
+      selectedNodeIds: clones.map((c) => c.id),
+    }));
+    get().showToast(`Duplicated ${clones.length} node${clones.length > 1 ? 's' : ''}`);
+  },
+
+  spawnDreaminaNodeAt: (tool, worldX, worldY, opts) => {
+    if (tool === 'camera-3d') {
+      set({ cameraDirectorOpen: true });
+      return null;
+    }
+    if (tool === 'assets') {
+      set({ assetDrawerOpen: true });
+      return null;
+    }
+
+    const { nodes, edges } = get();
+    if (tool === 'timeline') {
+      const existingTimeline = nodes.find((n) => n.kind === 'timeline');
+      if (existingTimeline && !opts?.wireFromNodeId) {
+        set({ selectedNodeIds: [existingTimeline.id] });
+        get().showToast('Focused Timelines 1');
+        return existingTimeline.id;
+      }
+    }
+
+    get().pushHistory();
+    const id = `node_${tool}_${Date.now()}`;
+    const countOfKind = (k: CanvasNode['kind']) =>
+      nodes.filter((n) => n.kind === k).length + 1;
+
+    const x = Math.round(worldX / 10) * 10;
+    const y = Math.round(worldY / 10) * 10;
+    const upstream = opts?.wireFromNodeId
+      ? nodes.find((n) => n.id === opts.wireFromNodeId)
+      : undefined;
+
+    let newNode: CanvasNode;
+
+    if (opts?.asset) {
+      const a = opts.asset;
+      const isVid = a.kind === 'video';
+      const w = isVid ? 568 : a.kind === 'contact-sheet' ? 480 : 320;
+      const h = isVid ? 320 : a.kind === 'contact-sheet' ? 270 : 320;
+      newNode = {
+        id,
+        kind: a.kind,
+        title: a.title,
+        prompt: `${a.title} · @Hero_Kael @Cyber_Sneaker`,
+        x,
+        y,
+        width: w,
+        height: h,
+        aspectRatio: isVid || a.kind === 'contact-sheet' ? '16:9' : '1:1',
+        status: 'ready',
+        imageUrl: isVid ? a.posterUrl || '/media/shot01_rooftop.png' : a.url,
+        videoUrl: isVid ? a.url : undefined,
+        durationSec: a.durationSec,
+        seed: Math.floor(Math.random() * 9000) + 100,
+        resolution: '1080p',
+        elementHandles: ['@Hero_Kael', '@Cyber_Sneaker'],
+        gridSpec:
+          a.kind === 'contact-sheet'
+            ? { rows: 3, cols: 3, labels: NINE_GRID_LABELS }
+            : undefined,
+        layers: createDefaultLayers(isVid ? a.posterUrl : a.url),
+        providerUsed: 'Asset Vault',
+        createdAt: Date.now(),
+      };
+    } else {
+      switch (tool) {
+        case 'text': {
+          const n = countOfKind('text');
+          newNode = {
+            id,
+            kind: 'text',
+            title: `Texts ${n}`,
+            prompt:
+              upstream?.prompt ||
+              'Write a scene description, dialogue beat, or camera prompt for @Hero_Kael...',
+            x,
+            y,
+            width: 320,
+            height: 200,
+            aspectRatio: '16:9',
+            status: 'ready',
+            seed: 110 + n,
+            resolution: '1080p',
+            elementHandles: ['@Hero_Kael'],
+            layers: [],
+            providerUsed: 'Dreamina Text Node',
+            createdAt: Date.now(),
+          };
+          break;
+        }
+        case 'image': {
+          const n = countOfKind('image');
+          const img = upstream?.imageUrl || '/media/shot01_rooftop.png';
+          newNode = {
+            id,
+            kind: 'image',
+            title: `Images ${n}`,
+            prompt:
+              upstream?.prompt ||
+              '@Hero_Kael standing under Neo-Tokyo rain neon, Panavision 40mm keyframe',
+            x,
+            y,
+            width: 320,
+            height: 320,
+            aspectRatio: '1:1',
+            status: 'ready',
+            imageUrl: img,
+            seed: 200 + n * 37,
+            resolution: '2K',
+            elementHandles: ['@Hero_Kael', '@Cyber_Sneaker'],
+            layers: createDefaultLayers(img),
+            providerUsed: 'Dreamina Image Node',
+            createdAt: Date.now(),
+          };
+          break;
+        }
+        case 'video':
+        case 'blend': {
+          const n = countOfKind('video');
+          const isBlend = tool === 'blend';
+          const img = isBlend
+            ? '/media/shot02b_sunrise_remix.png'
+            : upstream?.imageUrl || '/media/shot02_alley_chase.png';
+          const vid = isBlend
+            ? '/media/shot02b_sunrise_remix.mp4'
+            : '/media/shot02_alley_chase.mp4';
+          newNode = {
+            id,
+            kind: 'video',
+            title: isBlend ? `Videos ${n} · Multi-Turn` : `Videos ${n}`,
+            prompt: isBlend
+              ? 'Keep @Hero_Kael motion vector locked; shift alley lighting to golden sunrise'
+              : upstream?.prompt ||
+                'Dynamic tracking shot of @Hero_Kael sprinting through rain-drenched alley in @Cyber_Sneaker',
+            x,
+            y,
+            width: 568,
+            height: 320,
+            aspectRatio: '16:9',
+            status: 'ready',
+            imageUrl: img,
+            videoUrl: vid,
+            durationSec: 6,
+            cameraMotion: 'Dolly In',
+            interactionId: `int_omni_${Date.now().toString(36)}`,
+            previousInteractionId: upstream?.interactionId,
+            seed: 500 + n * 41,
+            resolution: '1080p',
+            elementHandles: ['@Hero_Kael', '@Cyber_Sneaker'],
+            layers: createDefaultLayers(img),
+            providerUsed: 'Local FFmpeg 8.0 · $0.00',
+            createdAt: Date.now(),
+          };
+          break;
+        }
+        case 'audio': {
+          const n = countOfKind('audio');
+          newNode = {
+            id,
+            kind: 'audio',
+            title: `Audios ${n}`,
+            prompt: 'Binaural Neo-Tokyo rain ambience + 55Hz anamorphic sub-bass pulse',
+            x,
+            y,
+            width: 340,
+            height: 150,
+            aspectRatio: '16:9',
+            status: 'ready',
+            durationSec: 8,
+            seed: 600 + n,
+            resolution: '1080p',
+            elementHandles: [],
+            layers: [],
+            providerUsed: 'Native Stereo Audio',
+            createdAt: Date.now(),
+          };
+          break;
+        }
+        case 'timeline': {
+          const n = countOfKind('timeline');
+          newNode = {
+            id,
+            kind: 'timeline',
+            title: `Timelines ${n}`,
+            prompt: 'Spatial Rough-Cut Sequence',
+            x,
+            y,
+            width: 1120,
+            height: 168,
+            aspectRatio: '16:9',
+            status: 'ready',
+            videoUrl: '/media/protocol_rain_master.mp4',
+            durationSec: 18,
+            seed: 900 + n,
+            resolution: '1080p',
+            elementHandles: [],
+            layers: [],
+            providerUsed: 'Dreamina Spatial Timeline',
+            createdAt: Date.now(),
+          };
+          break;
+        }
+        case 'element': {
+          const n = countOfKind('element');
+          const isSneaker = n % 2 === 0;
+          const img = isSneaker
+            ? '/media/cyber_sneaker_vault.png'
+            : '/media/hero_kael_vault.png';
+          const handle = isSneaker ? '@Cyber_Sneaker' : '@Hero_Kael';
+          newNode = {
+            id,
+            kind: 'element',
+            title: `Elements ${n} · ${handle}`,
+            prompt: `${handle} 6-reference visual continuity anchor`,
+            x,
+            y,
+            width: 280,
+            height: 280,
+            aspectRatio: '1:1',
+            status: 'ready',
+            imageUrl: img,
+            seed: 300 + n,
+            resolution: '2K',
+            elementHandles: [handle],
+            layers: createDefaultLayers(img),
+            providerUsed: 'Element Continuity Vault',
+            createdAt: Date.now(),
+          };
+          break;
+        }
+        case 'cinema-kit': {
+          const n = countOfKind('style-dna');
+          const dna = extractStyleDnaFromPrompt('Neo-Tokyo 500T @Brand_Style');
+          newNode = {
+            id,
+            kind: 'style-dna',
+            title: `Cinema Kit ${n}`,
+            prompt: `${dna.lens} · ${dna.lighting} · ${dna.filmStock}`,
+            x,
+            y,
+            width: 300,
+            height: 210,
+            aspectRatio: '16:9',
+            status: 'ready',
+            seed: 410 + n,
+            resolution: '4K',
+            elementHandles: ['@Brand_Style'],
+            styleDna: dna,
+            layers: [],
+            providerUsed: 'Cinema Kit Optical Lock',
+            createdAt: Date.now(),
+          };
+          break;
+        }
+        case 'image-editor': {
+          const n = countOfKind('contact-sheet');
+          newNode = {
+            id,
+            kind: 'contact-sheet',
+            title: `Images ${n} · 9-Grid Contact Sheet`,
+            prompt:
+              '/9-Grid Storyboard @Hero_Kael & @Cyber_Sneaker rain coverage across 9 lenses',
+            x,
+            y,
+            width: 480,
+            height: 270,
+            aspectRatio: '16:9',
+            status: 'ready',
+            imageUrl: '/media/contact_sheet_9grid.png',
+            seed: 512 + n,
+            resolution: '4K',
+            elementHandles: ['@Hero_Kael', '@Cyber_Sneaker'],
+            gridSpec: { rows: 3, cols: 3, labels: NINE_GRID_LABELS },
+            layers: createDefaultLayers('/media/contact_sheet_9grid.png'),
+            providerUsed: '9-Grid Slicer',
+            createdAt: Date.now(),
+          };
+          break;
+        }
+        case 'sticky':
+        default: {
+          const n = countOfKind('sticky');
+          newNode = {
+            id,
+            kind: 'sticky',
+            title: `Notes ${n}`,
+            prompt:
+              'Director Note:\n• Keep 40mm anamorphic bokeh consistent\n• Cut on sneaker puddle impact at 00:06',
+            x,
+            y,
+            width: 260,
+            height: 220,
+            aspectRatio: '1:1',
+            status: 'ready',
+            seed: 700 + n,
+            resolution: '1080p',
+            elementHandles: [],
+            layers: [],
+            providerUsed: 'Sticky Note',
+            createdAt: Date.now(),
+          };
+          break;
+        }
+      }
+    }
+
+    const nextEdges = [...edges];
+    if (opts?.wireFromNodeId && upstream) {
+      const sourceId =
+        opts.wireDirection === 'left' ? id : opts.wireFromNodeId;
+      const targetId =
+        opts.wireDirection === 'left' ? opts.wireFromNodeId : id;
+      nextEdges.push({
+        id: `edge_wire_${Date.now()}`,
+        sourceId,
+        targetId,
+        kind: tool === 'blend' ? 'multi-turn-branch' : 'lineage',
+      });
+    }
+
+    set({
+      nodes: [...nodes, newNode],
+      edges: nextEdges,
+      selectedNodeIds: [id],
+      promptText: newNode.kind !== 'timeline' ? newNode.prompt : get().promptText,
+    });
+
+    if (newNode.kind === 'timeline' && upstream && (upstream.kind === 'video' || upstream.kind === 'image')) {
+      get().sendNodeToTimeline(upstream.id);
+    }
+
+    return id;
+  },
+
+  uploadLocalMediaNode: (file, worldX = 520, worldY = 260) => {
+    const objectUrl = URL.createObjectURL(file);
+    const isVideo = file.type.startsWith('video/');
+    const isAudio = file.type.startsWith('audio/');
+    get().pushHistory();
+
+    const id = `node_upload_${Date.now()}`;
+    const newNode: CanvasNode = {
+      id,
+      kind: isVideo ? 'video' : isAudio ? 'audio' : 'image',
+      title: file.name.slice(0, 28),
+      prompt: `Uploaded media: ${file.name}`,
+      x: Math.round(worldX / 10) * 10,
+      y: Math.round(worldY / 10) * 10,
+      width: isVideo ? 568 : isAudio ? 340 : 340,
+      height: isVideo ? 320 : isAudio ? 150 : 340,
+      aspectRatio: isVideo ? '16:9' : '1:1',
+      status: 'ready',
+      imageUrl: !isVideo && !isAudio ? objectUrl : undefined,
+      videoUrl: isVideo ? objectUrl : undefined,
+      audioUrl: isAudio ? objectUrl : undefined,
+      durationSec: isVideo || isAudio ? 8 : undefined,
+      seed: Math.floor(Math.random() * 9000),
+      resolution: '1080p',
+      elementHandles: [],
+      layers: !isVideo && !isAudio ? createDefaultLayers(objectUrl) : [],
+      providerUsed: 'Local Device Upload',
+      createdAt: Date.now(),
+    };
+
+    set((s) => ({
+      nodes: [...s.nodes, newNode],
+      selectedNodeIds: [id],
+    }));
+    get().showToast(`Added "${file.name}" to canvas`);
+  },
+
+  setPromptText: (promptText) => {
+    const selId = get().selectedNodeIds[0];
+    set((s) => ({
+      promptText,
+      nodes: selId
+        ? s.nodes.map((n) =>
+            n.id === selId && n.kind !== 'timeline' ? { ...n, prompt: promptText } : n
+          )
+        : s.nodes,
+    }));
+  },
   setPromptMode: (promptMode) => set({ promptMode }),
+  setPromptSubMode: (promptSubMode) => set({ promptSubMode }),
   setPromptAspect: (promptAspect) => set({ promptAspect }),
   setPromptDurationSec: (promptDurationSec) => set({ promptDurationSec }),
   setPromptResolution: (promptResolution) => set({ promptResolution }),
 
   applySkillPreset: (skill) => {
+    get().setPromptText(skill.promptTemplate);
     set({
-      promptText: skill.promptTemplate,
       promptMode: skill.recommendedMode,
       promptDurationSec: skill.durationSec || get().promptDurationSec,
     });
-    get().showToast(`Activated skill ${skill.slash}`);
+    get().showToast(`Applied ${skill.slash}`);
   },
 
-  submitPromptGeneration: async () => {
+  injectCameraPromptToSelection: (cameraTag) => {
+    const { selectedNodeIds, nodes, promptText } = get();
+    const sel = nodes.find((n) => n.id === selectedNodeIds[0]);
+    const base = sel ? sel.prompt : promptText;
+    const nextPrompt = `${base.trim()}, ${cameraTag}`;
+    if (sel) {
+      get().updateNodeFields(sel.id, {
+        prompt: nextPrompt,
+        cameraMotion: cameraTag.slice(0, 32),
+      });
+    }
+    set({ promptText: nextPrompt, cameraDirectorOpen: false });
+    get().showToast(`Applied 3D Camera parameters: ${cameraTag}`);
+  },
+
+  submitPromptGeneration: async (sourceNodeId) => {
     const {
       promptText,
       promptMode,
+      promptSubMode,
       promptAspect,
       promptDurationSec,
       promptResolution,
@@ -609,16 +1308,22 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       selectedNodeIds,
     } = get();
 
-    if (!promptText.trim()) return;
+    const anchorNode = nodes.find(
+      (n) => n.id === (sourceNodeId || selectedNodeIds[0])
+    );
+    const effectivePrompt = (promptText || anchorNode?.prompt || '').trim();
+    if (!effectivePrompt) return;
 
-    const selectedPrimary = nodes.find((n) => n.id === selectedNodeIds[0]);
-    if (promptMode === 'multi-turn' && selectedPrimary) {
-      await get().branchVideoMultiTurn(selectedPrimary.id, promptText);
+    if (
+      (promptMode === 'multi-turn' || promptSubMode === 'multi-turn') &&
+      anchorNode
+    ) {
+      await get().branchVideoMultiTurn(anchorNode.id, effectivePrompt);
       return;
     }
 
     get().pushHistory();
-    const handles = extractHandles(promptText);
+    const handles = extractHandles(effectivePrompt);
     const refImages: string[] = [];
     elements.forEach((v) => {
       if (handles.includes(v.handle)) {
@@ -626,43 +1331,44 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
     });
 
-    const activeStyleNode =
-      nodes.find((n) => n.id === selectedPrimary?.styleDnaId) ||
-      nodes.find((n) => n.kind === 'style-dna');
-    const palette = activeStyleNode?.styleDna?.palette;
-
-    const maxRight = nodes.reduce((acc, n) => Math.max(acc, n.x + n.width), 360);
-    const spawnX = Math.round((maxRight + 72) / 16) * 16;
-    const spawnY = 140;
+    const spawnX = anchorNode
+      ? anchorNode.x + anchorNode.width + 110
+      : 600;
+    const spawnY = anchorNode ? anchorNode.y : 160;
     const seed = Math.floor(Math.random() * 9000) + 100;
-    const dims = getDimensionsForAspect(promptAspect, 360);
     const tempId = `node_gen_${Date.now()}`;
 
-    const isGrid9 = promptMode === '9-grid' || promptText.includes('/9-Grid');
-    const isGrid4 = promptMode === '4-angle' || promptText.includes('/4-Angle');
-    const isVideo = promptMode === 'video';
+    const isGrid9 =
+      promptMode === '9-grid' || effectivePrompt.includes('/9-Grid');
+    const isGrid4 =
+      promptMode === '4-angle' || effectivePrompt.includes('/4-Angle');
+    const isVideo =
+      !isGrid9 &&
+      !isGrid4 &&
+      (promptMode === 'video' || anchorNode?.kind === 'video' || anchorNode?.kind === 'image');
+
+    const width = isVideo ? 568 : isGrid9 || isGrid4 ? 480 : 320;
+    const height = isVideo ? 320 : isGrid9 || isGrid4 ? 270 : 320;
 
     const defaultSourceImg = isGrid9
       ? '/media/contact_sheet_9grid.png'
-      : selectedPrimary?.imageUrl ||
-        refImages[0] ||
-        '/media/shot01_rooftop.png';
+      : anchorNode?.imageUrl || refImages[0] || '/media/shot01_rooftop.png';
 
     const placeholderNode: CanvasNode = {
       id: tempId,
       kind: isGrid9 || isGrid4 ? 'contact-sheet' : isVideo ? 'video' : 'image',
       title: isGrid9
-        ? '9-Grid Storyboard Sheet'
+        ? 'Images · 9-Grid Sheet'
         : isGrid4
-        ? '4-Angle Camera Coverage'
+        ? 'Images · 4-Angle Sheet'
         : isVideo
-        ? `Omni 1.2 Shot (${promptDurationSec}s)`
-        : 'Synthesized Keyframe',
-      prompt: promptText,
+        ? `Videos · ${promptDurationSec}s Shot`
+        : 'Images · Synthesized Frame',
+      prompt: effectivePrompt,
       x: spawnX,
       y: spawnY,
-      width: dims.width,
-      height: dims.height,
+      width,
+      height,
       aspectRatio: promptAspect,
       status: 'generating',
       progress: 35,
@@ -671,7 +1377,6 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       resolution: promptResolution,
       durationSec: isVideo ? promptDurationSec : undefined,
       elementHandles: handles,
-      styleDnaId: activeStyleNode?.id,
       layers: createDefaultLayers(defaultSourceImg),
       providerUsed: activeProvider,
       createdAt: Date.now(),
@@ -680,15 +1385,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     set((s) => ({
       nodes: [...s.nodes, placeholderNode],
       selectedNodeIds: [tempId],
-      edges: activeStyleNode
+      edges: anchorNode
         ? [
             ...s.edges,
             {
-              id: `edge_dna_${tempId}`,
-              sourceId: activeStyleNode.id,
+              id: `edge_gen_${tempId}`,
+              sourceId: anchorNode.id,
               targetId: tempId,
-              kind: 'style-dna',
-              label: 'Style DNA Lock',
+              kind: 'lineage',
             },
           ]
         : s.edges,
@@ -696,14 +1400,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     const execResult = await executeStudioGeneration({
       provider: activeProvider,
-      prompt: promptText,
+      prompt: effectivePrompt,
       aspectRatio: promptAspect,
       durationSec: promptDurationSec,
       resolution: promptResolution,
       mode: isGrid9 ? '9-grid' : isVideo ? 'video' : 'image',
       referenceImages: refImages,
       firstFrameDataUrl: defaultSourceImg,
-      mood: inferMoodFromPrompt(promptText),
+      mood: inferMoodFromPrompt(effectivePrompt),
       byok,
     });
 
@@ -715,17 +1419,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         imageUrl = '/media/contact_sheet_9grid.png';
         gridSpec = { rows: 3, cols: 3, labels: NINE_GRID_LABELS };
       } else if (isGrid4) {
-        const sheet = renderContactSheetDataUrl(2, 2, promptText, seed, palette);
+        const sheet = renderContactSheetDataUrl(2, 2, effectivePrompt, seed);
         imageUrl = sheet.dataUrl;
         gridSpec = { rows: 2, cols: 2, labels: FOUR_ANGLE_LABELS };
       } else if (execResult.videoUrl) {
         imageUrl = defaultSourceImg;
       } else {
         imageUrl = renderShotDataUrl(promptAspect, {
-          prompt: promptText,
+          prompt: effectivePrompt,
           seed,
-          palette,
-          cameraLabel: isVideo ? `OMNI 1.2 · ${promptDurationSec}s` : `FRAME · ${promptResolution}`,
+          cameraLabel: isVideo ? `${promptDurationSec}s` : promptResolution,
         });
       }
     }
@@ -748,24 +1451,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       ),
     }));
 
-    get().showToast(
-      isGrid9
-        ? '9-Grid ready! Click "⊞ 9-Grid Slicer" to unpack all 9 frames via FFmpeg'
-        : `Generated ${placeholderNode.title} (${execResult.providerLabel})`
-    );
+    get().showToast(`Synthesized ${placeholderNode.title}`);
   },
 
   applyInpaintToNode: async (nodeId, maskDataUrl, regionalPrompt) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node || !node.imageUrl) return;
     get().pushHistory();
-    const styleNode = get().nodes.find((n) => n.id === node.styleDnaId);
     const { compositedDataUrl, isolatedPatchDataUrl } = await compositeInpaintRedraw(
       node.imageUrl,
       maskDataUrl,
-      regionalPrompt || 'Cyberpunk neon hologram detail',
-      node.seed + 19,
-      styleNode?.styleDna?.palette
+      regionalPrompt || 'Subtle cinema lighting detail',
+      node.seed + 19
     );
 
     set((s) => ({
@@ -789,22 +1486,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         };
       }),
     }));
-    get().showToast(`Applied regional Inpaint redraw: "${regionalPrompt}"`);
+    get().showToast(`Applied Inpaint redraw`);
   },
 
   expandOutpaintNode: async (nodeId, targetAspect) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node || !node.imageUrl) return;
     get().pushHistory();
-    const styleNode = get().nodes.find((n) => n.id === node.styleDnaId);
     const expandedDataUrl = await expandOutpaintDataUrl(
       node.imageUrl,
       targetAspect,
       node.prompt,
-      node.seed,
-      styleNode?.styleDna?.palette
+      node.seed
     );
-    const newDims = getDimensionsForAspect(targetAspect, 390);
+    const newDims = getDimensionsForAspect(targetAspect, 420);
     set((s) => ({
       nodes: s.nodes.map((n) =>
         n.id === nodeId
@@ -814,25 +1509,23 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               width: newDims.width,
               height: newDims.height,
               imageUrl: expandedDataUrl,
-              title: `${n.title.replace(/ \(Outpaint.*\)$/, '')} (Outpaint ${targetAspect})`,
+              title: `${n.title.replace(/ \(Outpaint.*\)$/, '')} (${targetAspect})`,
               layers: createDefaultLayers(expandedDataUrl),
             }
           : n
       ),
     }));
-    get().showToast(`Expanded frame boundaries to ${targetAspect} (Smart Outpaint)`);
+    get().showToast(`Expanded frame to ${targetAspect}`);
   },
 
   removeBgAndDecomposeLayers: (nodeId) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
     get().pushHistory();
-    const styleNode = get().nodes.find((n) => n.id === node.styleDnaId);
     const { foregroundDataUrl, backgroundDataUrl } = decomposeSubjectAndBackground(
       node.aspectRatio,
       node.prompt,
-      node.seed,
-      styleNode?.styleDna?.palette
+      node.seed
     );
 
     set((s) => ({
@@ -865,13 +1558,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             name: 'Text Overlay',
             visible: false,
             opacity: 100,
-            textContent: 'AEROFLUX // ZERO MARKUP',
+            textContent: 'PROTOCOL: RAIN',
           },
         ];
         return { ...n, layers: nextLayers };
       }),
     }));
-    get().showToast('Isolated Foreground Subject! Toggle Background/Text layers in the stack.');
+    get().showToast('Isolated Foreground Subject');
   },
 
   updateNodeLayer: (nodeId, layerId, patch) => {
@@ -891,34 +1584,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
     get().pushHistory();
-    const styleNode = get().nodes.find((n) => n.id === node.styleDnaId);
-    const hasRealAsset =
-      node.imageUrl?.startsWith('/media/') || node.imageUrl?.startsWith('http');
-    const crispUrl =
-      node.kind === 'contact-sheet' || hasRealAsset
-        ? node.imageUrl
-        : renderShotDataUrl(
-            node.aspectRatio,
-            {
-              prompt: node.prompt,
-              seed: node.seed,
-              palette: styleNode?.styleDna?.palette,
-              hudBadge: `HD ${targetRes} MASTER`,
-            },
-            3
-          );
     set((s) => ({
       nodes: s.nodes.map((n) =>
-        n.id === nodeId
-          ? {
-              ...n,
-              resolution: targetRes,
-              imageUrl: crispUrl || n.imageUrl,
-            }
-          : n
+        n.id === nodeId ? { ...n, resolution: targetRes } : n
       ),
     }));
-    get().showToast(`Upscaled "${node.title}" to ${targetRes} Ultra-Crisp Master`);
+    get().showToast(`Upscaled "${node.title}" to ${targetRes}`);
   },
 
   retakeNode: async (nodeId) => {
@@ -926,13 +1597,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (!node) return;
     get().pushHistory();
     const nextSeed = node.seed + 137;
-    const styleNode = get().nodes.find((n) => n.id === node.styleDnaId);
 
     if (node.kind === 'video') {
       const ff = await renderVideoViaBackend({
-        prompt: `${node.prompt} (retake seed ${nextSeed})`,
+        prompt: `${node.prompt} (seed ${nextSeed})`,
         imageUrl: node.imageUrl || '/media/shot01_rooftop.png',
-        durationSec: node.durationSec || 7,
+        durationSec: node.durationSec || 6,
         aspectRatio: node.aspectRatio,
         mood: inferMoodFromPrompt(node.prompt),
       });
@@ -944,46 +1614,29 @@ export const useStudioStore = create<StudioState>((set, get) => ({
                   ...n,
                   seed: nextSeed,
                   videoUrl: ff.videoUrl,
-                  providerUsed: 'FFmpeg Retake (:3001)',
+                  providerUsed: 'FFmpeg 8.0 Retake (:3001)',
                 }
               : n
           ),
         }));
-        get().showToast(`Retook video "${node.title}" via live :3001 FFmpeg (Seed #${nextSeed})`);
+        get().showToast(`Retook "${node.title}" (Seed #${nextSeed})`);
         return;
       }
     }
 
-    let nextImg = node.imageUrl;
-    if (node.kind === 'contact-sheet' && node.gridSpec) {
-      nextImg = renderContactSheetDataUrl(
-        node.gridSpec.rows,
-        node.gridSpec.cols,
-        node.prompt,
-        nextSeed,
-        styleNode?.styleDna?.palette
-      ).dataUrl;
-    } else if (node.kind !== 'style-dna' && node.kind !== 'mcp-tool') {
-      nextImg = renderShotDataUrl(node.aspectRatio, {
-        prompt: node.prompt,
-        seed: nextSeed,
-        palette: styleNode?.styleDna?.palette,
-        cameraLabel: `RETAKE SEED #${nextSeed}`,
-      });
-    }
+    const nextImg =
+      node.imageUrl?.startsWith('/media/')
+        ? node.imageUrl
+        : renderShotDataUrl(node.aspectRatio, {
+            prompt: node.prompt,
+            seed: nextSeed,
+          });
     set((s) => ({
       nodes: s.nodes.map((n) =>
-        n.id === nodeId
-          ? {
-              ...n,
-              seed: nextSeed,
-              imageUrl: nextImg,
-              layers: createDefaultLayers(nextImg),
-            }
-          : n
+        n.id === nodeId ? { ...n, seed: nextSeed, imageUrl: nextImg } : n
       ),
     }));
-    get().showToast(`Retook "${node.title}" (Seed #${nextSeed}) with @Elements locked`);
+    get().showToast(`Retook "${node.title}" (Seed #${nextSeed})`);
   },
 
   sliceContactSheetNode: async (nodeId, rows = 3, cols = 3) => {
@@ -991,7 +1644,6 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (!node) return;
     get().pushHistory();
 
-    const styleNode = get().nodes.find((n) => n.id === node.styleDnaId);
     const defaultLabels = rows === 3 && cols === 3 ? NINE_GRID_LABELS : FOUR_ANGLE_LABELS;
     const labels =
       node.gridSpec?.labels && node.gridSpec.labels.length === rows * cols
@@ -1005,7 +1657,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         ? '/media/contact_sheet_9grid.png'
         : node.imageUrl;
 
-    get().showToast(`Slicing ${rows}×${cols} Contact Sheet...`);
+    get().showToast(`Slicing ${rows}×${cols} sheet via :3001 FFmpeg...`);
 
     let slicedUrls: string[] = [];
     let usedBackend = false;
@@ -1021,22 +1673,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (slicedUrls.length === 0) {
       let sourceDataUrl = candidateImg;
       if (!sourceDataUrl || (node.kind !== 'contact-sheet' && rows === 2)) {
-        const sheet = renderContactSheetDataUrl(
-          rows,
-          cols,
-          node.prompt,
-          node.seed,
-          styleNode?.styleDna?.palette
-        );
+        const sheet = renderContactSheetDataUrl(rows, cols, node.prompt, node.seed);
         sourceDataUrl = sheet.dataUrl;
       }
       slicedUrls = await sliceGridImageDataUrl(sourceDataUrl, rows, cols);
     }
 
-    const cardW = 240;
-    const cardH = 135;
-    const startX = node.x + node.width + 110;
-    const startY = Math.max(40, node.y - 80);
+    const cardW = 260;
+    const cardH = 146;
+    const startX = node.x + node.width + 120;
+    const startY = Math.max(80, node.y - 40);
 
     const spawnedNodes: CanvasNode[] = [];
     const spawnedEdges: CanvasEdge[] = [];
@@ -1045,14 +1691,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const r = Math.floor(idx / cols);
       const c = idx % cols;
       const childId = `node_slice_${Date.now()}_${idx}`;
-      const angleLabel = labels[idx] || `Panel ${idx + 1}`;
+      const angleLabel = labels[idx] || `Images · Slice ${idx + 1}`;
       spawnedNodes.push({
         id: childId,
         kind: 'image',
         title: angleLabel,
         prompt: `${node.prompt} — [${angleLabel}]`,
-        x: startX + c * (cardW + 32),
-        y: startY + r * (cardH + 58),
+        x: startX + c * (cardW + 44),
+        y: startY + r * (cardH + 64),
         width: cardW,
         height: cardH,
         aspectRatio: '16:9',
@@ -1063,11 +1709,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         cameraAngle: angleLabel,
         interactionId: `int_slice_${idx + 1}`,
         elementHandles: node.elementHandles,
-        styleDnaId: node.styleDnaId,
         layers: createDefaultLayers(url),
-        providerUsed: usedBackend
-          ? `FFmpeg Crop Slicer (:3001 · ${rows}×${cols})`
-          : `Sliced from ${rows}×${cols} Sheet`,
+        providerUsed: usedBackend ? 'FFmpeg Slicer (:3001)' : `${rows}×${cols} Slicer`,
         createdAt: Date.now() + idx,
       });
       spawnedEdges.push({
@@ -1075,7 +1718,6 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         sourceId: node.id,
         targetId: childId,
         kind: 'grid-slice',
-        label: `#${idx + 1}`,
       });
     });
 
@@ -1085,81 +1727,74 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       selectedNodeIds: spawnedNodes.map((sn) => sn.id),
     }));
 
-    get().showToast(
-      usedBackend
-        ? `FFmpeg (:3001) sliced ${rows}×${cols} PNG into ${spawnedNodes.length} real linked frames!`
-        : `Sliced ${rows}×${cols} sheet into ${spawnedNodes.length} individual linked frames!`
-    );
+    get().showToast(`Unpacked ${spawnedNodes.length} sliced frames onto canvas`);
   },
 
   generateFourAngleCoverage: async (nodeId) => {
     await get().sliceContactSheetNode(nodeId, 2, 2);
   },
 
-  convertImageToOmniVideo: async (nodeId, durationSec = 8) => {
+  convertImageToOmniVideo: async (nodeId, durationSec = 6) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
     get().pushHistory();
     const { activeProvider, byok } = get();
 
-    get().showToast(`Rendering ${durationSec}s H.264 + Stereo Audio shot via :3001...`);
+    get().showToast(`Synthesizing ${durationSec}s video via :3001...`);
 
     const exec = await executeStudioGeneration({
       provider: activeProvider === 'local-canvas' ? 'gemini-omni' : activeProvider,
       prompt: node.prompt,
-      aspectRatio: node.aspectRatio,
+      aspectRatio: '16:9',
       durationSec,
       resolution: node.resolution,
       mode: 'video',
       firstFrameDataUrl: node.imageUrl || '/media/shot01_rooftop.png',
-      cameraMotion: 'Smooth Gimbal Steadicam',
+      cameraMotion: 'Dolly In',
       mood: inferMoodFromPrompt(node.prompt),
       byok,
     });
 
     const childId = `node_omni_vid_${Date.now()}`;
-    const dims = getDimensionsForAspect(node.aspectRatio, 360);
     const newVideoNode: CanvasNode = {
       id: childId,
       kind: 'video',
-      title: `${node.title} · ${durationSec}s Omni Video`,
+      title: `Videos · ${node.title}`,
       prompt: node.prompt,
-      x: node.x + node.width + 96,
+      x: node.x + node.width + 110,
       y: node.y,
-      width: dims.width,
-      height: dims.height,
-      aspectRatio: node.aspectRatio,
+      width: 568,
+      height: 320,
+      aspectRatio: '16:9',
       status: 'ready',
       imageUrl: node.imageUrl || '/media/shot01_rooftop.png',
-      videoUrl: exec.videoUrl,
-      videoTheme: node.prompt.toLowerCase().includes('sneaker') ? 'sneaker-macro' : 'cyberpunk-rain',
+      videoUrl: exec.videoUrl || '/media/shot01_rooftop.mp4',
       seed: node.seed,
       resolution: node.resolution,
       durationSec,
-      cameraMotion: 'Smooth Gimbal Steadicam',
+      cameraMotion: 'Dolly In',
       interactionId: exec.interactionId,
       elementHandles: node.elementHandles,
-      styleDnaId: node.styleDnaId,
       layers: createDefaultLayers(node.imageUrl),
       providerUsed: exec.providerLabel,
       createdAt: Date.now(),
     };
 
-    const edge: CanvasEdge = {
-      id: `edge_img2vid_${Date.now()}`,
-      sourceId: node.id,
-      targetId: childId,
-      kind: 'lineage',
-      label: `Image → ${durationSec}s Omni`,
-    };
-
     set((s) => ({
       nodes: [...s.nodes, newVideoNode],
-      edges: [...s.edges, edge],
+      edges: [
+        ...s.edges,
+        {
+          id: `edge_img2vid_${Date.now()}`,
+          sourceId: node.id,
+          targetId: childId,
+          kind: 'lineage',
+        },
+      ],
       selectedNodeIds: [childId],
     }));
 
-    get().showToast(`Synthesized ${durationSec}s video (${exec.providerLabel})`);
+    get().showToast(`Rendered ${durationSec}s video`);
   },
 
   branchVideoMultiTurn: async (nodeId, deltaPrompt) => {
@@ -1175,13 +1810,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         ? '/media/shot02b_sunrise_remix.png'
         : parent.imageUrl || '/media/shot02_alley_chase.png';
 
-    get().showToast(`Branching Multi-Turn Video (prev_id=${parentInteractionId})...`);
+    get().showToast(`Branching Multi-Turn edit (${parentInteractionId.slice(0, 12)})...`);
 
     const exec = await executeStudioGeneration({
       provider: activeProvider === 'local-canvas' ? 'gemini-omni' : activeProvider,
       prompt: deltaPrompt,
-      aspectRatio: parent.aspectRatio,
-      durationSec: parent.durationSec || 8,
+      aspectRatio: '16:9',
+      durationSec: parent.durationSec || 6,
       resolution: parent.resolution,
       mode: 'video',
       firstFrameDataUrl: branchKeyframe,
@@ -1190,64 +1825,49 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       byok,
     });
 
-    const dims = getDimensionsForAspect(parent.aspectRatio, 360);
-    const nextSeed = parent.seed + 211;
-    const branchThumb =
-      exec.imageUrl ||
-      (branchKeyframe.startsWith('/media/')
-        ? branchKeyframe
-        : renderShotDataUrl(parent.aspectRatio, {
-            prompt: `${parent.prompt} :: ${deltaPrompt}`,
-            seed: nextSeed,
-            theme: 'night-remix',
-            cameraLabel: `BRANCH · prev=${parentInteractionId.slice(-6)}`,
-          }));
-
     const branchId = `node_branch_${Date.now()}`;
     const branchedNode: CanvasNode = {
       id: branchId,
       kind: 'video',
-      title: `Multi-Turn Branch · ${deltaPrompt.slice(0, 24)}...`,
+      title: `Videos · Multi-Turn Branch`,
       prompt: deltaPrompt,
-      x: parent.x + parent.width + 96,
-      y: parent.y + 110,
-      width: dims.width,
-      height: dims.height,
-      aspectRatio: parent.aspectRatio,
+      x: parent.x + parent.width + 110,
+      y: parent.y + 80,
+      width: 568,
+      height: 320,
+      aspectRatio: '16:9',
       status: 'ready',
-      imageUrl: branchThumb,
-      videoUrl: exec.videoUrl || (mood === 'sunrise' ? '/media/shot02b_sunrise_remix.mp4' : undefined),
-      videoTheme: 'night-remix',
-      seed: nextSeed,
+      imageUrl: branchKeyframe,
+      videoUrl: exec.videoUrl || '/media/shot02b_sunrise_remix.mp4',
+      seed: parent.seed + 211,
       resolution: parent.resolution,
-      durationSec: parent.durationSec || 8,
-      cameraMotion: 'Multi-Turn Stateful Remix',
+      durationSec: parent.durationSec || 6,
+      cameraMotion: 'Multi-Turn Branch',
       interactionId: exec.interactionId,
       previousInteractionId: parentInteractionId,
-      elementHandles: Array.from(new Set([...parent.elementHandles, ...extractHandles(deltaPrompt)])),
-      styleDnaId: parent.styleDnaId,
-      layers: createDefaultLayers(branchThumb),
-      providerUsed: exec.usedLiveEndpoint
-        ? exec.providerLabel
-        : 'Gemini Omni 1.2 (previous_interaction_id)',
+      elementHandles: Array.from(
+        new Set([...parent.elementHandles, ...extractHandles(deltaPrompt)])
+      ),
+      layers: createDefaultLayers(branchKeyframe),
+      providerUsed: exec.providerLabel,
       createdAt: Date.now(),
-    };
-
-    const branchEdge: CanvasEdge = {
-      id: `edge_branch_${Date.now()}`,
-      sourceId: parent.id,
-      targetId: branchId,
-      kind: 'multi-turn-branch',
-      label: `prev_id: ${parentInteractionId}`,
     };
 
     set((s) => ({
       nodes: [...s.nodes, branchedNode],
-      edges: [...s.edges, branchEdge],
+      edges: [
+        ...s.edges,
+        {
+          id: `edge_branch_${Date.now()}`,
+          sourceId: parent.id,
+          targetId: branchId,
+          kind: 'multi-turn-branch',
+        },
+      ],
       selectedNodeIds: [branchId],
     }));
 
-    get().showToast(`Branched multi-turn video via previous_interaction_id=${parentInteractionId}`);
+    get().showToast(`Branched stateful video`);
   },
 
   executeMcpToolNode: async (nodeId) => {
@@ -1262,7 +1882,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       provider: 'mcp-router',
       prompt: mcpNode.prompt,
       aspectRatio: '16:9',
-      durationSec: 7,
+      durationSec: 6,
       mode: isVidTool ? 'video' : 'image',
       firstFrameDataUrl: '/media/shot01_rooftop.png',
       mcpTool: mcpNode.mcpTool,
@@ -1270,34 +1890,24 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     });
 
     const outId = `node_mcp_out_${Date.now()}`;
-    const dims = getDimensionsForAspect('16:9', 360);
-    const seed = mcpNode.seed + 83;
-    const img =
-      exec.imageUrl ||
-      (exec.videoUrl
-        ? '/media/shot01_rooftop.png'
-        : renderShotDataUrl('16:9', {
-            prompt: mcpNode.prompt,
-            seed,
-            hudBadge: `MCP · ${mcpNode.mcpTool.name}`,
-          }));
+    const img = exec.imageUrl || '/media/shot01_rooftop.png';
 
     const outNode: CanvasNode = {
       id: outId,
       kind: isVidTool || exec.videoUrl ? 'video' : 'image',
-      title: `MCP Output · ${mcpNode.mcpTool.name}`,
+      title: `MCP · ${mcpNode.mcpTool.name}`,
       prompt: mcpNode.prompt,
-      x: mcpNode.x + mcpNode.width + 90,
+      x: mcpNode.x + mcpNode.width + 100,
       y: mcpNode.y,
-      width: dims.width,
-      height: dims.height,
-      aspectRatio: '16:9',
+      width: isVidTool ? 568 : 320,
+      height: 320,
+      aspectRatio: isVidTool ? '16:9' : '1:1',
       status: 'ready',
       imageUrl: img,
-      videoUrl: exec.videoUrl,
-      seed,
+      videoUrl: exec.videoUrl || (isVidTool ? '/media/shot01_rooftop.mp4' : undefined),
+      seed: mcpNode.seed + 83,
       resolution: '1080p',
-      durationSec: isVidTool ? 7 : undefined,
+      durationSec: isVidTool ? 6 : undefined,
       interactionId: exec.interactionId,
       elementHandles: extractHandles(mcpNode.prompt),
       layers: createDefaultLayers(img),
@@ -1314,7 +1924,6 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           sourceId: mcpNode.id,
           targetId: outId,
           kind: 'mcp-pipe',
-          label: `tools/call: ${mcpNode.mcpTool!.name}`,
         },
       ],
       selectedNodeIds: [outId],
@@ -1332,24 +1941,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       name,
       category,
       description,
-      accentColor: category === 'character' ? '#38BDF8' : category === 'product' ? '#A855F7' : '#F43F5E',
+      accentColor: '#20D5EC',
       references: [],
     };
     set((s) => ({ elements: [...s.elements, newVault] }));
-    get().showToast(`Created @Elements vault ${cleanHandle}`);
+    get().showToast(`Created element ${cleanHandle}`);
   },
 
   addReferenceImageToVault: (vaultId, label, dataUrl) => {
     set((s) => ({
       elements: s.elements.map((v) => {
-        if (v.id !== vaultId) return v;
-        if (v.references.length >= 6) return v;
+        if (v.id !== vaultId || v.references.length >= 6) return v;
         return {
           ...v,
-          references: [
-            ...v.references,
-            { id: `ref_${Date.now()}`, label, dataUrl },
-          ],
+          references: [...v.references, { id: `ref_${Date.now()}`, label, dataUrl }],
         };
       }),
     }));
@@ -1366,50 +1971,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   },
 
   spawnStyleDnaNode: (sourceNodeId) => {
-    get().pushHistory();
-    const { nodes } = get();
     const refNode = sourceNodeId
-      ? nodes.find((n) => n.id === sourceNodeId)
-      : nodes.find((n) => n.id === get().selectedNodeIds[0]);
-    const dna = extractStyleDnaFromPrompt(refNode?.prompt || get().promptText);
-    const id = `node_dna_${Date.now()}`;
-    const newNode: CanvasNode = {
-      id,
-      kind: 'style-dna',
-      title: `Style DNA · ${dna.presetName.slice(0, 22)}`,
-      prompt: `${dna.lighting} · ${dna.lens} · ${dna.filmStock}`,
-      x: refNode ? Math.max(40, refNode.x - 340) : 100,
-      y: refNode ? refNode.y : 140,
-      width: 290,
-      height: 220,
-      aspectRatio: '16:9',
-      status: 'ready',
-      seed: Math.floor(Math.random() * 1000),
-      resolution: '4K',
-      elementHandles: ['@Brand_Style'],
-      styleDna: dna,
-      layers: [],
-      providerUsed: 'Style DNA Optical Lock',
-      createdAt: Date.now(),
-    };
-
-    set((s) => ({
-      nodes: [...s.nodes, newNode],
-      edges: refNode
-        ? [
-            ...s.edges,
-            {
-              id: `edge_dna_${Date.now()}`,
-              sourceId: id,
-              targetId: refNode.id,
-              kind: 'style-dna',
-              label: 'Style DNA Lock',
-            },
-          ]
-        : s.edges,
-      selectedNodeIds: [id],
-    }));
-    get().showToast('Extracted & locked Style DNA Node on Spatial Board');
+      ? get().nodes.find((n) => n.id === sourceNodeId)
+      : get().nodes.find((n) => n.id === get().selectedNodeIds[0]);
+    get().spawnDreaminaNodeAt(
+      'cinema-kit',
+      refNode ? refNode.x - 360 : 120,
+      refNode ? refNode.y : 200,
+      refNode ? { wireFromNodeId: refNode.id, wireDirection: 'left' } : undefined
+    );
   },
 
   updateStyleDnaNode: (nodeId, patch) => {
@@ -1424,34 +1994,24 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   addMultiframeFromNodeOrBlank: (nodeId) => {
     const { multiframes, bridges, nodes } = get();
-    if (multiframes.length >= 10) {
-      get().showToast('Dreamina Smart Multiframes supports up to 10 chained keyframes.');
-      return;
-    }
+    if (multiframes.length >= 10) return;
     get().pushHistory();
     const srcNode = nodeId ? nodes.find((n) => n.id === nodeId) : undefined;
     const idx = multiframes.length + 1;
-    const seed = 1400 + idx * 113;
     const prompt =
       srcNode?.prompt ||
-      `Keyframe 0${idx} · @Hero_Kael & @Cyber_Sneaker dynamic camera progression, @Brand_Style`;
-    const imageUrl =
-      srcNode?.imageUrl ||
-      renderShotDataUrl('16:9', {
-        prompt,
-        seed,
-        cameraLabel: `KEYFRAME 0${idx}`,
-      });
+      `Keyframe 0${idx} · @Hero_Kael & @Cyber_Sneaker camera progression`;
+    const imageUrl = srcNode?.imageUrl || '/media/shot01_rooftop.png';
 
     const newCard: MultiframeCard = {
       id: `mf_${Date.now()}`,
       order: multiframes.length,
-      title: srcNode?.title || `KF 0${idx} · Sequence Beat`,
+      title: srcNode?.title || `KF 0${idx}`,
       prompt,
       imageUrl,
       videoUrl: srcNode?.videoUrl,
       sourceNodeId: srcNode?.id,
-      aspectRatio: srcNode?.aspectRatio || '16:9',
+      aspectRatio: '16:9',
     };
 
     const prevCard = multiframes[multiframes.length - 1];
@@ -1464,7 +2024,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             toCardId: newCard.id,
             durationSec: 6,
             curve: 'Orbit 180°' as CameraTransitionCurve,
-            transitionPrompt: 'Seamless Gemini Omni 1.2 First/Last frame morph with 10s prior context lock',
+            transitionPrompt: 'First/Last keyframe bridge with 10s context lock',
             useTenSecContextWindow: true,
             firstLastKeyframeLock: true,
           },
@@ -1475,15 +2035,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       multiframes: [...multiframes, newCard],
       bridges: nextBridges,
     });
-    get().showToast(`Added Keyframe #${idx} to Smart Multiframes Chain`);
+    get().showToast(`Added Keyframe #${idx}`);
   },
 
   removeMultiframeCard: (cardId) => {
     const { multiframes } = get();
-    if (multiframes.length <= 2) {
-      get().showToast('Smart Multiframes requires at least 2 keyframes.');
-      return;
-    }
+    if (multiframes.length <= 2) return;
     get().pushHistory();
     const remaining = multiframes
       .filter((c) => c.id !== cardId)
@@ -1503,7 +2060,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           toCardId: b.id,
           durationSec: 6,
           curve: 'Dolly In',
-          transitionPrompt: 'Continuous camera motion bridge',
+          transitionPrompt: 'Continuous motion bridge',
           useTenSecContextWindow: true,
           firstLastKeyframeLock: true,
         }
@@ -1527,7 +2084,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (multiframes.length < 2) return;
     get().pushHistory();
 
-    const baseRight = nodes.reduce((acc, n) => Math.max(acc, n.x + n.width), 400) + 90;
+    const baseRight = nodes.reduce((acc, n) => Math.max(acc, n.x + n.width), 800) + 120;
     const spawnedNodes: CanvasNode[] = [];
     const spawnedEdges: CanvasEdge[] = [];
     const spawnedClips: TimelineClip[] = [];
@@ -1553,25 +2110,23 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         mood: inferMoodFromPrompt(toCard.prompt),
       });
 
-      const resolvedVideoUrl = ff.videoUrl || fromCard.videoUrl;
+      const resolvedVideoUrl = ff.videoUrl || fromCard.videoUrl || '/media/shot01_rooftop.mp4';
       const nodeId = `node_mf_seq_${Date.now()}_${idx}`;
-      const interactionId =
-        ff.interactionId || `int_mf_${idx + 1}_${Math.random().toString(36).slice(2, 6)}`;
+      const interactionId = ff.interactionId || `int_mf_${idx + 1}`;
 
       const vNode: CanvasNode = {
         id: nodeId,
         kind: 'video',
-        title: `Multiframe ${idx + 1}→${idx + 2} (${br.curve})`,
-        prompt: `[${br.curve} · ${br.durationSec}s] ${fromCard.title} → ${toCard.title}: ${br.transitionPrompt}`,
-        x: baseRight + idx * 420,
-        y: 220,
-        width: 360,
-        height: 202,
+        title: `Videos · Bridge ${idx + 1}→${idx + 2}`,
+        prompt: `${fromCard.title} → ${toCard.title}: ${br.transitionPrompt}`,
+        x: baseRight + idx * 640,
+        y: 200,
+        width: 568,
+        height: 320,
         aspectRatio: '16:9',
         status: 'ready',
         imageUrl: fromCard.imageUrl,
         videoUrl: resolvedVideoUrl,
-        videoTheme: idx % 2 === 0 ? 'cyberpunk-rain' : 'drone-canyon',
         seed: 2000 + idx * 155,
         resolution: '1080p',
         durationSec: br.durationSec,
@@ -1580,21 +2135,17 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         previousInteractionId: prevVidId,
         elementHandles: extractHandles(`${fromCard.prompt} ${toCard.prompt}`),
         layers: createDefaultLayers(fromCard.imageUrl),
-        providerUsed: ff.ok
-          ? 'Live :3001 FFmpeg First/Last Keyframe Bridge'
-          : 'Omni 1.2 First/Last Keyframe + 10s Context',
+        providerUsed: 'FFmpeg Keyframe Bridge',
         createdAt: Date.now() + idx,
       };
       spawnedNodes.push(vNode);
 
       if (prevVidId && spawnedNodes.length >= 2) {
-        const prevNode = spawnedNodes[spawnedNodes.length - 2];
         spawnedEdges.push({
           id: `edge_mf_chain_${idx}`,
-          sourceId: prevNode.id,
+          sourceId: spawnedNodes[spawnedNodes.length - 2].id,
           targetId: nodeId,
           kind: 'multiframe',
-          label: `${br.curve} · 10s Context`,
         });
       }
       prevVidId = interactionId;
@@ -1608,10 +2159,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         durationSec: br.durationSec,
         thumbnailUrl: fromCard.imageUrl,
         videoUrl: resolvedVideoUrl,
-        videoTheme: vNode.videoTheme,
         seed: vNode.seed,
         promptOrDialogue: vNode.prompt,
-        color: idx % 2 === 0 ? '#8B5CF6' : '#0EA5E9',
+        color: '#252525',
       });
       cursorSec += br.durationSec;
     }
@@ -1620,13 +2170,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       nodes: [...s.nodes, ...spawnedNodes],
       edges: [...s.edges, ...spawnedEdges],
       timelineClips: [...s.timelineClips, ...spawnedClips],
-      timelineExpanded: true,
+      activeView: 'canvas',
       selectedNodeIds: spawnedNodes.map((n) => n.id),
     }));
 
-    get().showToast(
-      `Synthesized ${spawnedNodes.length} bridged Multiframe shots onto Canvas & Timeline!`
-    );
+    get().showToast(`Synthesized ${spawnedNodes.length} Multiframe shots onto canvas`);
   },
 
   autoConnectLocalMcpBackend: async () => {
@@ -1648,9 +2196,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         slash: `/mcp:${t.name}`,
         title: `MCP · ${t.name}`,
         category: 'MCP Tool' as const,
-        badge: 'LIVE MCP',
+        badge: 'MCP',
         description: t.description,
-        promptTemplate: `Execute MCP ${t.name}: @Hero_Kael & @Cyber_Sneaker in @Brand_Style`,
+        promptTemplate: `Execute MCP ${t.name}: @Hero_Kael & @Cyber_Sneaker`,
         recommendedMode: t.name.includes('video') ? ('video' as const) : ('image' as const),
         mcpToolName: t.name,
       }));
@@ -1693,7 +2241,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       // ignore
     }
     set({ byok: defaultByok() });
-    get().showToast('Cleared all local BYOK credentials from browser storage');
+    get().showToast('Cleared local BYOK keys');
   },
 
   addMcpServer: async (name, url, transport) => {
@@ -1719,25 +2267,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             }
           : srv
       ),
-      skills: [
-        ...s.skills.filter((sk) => !sk.id.startsWith(`mcp_skill_${id}`)),
-        ...discovery.tools.map((t, i) => ({
-          id: `mcp_skill_${id}_${i}`,
-          slash: `/mcp:${t.name}`,
-          title: `MCP · ${t.name}`,
-          category: 'MCP Tool' as const,
-          badge: 'MCP NODE',
-          description: t.description,
-          promptTemplate: `Execute MCP ${t.name}: @Hero_Kael & @Cyber_Sneaker in @Brand_Style`,
-          recommendedMode: t.name.includes('video') ? ('video' as const) : ('image' as const),
-          mcpToolName: t.name,
-        })),
-      ],
     }));
     get().showToast(
-      discovery.connected
-        ? `Connected MCP server "${name}" (${discovery.tools.length} tools registered!)`
-        : `Registered "${name}" in offline preview mode (${discovery.tools.length} MCP node schemas ready)`
+      discovery.connected ? `Connected MCP "${name}"` : `Added MCP "${name}"`
     );
   },
 
@@ -1747,18 +2279,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const { mcpHealth } = get();
       get().showToast(
         mcpHealth.online
-          ? `MCP Live · FFmpeg + ${mcpHealth.toolCount} Tools (${mcpHealth.pingMs || 8}ms)`
-          : 'Local :3001 MCP server offline — using built-in tool schemas'
+          ? `MCP Live · ${mcpHealth.toolCount} tools (${mcpHealth.pingMs || 6}ms)`
+          : 'Local :3001 MCP offline'
       );
       return;
     }
     const srv = get().mcpServers.find((m) => m.id === serverId);
     if (!srv) return;
-    set((s) => ({
-      mcpServers: s.mcpServers.map((m) =>
-        m.id === serverId ? { ...m, status: 'connecting' } : m
-      ),
-    }));
     const discovery = await discoverMcpTools(srv.url, srv.name);
     set((s) => ({
       mcpServers: s.mcpServers.map((m) =>
@@ -1772,26 +2299,21 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           : m
       ),
     }));
-    get().showToast(
-      discovery.connected
-        ? `MCP "${srv.name}" live (${discovery.pingMs}ms)`
-        : `MCP "${srv.name}" unreachable on ${srv.url} — using local tool schemas`
-    );
   },
 
   spawnMcpToolAsCanvasNode: (tool) => {
     get().pushHistory();
-    const maxRight = get().nodes.reduce((acc, n) => Math.max(acc, n.x + n.width), 360);
+    const maxRight = get().nodes.reduce((acc, n) => Math.max(acc, n.x + n.width), 400);
     const nodeId = `node_mcp_${Date.now()}`;
     const newNode: CanvasNode = {
       id: nodeId,
       kind: 'mcp-tool',
-      title: `MCP Tool · ${tool.name}`,
+      title: `MCP · ${tool.name}`,
       prompt: get().promptText,
-      x: maxRight + 72,
+      x: maxRight + 100,
       y: 220,
-      width: 310,
-      height: 215,
+      width: 300,
+      height: 190,
       aspectRatio: '16:9',
       status: 'ready',
       seed: Math.floor(Math.random() * 5000),
@@ -1808,12 +2330,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       providerModalOpen: false,
       activeView: 'canvas',
     }));
-    get().showToast(`Spawned MCP Tool "${tool.name}" onto Spatial Board`);
+    get().showToast(`Placed MCP tool "${tool.name}" on canvas`);
   },
 
   pingBridge: () => {
     pingChromeBridge();
-    get().showToast('Sent handshake ping to Open-DreamFlow Chrome Extension...');
+    get().showToast('Pinged Chrome Extension bridge');
   },
 
   handleIncomingBridgeEvent: (msg) => {
@@ -1844,17 +2366,19 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             : n
         ),
       }));
-      get().showToast(`Chrome Bridge streamed media back for job ${jobId}`);
+      get().showToast(`Chrome Bridge completed job ${jobId}`);
     }
   },
 
   setPlayheadSec: (playheadSec) => set({ playheadSec: Math.max(0, playheadSec) }),
   setIsPlayingTimeline: (isPlayingTimeline) => set({ isPlayingTimeline }),
+  setTimelineMuted: (timelineMuted) => set({ timelineMuted }),
 
   sendNodeToTimeline: (nodeId) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
     get().pushHistory();
+
     const endV1 = get()
       .timelineClips.filter((c) => c.track === 'video')
       .reduce((acc, c) => Math.max(acc, c.startSec + c.durationSec), 0);
@@ -1871,13 +2395,72 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       videoTheme: node.videoTheme,
       seed: node.seed,
       promptOrDialogue: node.prompt,
-      color: node.kind === 'video' ? '#8B5CF6' : '#0EA5E9',
+      color: '#252525',
     };
+
+    const timelineNode = get().nodes.find((n) => n.kind === 'timeline');
     set((s) => ({
       timelineClips: [...s.timelineClips, newClip],
-      timelineExpanded: true,
+      edges:
+        timelineNode &&
+        !s.edges.some(
+          (e) => e.sourceId === node.id && e.targetId === timelineNode.id
+        )
+          ? [
+              ...s.edges,
+              {
+                id: `edge_tl_${Date.now()}`,
+                sourceId: node.id,
+                targetId: timelineNode.id,
+                kind: 'multiframe',
+              },
+            ]
+          : s.edges,
     }));
-    get().showToast(`Appended "${node.title}" to V1 Video Track`);
+    get().showToast(`Added "${node.title}" to Timelines 1`);
+  },
+
+  splitTimelineClipAtPlayhead: (clipId) => {
+    const { timelineClips, playheadSec } = get();
+    const target = clipId
+      ? timelineClips.find((c) => c.id === clipId)
+      : timelineClips.find(
+          (c) =>
+            c.track === 'video' &&
+            playheadSec > c.startSec + 0.5 &&
+            playheadSec < c.startSec + c.durationSec - 0.5
+        );
+
+    if (!target) {
+      get().showToast('Move playhead inside a clip to split');
+      return;
+    }
+
+    const splitOffset = Math.max(
+      1,
+      Math.min(target.durationSec - 1, Math.round((playheadSec - target.startSec) * 10) / 10)
+    );
+    get().pushHistory();
+
+    const firstHalf: TimelineClip = {
+      ...target,
+      durationSec: splitOffset,
+      title: `${target.title} (A)`,
+    };
+    const secondHalf: TimelineClip = {
+      ...target,
+      id: `clip_split_${Date.now()}`,
+      startSec: target.startSec + splitOffset,
+      durationSec: Number((target.durationSec - splitOffset).toFixed(1)),
+      title: `${target.title} (B)`,
+    };
+
+    set((s) => ({
+      timelineClips: s.timelineClips.flatMap((c) =>
+        c.id === target.id ? [firstHalf, secondHalf] : [c]
+      ),
+    }));
+    get().showToast(`Split "${target.title}" at ${playheadSec.toFixed(1)}s`);
   },
 
   addVoiceOrSfxClip: (track, title, dialogueOrSfx, durationSec = 6) => {
@@ -1896,10 +2479,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       lipSyncCharacter: track === 'voice' ? '@Hero_Kael' : undefined,
       audioFreqHz: track === 'voice' ? 185 : undefined,
       sfxKind: track === 'sfx' ? 'cyber-synth' : undefined,
-      color: track === 'voice' ? '#10B981' : '#F59E0B',
+      color: '#252525',
     };
     set((s) => ({ timelineClips: [...s.timelineClips, clip] }));
-    get().showToast(`Added "${title}" to ${track === 'voice' ? 'Voice/Lip-Sync' : 'SFX'} Track`);
+    get().showToast(`Added "${title}"`);
   },
 
   removeTimelineClip: (clipId) => {
@@ -1909,27 +2492,35 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }));
   },
 
-  extractLastFrameToNextShot: async (clipId) => {
+  extractLastFrameToNextShot: async (clipIdOrNodeId) => {
     const { timelineClips, nodes } = get();
+    const directNode = clipIdOrNodeId
+      ? nodes.find((n) => n.id === clipIdOrNodeId)
+      : undefined;
+
     const videoClips = timelineClips
       .filter((c) => c.track === 'video')
       .sort((a, b) => a.startSec - b.startSec);
-    const targetClip = clipId
-      ? videoClips.find((c) => c.id === clipId)
+
+    const targetClip = directNode
+      ? undefined
+      : clipIdOrNodeId
+      ? videoClips.find((c) => c.id === clipIdOrNodeId)
       : videoClips[videoClips.length - 1];
 
-    if (!targetClip) {
-      get().showToast('Add a video shot to V1 first to extract its last frame.');
-      return;
-    }
+    const sourceVideoUrl = directNode?.videoUrl || targetClip?.videoUrl;
+    const sourceTitle = directNode?.title || targetClip?.title || 'Shot';
+    const sourcePrompt =
+      directNode?.prompt || targetClip?.promptOrDialogue || '@Hero_Kael rooftop';
+    const sourceNodeId = directNode?.id || targetClip?.sourceNodeId;
 
     get().pushHistory();
 
     let lastFrameUrl: string | undefined;
     let usedBackend = false;
 
-    if (targetClip.videoUrl) {
-      const ffExtract = await extractLastFrameViaBackend(targetClip.videoUrl);
+    if (sourceVideoUrl) {
+      const ffExtract = await extractLastFrameViaBackend(sourceVideoUrl);
       if (ffExtract.ok && ffExtract.frameUrl) {
         lastFrameUrl = ffExtract.frameUrl;
         usedBackend = true;
@@ -1937,68 +2528,52 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
 
     if (!lastFrameUrl) {
-      lastFrameUrl =
-        targetClip.thumbnailUrl ||
-        renderShotDataUrl('16:9', {
-          prompt: targetClip.promptOrDialogue,
-          seed: (targetClip.seed || 500) + 17,
-          theme: targetClip.videoTheme,
-          cameraLabel: `EXTRACTED LAST FRAME · ${(targetClip.startSec + targetClip.durationSec).toFixed(1)}s`,
-          hudBadge: 'NEXT SHOT ANCHOR',
-        });
+      lastFrameUrl = '/media/lastframe_shot02.png';
     }
 
-    const maxRight = nodes.reduce((acc, n) => Math.max(acc, n.x + n.width), 400);
+    const parentNode = sourceNodeId ? nodes.find((n) => n.id === sourceNodeId) : undefined;
+    const spawnX = parentNode ? parentNode.x + parentNode.width + 110 : 980;
+    const spawnY = parentNode ? parentNode.y : 220;
     const newNodeId = `node_lastframe_${Date.now()}`;
-    const dims = getDimensionsForAspect('16:9', 360);
 
     const anchorNode: CanvasNode = {
       id: newNodeId,
       kind: 'image',
-      title: `Last Frame → Next Shot (${targetClip.title.slice(0, 18)})`,
-      prompt: `Seamless continuation from "${targetClip.title}": ${targetClip.promptOrDialogue}`,
-      x: maxRight + 80,
-      y: 180,
-      width: dims.width,
-      height: dims.height,
+      title: `Images · Last Frame (${sourceTitle.slice(0, 14)})`,
+      prompt: `Continuation from "${sourceTitle}": ${sourcePrompt}`,
+      x: spawnX,
+      y: spawnY,
+      width: 340,
+      height: 220,
       aspectRatio: '16:9',
       status: 'ready',
       imageUrl: lastFrameUrl,
-      seed: (targetClip.seed || 500) + 17,
+      seed: 888,
       resolution: '2K',
       interactionId: `int_lf_${Date.now().toString(36)}`,
-      elementHandles: extractHandles(targetClip.promptOrDialogue),
+      elementHandles: extractHandles(sourcePrompt),
       layers: createDefaultLayers(lastFrameUrl),
-      providerUsed: usedBackend
-        ? 'FFmpeg Exact Final-Frame Extractor (:3001)'
-        : 'Frame-Accurate Last-Frame Extractor',
+      providerUsed: usedBackend ? 'FFmpeg Final-Frame (:3001)' : 'Last-Frame Anchor',
       createdAt: Date.now(),
     };
 
     set((s) => ({
       nodes: [...s.nodes, anchorNode],
-      edges:
-        targetClip.sourceNodeId && s.nodes.some((n) => n.id === targetClip.sourceNodeId)
-          ? [
-              ...s.edges,
-              {
-                id: `edge_lf_${Date.now()}`,
-                sourceId: targetClip.sourceNodeId,
-                targetId: newNodeId,
-                kind: 'lineage',
-                label: '✂️ Extracted Last Frame',
-              },
-            ]
-          : s.edges,
+      edges: parentNode
+        ? [
+            ...s.edges,
+            {
+              id: `edge_lf_${Date.now()}`,
+              sourceId: parentNode.id,
+              targetId: newNodeId,
+              kind: 'lineage',
+            },
+          ]
+        : s.edges,
       selectedNodeIds: [newNodeId],
-      activeView: 'canvas',
     }));
 
-    get().showToast(
-      usedBackend
-        ? 'FFmpeg (:3001) extracted exact final PNG frame onto Spatial Board!'
-        : 'Extracted exact Last Frame onto Spatial Board as Next-Shot Anchor!'
-    );
+    get().showToast('Extracted final frame onto canvas');
   },
 
   compileTimelineMasterMp4: async () => {
@@ -2010,12 +2585,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       .sort((a, b) => a.startSec - b.startSec);
 
     if (v1Clips.length === 0) {
-      get().showToast('Add at least one video clip to V1 before rendering master .mp4');
+      get().showToast('Add video clips to Timelines 1 first');
       return null;
     }
 
     set({ isRenderingMasterMp4: true });
-    get().showToast(`Stitching ${v1Clips.length} clips into Master .mp4 via :3001 FFmpeg...`);
+    get().showToast(`Compiling Master .mp4 via :3001 FFmpeg...`);
 
     try {
       const clipUrls: string[] = [];
@@ -2055,19 +2630,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           a.click();
           document.body.removeChild(a);
 
-          get().showToast('Rendered & stitched H.264 + AAC Master .mp4 via :3001 FFmpeg!');
+          get().showToast('Master .mp4 compiled & ready');
           return compiled.masterUrl;
         }
       }
 
-      // Offline fallback to in-browser MediaRecorder WebM
       const blob = await compileTimelineToWebm(timelineClips);
       const blobUrl = URL.createObjectURL(blob);
       set({
         masterRenderUrl: blobUrl,
         isRenderingMasterMp4: false,
       });
-      get().showToast('Local :3001 offline — compiled master video in-browser via MediaRecorder!');
+      get().showToast('Compiled master WebM in-browser');
       return blobUrl;
     } catch {
       set({ isRenderingMasterMp4: false });
@@ -2089,15 +2663,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     set({
       projectTitle: title,
       appSynthesizing: true,
-      appRenderLog: [
-        `[01] Locking @Elements continuity (${selectedHandles.join(', ') || '@Hero_Kael'})...`,
-      ],
+      appRenderLog: [`Locking continuity (${selectedHandles.join(', ') || '@Hero_Kael'})...`],
     });
 
     const renderedClipUrls: string[] = [];
-    const newNodes: CanvasNode[] = [];
     const newTimelineClips: TimelineClip[] = [];
-    const dims = getDimensionsForAspect(aspectRatio, 360);
     let cursorSec = 0;
 
     for (let i = 0; i < beats.length; i++) {
@@ -2107,7 +2677,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       set((s) => ({
         appRenderLog: [
           ...s.appRenderLog,
-          `[0${i + 2}] Rendering "${beat.title}" (${beat.durationSec}s · ${beat.cameraCurve})...`,
+          `Rendering "${beat.title}" (${beat.durationSec}s · ${beat.cameraCurve})...`,
         ],
       }));
 
@@ -2126,56 +2696,29 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         renderedClipUrls.push(clipVideoUrl);
       }
 
-      const nodeId = `node_app_beat_${Date.now()}_${i}`;
-      newNodes.push({
-        id: nodeId,
-        kind: 'video',
-        title: beat.title,
-        prompt: fullPrompt,
-        x: 450 + i * 410,
-        y: 660,
-        width: dims.width,
-        height: dims.height,
-        aspectRatio,
-        status: 'ready',
-        imageUrl: beat.imageUrl,
-        videoUrl: clipVideoUrl,
-        seed: 3100 + i * 111,
-        resolution,
-        durationSec: beat.durationSec,
-        cameraMotion: beat.cameraCurve,
-        interactionId: ff.interactionId || `int_app_${i + 1}`,
-        elementHandles: selectedHandles,
-        layers: createDefaultLayers(beat.imageUrl),
-        providerUsed: ff.ok ? 'Shareable App · FFmpeg (:3001)' : 'Shareable App · Local',
-        createdAt: Date.now() + i,
-      });
-
       newTimelineClips.push({
         id: `clip_app_${Date.now()}_${i}`,
         track: 'video',
         title: beat.title,
-        sourceNodeId: nodeId,
         startSec: cursorSec,
         durationSec: beat.durationSec,
         thumbnailUrl: beat.imageUrl,
         videoUrl: clipVideoUrl,
         seed: 3100 + i * 111,
         promptOrDialogue: fullPrompt,
-        color: i % 2 === 0 ? '#8B5CF6' : '#0EA5E9',
+        color: '#252525',
       });
       cursorSec += beat.durationSec;
     }
 
     set((s) => ({
-      nodes: [...s.nodes, ...newNodes],
       timelineClips: [
         ...newTimelineClips,
         ...s.timelineClips.filter((c) => c.track !== 'video'),
       ],
       appRenderLog: [
         ...s.appRenderLog,
-        `[0${beats.length + 2}] Stitching ${beats.length}-shot Master H.264 + Stereo Audio MP4...`,
+        `Stitching ${beats.length}-shot H.264 + AAC Master .mp4...`,
       ],
     }));
 
@@ -2185,20 +2728,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         clips: renderedClipUrls,
         title,
       });
-      if (stitched.ok && stitched.masterUrl) {
-        finalMasterUrl = stitched.masterUrl;
-      } else {
-        finalMasterUrl = renderedClipUrls[0];
-      }
+      finalMasterUrl = stitched.ok && stitched.masterUrl ? stitched.masterUrl : renderedClipUrls[0];
     }
 
     if (!finalMasterUrl) {
-      try {
-        const blob = await compileTimelineToWebm(newTimelineClips);
-        finalMasterUrl = URL.createObjectURL(blob);
-      } catch {
-        finalMasterUrl = '/media/protocol_rain_master.mp4';
-      }
+      finalMasterUrl = '/media/protocol_rain_master.mp4';
     }
 
     set((s) => ({
@@ -2206,12 +2740,54 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       appSynthesizing: false,
       appRenderLog: [
         ...s.appRenderLog,
-        `✓ Film ready! Master cut (${cursorSec}s, $0.00 markup) loaded in player.`,
+        `Ready — ${cursorSec}s Master Cut ($0.00 markup)`,
       ],
     }));
 
-    get().showToast(`Synthesized "${title}" multi-shot film!`);
+    get().showToast(`Synthesized "${title}"`);
     return finalMasterUrl;
+  },
+
+  sendChatAssistantPrompt: async (userText) => {
+    const clean = userText.trim();
+    if (!clean) return;
+    const userMsg: ChatMessageItem = {
+      id: `msg_u_${Date.now()}`,
+      role: 'user',
+      text: clean,
+      timestamp: Date.now(),
+    };
+    set((s) => ({ chatMessages: [...s.chatMessages, userMsg] }));
+
+    const sel = get().nodes.find((n) => n.id === get().selectedNodeIds[0]);
+    if (sel && sel.kind === 'video') {
+      await get().branchVideoMultiTurn(sel.id, clean);
+      set((s) => ({
+        chatMessages: [
+          ...s.chatMessages,
+          {
+            id: `msg_a_${Date.now()}`,
+            role: 'assistant',
+            text: `Branched "${sel.title}" via stateful previous_interaction_id with edit: "${clean}".`,
+            timestamp: Date.now(),
+          },
+        ],
+      }));
+      return;
+    }
+
+    await get().runAutonomousDirectorAgent(clean);
+    set((s) => ({
+      chatMessages: [
+        ...s.chatMessages,
+        {
+          id: `msg_a_${Date.now()}`,
+          role: 'assistant',
+          text: `Built connected 3-shot sequence on the spatial canvas and appended clips to Timelines 1.`,
+          timestamp: Date.now(),
+        },
+      ],
+    }));
   },
 
   runAutonomousDirectorAgent: async (creativeBrief) => {
@@ -2219,74 +2795,44 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     get().pushHistory();
     set({
       directorRunning: true,
-      directorStepLog: ['[Director Agent] Parsing creative brief & locking @Elements continuity...'],
+      directorStepLog: ['Parsing brief & locking @Elements continuity...'],
     });
 
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const baseY = get().nodes.reduce((acc, n) => Math.max(acc, n.y + n.height), 520) + 120;
+    const baseY =
+      get()
+        .nodes.filter((n) => n.kind !== 'timeline')
+        .reduce((acc, n) => Math.max(acc, n.y + n.height), 480) + 140;
 
-    await sleep(240);
-    const dna = extractStyleDnaFromPrompt(creativeBrief);
-    const dnaId = `node_dir_dna_${Date.now()}`;
-    const dnaNode: CanvasNode = {
-      id: dnaId,
-      kind: 'style-dna',
-      title: 'Director Style DNA Lock',
-      prompt: `${dna.lighting} · ${dna.lens}`,
-      x: 80,
-      y: baseY,
-      width: 290,
-      height: 220,
-      aspectRatio: '16:9',
-      status: 'ready',
-      seed: 310,
-      resolution: '4K',
-      elementHandles: extractHandles(creativeBrief),
-      styleDna: dna,
-      layers: [],
-      providerUsed: 'Autonomous Director Agent',
-      createdAt: Date.now(),
-    };
-
-    set((s) => ({
-      nodes: [...s.nodes, dnaNode],
-      directorStepLog: [
-        ...s.directorStepLog,
-        `[Step 1/4] Extracted Style DNA (${dna.lens}, ${dna.filmStock})`,
-      ],
-    }));
-
+    await sleep(180);
     const beatDefs = [
       {
-        title: 'Director Beat 01 · Establishing Hook',
-        prompt: `${creativeBrief} — Wide anamorphic establishing hook, @Hero_Kael & @Cyber_Sneaker`,
-        dur: 7,
+        title: 'Videos · Beat 01 Hook',
+        prompt: `${creativeBrief} — Wide establishing shot, @Hero_Kael & @Cyber_Sneaker`,
+        dur: 6,
         curve: 'Dolly In',
         img: '/media/shot01_rooftop.png',
         vid: '/media/shot01_rooftop.mp4',
-        theme: 'drone-canyon' as const,
       },
       {
-        title: 'Director Beat 02 · Kinetic Hero Action',
-        prompt: `${creativeBrief} — Dynamic tracking close-up with volumetric rim speculars`,
-        dur: 7,
+        title: 'Videos · Beat 02 Action',
+        prompt: `${creativeBrief} — Dynamic tracking pursuit`,
+        dur: 6,
         curve: 'Orbit 180°',
         img: '/media/shot02_alley_chase.png',
         vid: '/media/shot02_alley_chase.mp4',
-        theme: 'sneaker-macro' as const,
       },
       {
-        title: 'Director Beat 03 · Golden Dawn Climax',
-        prompt: `${creativeBrief} — Multi-turn sunrise reveal silhouette`,
-        dur: 7,
+        title: 'Videos · Beat 03 Dawn Climax',
+        prompt: `${creativeBrief} — Golden dawn reveal`,
+        dur: 6,
         curve: 'Crane Up',
         img: '/media/shot02b_sunrise_remix.png',
         vid: '/media/shot02b_sunrise_remix.mp4',
-        theme: 'cyberpunk-rain' as const,
       },
     ];
 
-    const createdShotNodes: CanvasNode[] = [];
+    const createdNodes: CanvasNode[] = [];
     const createdEdges: CanvasEdge[] = [];
     const createdClips: TimelineClip[] = [];
     let tCursor = get()
@@ -2296,9 +2842,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     let prevInteraction: string | undefined;
 
     for (let i = 0; i < beatDefs.length; i++) {
-      await sleep(260);
       const beat = beatDefs[i];
-      const seed = 4200 + i * 233;
       const ff = await renderVideoViaBackend({
         prompt: beat.prompt,
         imageUrl: beat.img,
@@ -2307,8 +2851,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         mood: inferMoodFromPrompt(beat.prompt),
       });
 
-      const interactionId =
-        ff.interactionId || `int_dir_${i + 1}_${Math.random().toString(36).slice(2, 6)}`;
+      const interactionId = ff.interactionId || `int_dir_${i + 1}_${Date.now().toString(36)}`;
       const videoUrl = ff.videoUrl || beat.vid;
 
       const sNode: CanvasNode = {
@@ -2316,43 +2859,33 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         kind: 'video',
         title: beat.title,
         prompt: beat.prompt,
-        x: 450 + i * 430,
+        x: 460 + i * 650,
         y: baseY,
-        width: 360,
-        height: 202,
+        width: 568,
+        height: 320,
         aspectRatio: '16:9',
         status: 'ready',
         imageUrl: beat.img,
         videoUrl,
-        videoTheme: beat.theme,
-        seed,
+        seed: 4200 + i * 233,
         resolution: '1080p',
         durationSec: beat.dur,
         cameraMotion: beat.curve,
         interactionId,
         previousInteractionId: prevInteraction,
         elementHandles: extractHandles(beat.prompt),
-        styleDnaId: dnaId,
         layers: createDefaultLayers(beat.img),
-        providerUsed: ff.ok ? 'Director Agent · :3001 FFmpeg' : 'Director Agent · Omni 1.2',
+        providerUsed: ff.ok ? 'Local FFmpeg 8.0' : 'Director Agent',
         createdAt: Date.now() + i,
       };
-      createdShotNodes.push(sNode);
-      createdEdges.push({
-        id: `edge_dir_dna_${i}_${Date.now()}`,
-        sourceId: dnaId,
-        targetId: sNode.id,
-        kind: 'style-dna',
-        label: 'Style DNA',
-      });
+      createdNodes.push(sNode);
 
       if (i > 0) {
         createdEdges.push({
           id: `edge_dir_chain_${i}_${Date.now()}`,
-          sourceId: createdShotNodes[i - 1].id,
+          sourceId: createdNodes[i - 1].id,
           targetId: sNode.id,
           kind: 'multi-turn-branch',
-          label: `prev_id: ${prevInteraction}`,
         });
       }
       prevInteraction = interactionId;
@@ -2366,44 +2899,26 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         durationSec: beat.dur,
         thumbnailUrl: beat.img,
         videoUrl,
-        videoTheme: beat.theme,
-        seed,
+        seed: sNode.seed,
         promptOrDialogue: beat.prompt,
-        color: '#8B5CF6',
+        color: '#252525',
       });
       tCursor += beat.dur;
 
       set((s) => ({
-        directorStepLog: [
-          ...s.directorStepLog,
-          `[Step ${i + 2}/4] Synthesized ${beat.title} (${beat.dur}s, ${beat.curve})`,
-        ],
+        directorStepLog: [...s.directorStepLog, `Synthesized ${beat.title}`],
       }));
     }
 
-    createdClips.push({
-      id: `clip_dir_vo_${Date.now()}`,
-      track: 'voice',
-      title: 'Director Agent VO · @Hero_Kael',
-      startSec: Math.max(0, tCursor - 21),
-      durationSec: 12,
-      promptOrDialogue: `Autonomous sequence locked: ${creativeBrief.slice(0, 64)}`,
-      lipSyncCharacter: '@Hero_Kael',
-      audioFreqHz: 180,
-      color: '#10B981',
-    });
-
     set((s) => ({
-      nodes: [...s.nodes, ...createdShotNodes],
+      nodes: [...s.nodes, ...createdNodes],
       edges: [...s.edges, ...createdEdges],
       timelineClips: [...s.timelineClips, ...createdClips],
-      selectedNodeIds: createdShotNodes.map((n) => n.id),
-      panY: Math.min(28, -(baseY - 180)),
+      selectedNodeIds: [createdNodes[0].id],
       directorRunning: false,
       directorModalOpen: false,
-      timelineExpanded: true,
     }));
 
-    get().showToast('Autonomous Director built 3-shot multi-turn storyboard + rough cut!');
+    get().showToast('Built 3-shot sequence on canvas');
   },
 }));

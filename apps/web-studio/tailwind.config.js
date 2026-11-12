@@ -4,30 +4,22 @@ export default {
   theme: {
     extend: {
       colors: {
-        obsidian: {
-          950: '#07080C',
-          900: '#0C0E14',
-          850: '#11141D',
-          800: '#171B26',
-          700: '#23293A',
-        },
-        cyanflow: {
-          400: '#38BDF8',
-          500: '#0EA5E9',
-        },
-        dream: {
-          400: '#A78BFA',
-          500: '#8B5CF6',
-          600: '#7C3AED',
-        },
+        canvas: '#0e0e0e',
+        levitation: '#191919',
+        menu: '#1e1e1e',
+        pill: '#252525',
+        pillHover: '#2e2e2e',
+        pillActive: '#303030',
+        dreamCyan: '#20D5EC',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'system-ui', 'sans-serif'],
         mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
       boxShadow: {
-        'glow-dream': '0 0 24px -4px rgba(139, 92, 246, 0.45)',
-        'glow-cyan': '0 0 24px -4px rgba(56, 189, 248, 0.4)',
+        levitation: '0 16px 40px rgba(0, 0, 0, 0.68)',
+        'node-selected':
+          '0 0 0 2px rgba(255, 255, 255, 0.12), 0 20px 50px rgba(0, 0, 0, 0.6)',
       },
     },
   },

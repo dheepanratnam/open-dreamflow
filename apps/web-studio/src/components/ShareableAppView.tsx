@@ -1,16 +1,15 @@
 import React, { useState } from 'react';
 import {
+  ArrowLeft,
   Check,
   Clapperboard,
-  DollarSign,
   Download,
   Film,
-  Layers,
   Link2,
+  Loader2,
   Plus,
   Sparkles,
   Trash2,
-  Zap,
 } from 'lucide-react';
 import { useStudioStore, type ShareableBeatInput } from '../store/useStudioStore';
 import type {
@@ -19,7 +18,7 @@ import type {
   ResolutionTier,
 } from '../types/studio';
 import { estimateZeroMarkupCostUsd } from '../services/executionRouter';
-import { SmartMediaImage, SmartMediaVideo } from './SmartMedia';
+import { SmartMediaImage } from './SmartMedia';
 
 const CURVES: CameraTransitionCurve[] = [
   'Dolly In',
@@ -36,30 +35,30 @@ const INITIAL_BEATS: ShareableBeatInput[] = [
     id: 'beat-1',
     title: 'Beat 01 · Rooftop Rain Hook',
     prompt:
-      'Wide anamorphic establishing shot on rain-slicked Neo-Tokyo rooftop ledge, cyan neon reflections',
+      'Wide anamorphic establishing shot on rain-slicked Neo-Tokyo rooftop ledge, cyan reflections',
     imageUrl: '/media/shot01_rooftop.png',
     videoUrl: '/media/shot01_rooftop.mp4',
-    durationSec: 7,
+    durationSec: 6,
     cameraCurve: 'Dolly In',
   },
   {
     id: 'beat-2',
     title: 'Beat 02 · Shinjuku Alley Pursuit',
     prompt:
-      'High-energy tracking sprint down wet Shinjuku neon alley, glowing kinetic sneaker sole splashing rainwater',
+      'High-energy tracking sprint down wet Shinjuku alley, kinetic sole splashing rainwater',
     imageUrl: '/media/shot02_alley_chase.png',
     videoUrl: '/media/shot02_alley_chase.mp4',
-    durationSec: 7,
+    durationSec: 6,
     cameraCurve: 'Orbit 180°',
   },
   {
     id: 'beat-3',
     title: 'Beat 03 · Golden Dawn Climax',
     prompt:
-      'Multi-turn lighting reveal as golden dawn sunlight breaks through Neo-Tokyo storm clouds over hero product silhouette',
+      'Multi-turn lighting shift as golden sunrise breaks through storm clouds over hero silhouette',
     imageUrl: '/media/shot02b_sunrise_remix.png',
     videoUrl: '/media/shot02b_sunrise_remix.mp4',
-    durationSec: 7,
+    durationSec: 6,
     cameraCurve: 'Crane Up',
   },
 ];
@@ -73,488 +72,345 @@ export const ShareableAppView: React.FC = () => {
     masterRenderUrl,
     appSynthesizing,
     appRenderLog,
-    synthesizeShareableAppFilm,
-    copyShareableRecipeUrl,
     setActiveView,
-    openProviderModal,
+    copyShareableRecipeUrl,
+    synthesizeShareableAppFilm,
   } = useStudioStore();
 
-  const [filmTitle, setFilmTitle] = useState(projectTitle);
+  const [filmTitle, setFilmTitle] = useState(`${projectTitle} · Shareable App`);
   const [selectedHandles, setSelectedHandles] = useState<string[]>([
     '@Hero_Kael',
     '@Cyber_Sneaker',
-    '@Brand_Style',
   ]);
-  const [beats, setBeats] = useState<ShareableBeatInput[]>(INITIAL_BEATS);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
-  const [resolution, setResolution] = useState<ResolutionTier>('1080p');
-  const [activePreviewUrl, setActivePreviewUrl] = useState<string | null>(null);
+  const [resolution, setResolution] = useState<ResolutionTier>('720p');
+  const [beats, setBeats] = useState<ShareableBeatInput[]>(INITIAL_BEATS);
 
-  const totalDurationSec = beats.reduce((acc, b) => acc + b.durationSec, 0);
-
-  const rawByokCost = estimateZeroMarkupCostUsd(
+  const totalSec = beats.reduce((acc, b) => acc + b.durationSec, 0);
+  const rawCostUsd = estimateZeroMarkupCostUsd(
     activeProvider,
     'video',
-    totalDurationSec,
+    totalSec,
     resolution
   );
-  const saasEquivalentCost = Number((totalDurationSec * 0.14).toFixed(2));
 
   const toggleHandle = (handle: string) => {
-    setSelectedHandles((prev) =>
-      prev.includes(handle) ? prev.filter((h) => h !== handle) : [...prev, handle]
+    setSelectedHandles((cur) =>
+      cur.includes(handle) ? cur.filter((h) => h !== handle) : [...cur, handle]
     );
   };
 
-  const updateBeat = (id: string, patch: Partial<ShareableBeatInput>) => {
-    setBeats((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
-  };
-
-  const addStoryBeat = () => {
-    if (beats.length >= 6) return;
-    const idx = beats.length + 1;
-    setBeats((prev) => [
-      ...prev,
-      {
-        id: `beat-${Date.now()}`,
-        title: `Beat 0${idx} · Encore Cut`,
-        prompt:
-          'Macro slow-motion hero reveal with volumetric neon rain speculars and anamorphic bokeh',
-        imageUrl: '/media/shot01_rooftop.png',
-        videoUrl: '/media/shot01_rooftop.mp4',
-        durationSec: 6,
-        cameraCurve: 'Dolly In',
-      },
-    ]);
-  };
-
-  const removeBeat = (id: string) => {
-    if (beats.length <= 1) return;
-    setBeats((prev) => prev.filter((b) => b.id !== id));
-  };
-
-  const handleSynthesize = async () => {
-    setActivePreviewUrl(null);
-    const outUrl = await synthesizeShareableAppFilm({
-      title: filmTitle,
-      selectedHandles,
-      beats,
-      aspectRatio,
-      resolution,
-    });
-    if (outUrl) {
-      setActivePreviewUrl(outUrl);
-    }
-  };
-
-  const playerVideoUrl =
-    activePreviewUrl || masterRenderUrl || beats[0]?.videoUrl || '/media/shot01_rooftop.mp4';
-
   return (
-    <div className="w-full h-full overflow-y-auto bg-[#07080C] px-4 sm:px-6 py-6 pb-36">
-      <div className="max-w-7xl mx-auto space-y-6">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-5 rounded-2xl bg-gradient-to-r from-[#111628] via-[#15122A] to-[#0D1A22] border border-emerald-500/30 shadow-2xl">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-mono text-[10px] font-bold flex items-center gap-1">
-                <Zap className="w-3 h-3" /> SHAREABLE APP MODE · ZERO-JARGON TEMPLATE
-              </span>
-              <span className="px-2.5 py-0.5 rounded-full bg-violet-500/20 border border-violet-400/40 text-violet-200 font-mono text-[10px] font-semibold">
-                WEAVE / DREAMINA 2.0 WORKFLOW RUNNER
-              </span>
-            </div>
-            <h2 className="text-lg sm:text-xl font-bold text-white">
-              1-Click Multi-Shot Film & Commercial Synthesizer
-            </h2>
-            <p className="text-xs text-slate-300 max-w-2xl">
-              Share any Spatial Canvas graph as a clean consumer app. Pick locked{' '}
-              <code className="text-violet-300">@Elements</code>, customize story beats, and
-              compile a stitched H.264 + Stereo Audio <code className="text-emerald-300">.mp4</code>{' '}
-              at $0 platform markup.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={copyShareableRecipeUrl}
-              className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-sky-300 flex items-center gap-1.5 transition"
-            >
-              <Link2 className="w-3.5 h-3.5" />
-              <span>Copy App `?recipe=` Link</span>
-            </button>
-            <button
-              onClick={() => setActiveView('canvas')}
-              className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1.5 transition"
-            >
-              <Layers className="w-3.5 h-3.5 text-violet-400" />
-              <span>Inspect Node Graph</span>
-            </button>
-          </div>
+    <div className="w-full h-full bg-[#0e0e0e] text-[#f5f5f5] flex flex-col overflow-hidden select-none">
+      {/* Top Floating-Style Matte Header */}
+      <div className="h-[52px] px-5 bg-[#191919] border-b border-white/[0.08] flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setActiveView('canvas')}
+            className="h-8 px-3 rounded-[8px] bg-[#252525] hover:bg-[#2e2e2e] border border-white/[0.08] text-[12px] font-medium text-white/90 flex items-center gap-1.5 transition-colors"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" strokeWidth={1.5} />
+            <span>Back to Canvas</span>
+          </button>
+          <div className="h-4 w-px bg-white/[0.08]" />
+          <span className="text-[13.5px] font-semibold text-white">
+            Shareable Film App Template
+          </span>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left Column: Zero-Jargon Consumer Controls */}
+        <div className="flex items-center gap-2">
+          <span className="h-8 px-3 rounded-[8px] bg-[#252525] font-mono text-[11.5px] text-white/80 flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5 text-[#face15]" strokeWidth={1.75} />
+            <span>${rawCostUsd.toFixed(2)} raw · 0% markup</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => copyShareableRecipeUrl()}
+            className="h-8 px-3 rounded-[8px] bg-[#252525] hover:bg-[#2e2e2e] text-[12px] text-white/90 flex items-center gap-1.5"
+          >
+            <Link2 className="w-3.5 h-3.5" strokeWidth={1.5} />
+            <span>Copy ?recipe= Link</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Two-Column Clean Matte Content */}
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="max-w-[1220px] mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left Form Column */}
           <div className="lg:col-span-7 space-y-5">
-            <div className="p-4 rounded-2xl bg-[#0D111B] border border-slate-800/90 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  1. Film Title & Continuity Cast (`@Elements`)
-                </label>
-                <span className="text-[11px] font-mono text-emerald-400">
-                  {selectedHandles.length} Continuity Vaults Locked
-                </span>
-              </div>
-
-              <input
-                type="text"
-                value={filmTitle}
-                onChange={(e) => setFilmTitle(e.target.value)}
-                placeholder="Enter film or campaign title..."
-                className="w-full bg-slate-950 border border-slate-800 focus:border-violet-500 rounded-xl px-3.5 py-2 text-sm font-semibold text-white focus:outline-none"
-              />
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                {elements.map((vault) => {
-                  const active = selectedHandles.includes(vault.handle);
-                  const coverUrl = vault.references[0]?.dataUrl;
-                  return (
-                    <button
-                      key={vault.id}
-                      type="button"
-                      onClick={() => toggleHandle(vault.handle)}
-                      className={`p-2.5 rounded-xl border text-left transition flex items-center gap-2.5 ${
-                        active
-                          ? 'bg-violet-600/20 border-violet-400 shadow-glow-dream'
-                          : 'bg-slate-950/80 border-slate-800 hover:border-slate-700 opacity-75'
-                      }`}
+            <div className="p-5 rounded-[14px] bg-[#191919] border border-white/[0.08] space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="md:col-span-2">
+                  <label className="block text-[11px] text-white/45 mb-1">
+                    App Sequence Title
+                  </label>
+                  <input
+                    value={filmTitle}
+                    onChange={(e) => setFilmTitle(e.target.value)}
+                    className="w-full h-9 px-3 rounded-[8px] bg-[#252525] border border-white/[0.08] text-[13px] text-white outline-none"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] text-white/45 mb-1">
+                      Aspect
+                    </label>
+                    <select
+                      value={aspectRatio}
+                      onChange={(e) =>
+                        setAspectRatio(e.target.value as AspectRatio)
+                      }
+                      className="w-full h-9 px-2 rounded-[8px] bg-[#252525] border border-white/[0.08] text-[12px] text-white outline-none"
                     >
-                      <div className="w-12 h-12 rounded-lg overflow-hidden shrink-0 border border-white/10 bg-slate-900">
-                        <SmartMediaImage
-                          src={coverUrl}
-                          alt={vault.name}
-                          className="w-full h-full object-cover"
-                          fallbackPrompt={vault.name}
-                        />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="font-mono text-xs font-bold text-white truncate">
-                            {vault.handle}
-                          </span>
-                          {active && (
-                            <span className="w-4 h-4 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center shrink-0">
-                              <Check className="w-2.5 h-2.5 stroke-[3]" />
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[11px] text-slate-300 truncate">{vault.name}</div>
-                        <div className="text-[10px] font-mono text-slate-400">
-                          {vault.references.length}/6 refs
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-[#0D111B] border border-slate-800/90 space-y-3.5">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  2. Story Beats ({beats.length} Shots · {totalDurationSec}s Total)
-                </label>
-                <button
-                  type="button"
-                  onClick={addStoryBeat}
-                  disabled={beats.length >= 6}
-                  className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 border border-slate-700 text-xs font-semibold text-violet-300 flex items-center gap-1"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Add Story Beat
-                </button>
-              </div>
-
-              <div className="space-y-3">
-                {beats.map((beat, index) => (
-                  <div
-                    key={beat.id}
-                    className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 hover:border-slate-700 transition flex flex-col sm:flex-row gap-3"
-                  >
-                    <div className="w-full sm:w-36 h-24 rounded-lg overflow-hidden shrink-0 relative border border-slate-800 bg-black">
-                      <SmartMediaImage
-                        src={beat.imageUrl}
-                        alt={beat.title}
-                        className="w-full h-full object-cover"
-                        fallbackPrompt={beat.prompt}
-                        fallbackSeed={900 + index * 77}
-                      />
-                      <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/80 font-mono text-[10px] font-bold text-violet-300">
-                        SHOT 0{index + 1}
-                      </span>
-                    </div>
-
-                    <div className="flex-1 space-y-2 min-w-0">
-                      <div className="flex items-center justify-between gap-2">
-                        <input
-                          type="text"
-                          value={beat.title}
-                          onChange={(e) => updateBeat(beat.id, { title: e.target.value })}
-                          className="bg-transparent text-xs font-bold text-white focus:outline-none flex-1"
-                        />
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <select
-                            value={beat.cameraCurve}
-                            onChange={(e) =>
-                              updateBeat(beat.id, {
-                                cameraCurve: e.target.value as CameraTransitionCurve,
-                              })
-                            }
-                            className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-0.5 text-[11px] text-sky-300 font-medium"
-                          >
-                            {CURVES.map((c) => (
-                              <option key={c} value={c}>
-                                {c}
-                              </option>
-                            ))}
-                          </select>
-
-                          <select
-                            value={beat.durationSec}
-                            onChange={(e) =>
-                              updateBeat(beat.id, { durationSec: Number(e.target.value) })
-                            }
-                            className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-0.5 text-[11px] font-mono text-slate-200"
-                          >
-                            {[4, 6, 7, 8, 10, 12, 15].map((sec) => (
-                              <option key={sec} value={sec}>
-                                {sec}s
-                              </option>
-                            ))}
-                          </select>
-
-                          {beats.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => removeBeat(beat.id)}
-                              className="p-1 text-slate-500 hover:text-rose-400"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      <textarea
-                        rows={2}
-                        value={beat.prompt}
-                        onChange={(e) => updateBeat(beat.id, { prompt: e.target.value })}
-                        className="w-full bg-slate-900/90 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 resize-none focus:outline-none focus:border-violet-500"
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-[#0D111B] border border-slate-800/90 space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                    3. Aspect Ratio
-                  </label>
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {(['16:9', '9:16', '21:9', '1:1'] as AspectRatio[]).map((ratio) => (
-                      <button
-                        key={ratio}
-                        type="button"
-                        onClick={() => setAspectRatio(ratio)}
-                        className={`py-1.5 rounded-lg text-xs font-mono font-semibold border transition ${
-                          aspectRatio === ratio
-                            ? 'bg-violet-600 border-violet-400 text-white'
-                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        {ratio}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                    4. Master Resolution
-                  </label>
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {(['720p', '1080p', '2K', '4K'] as ResolutionTier[]).map((res) => (
-                      <button
-                        key={res}
-                        type="button"
-                        onClick={() => setResolution(res)}
-                        className={`py-1.5 rounded-lg text-xs font-mono font-semibold border transition ${
-                          resolution === res
-                            ? 'bg-sky-500 border-sky-300 text-slate-950 font-bold'
-                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        {res}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Zero-Markup Cost Ticker */}
-              <div className="p-3 rounded-xl bg-emerald-950/25 border border-emerald-500/35 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center shrink-0">
-                    <DollarSign className="w-4 h-4 text-emerald-300" />
+                      <option value="16:9">16:9</option>
+                      <option value="9:16">9:16</option>
+                      <option value="21:9">21:9</option>
+                      <option value="1:1">1:1</option>
+                    </select>
                   </div>
                   <div>
-                    <div className="text-xs font-bold text-emerald-200 flex items-center gap-2">
-                      <span>
-                        Zero-Markup Pass-Through Cost: ${rawByokCost.toFixed(2)} USD
-                      </span>
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                        $0.00 PLATFORM FEE
-                      </span>
-                    </div>
-                    <div className="text-[11px] text-slate-400">
-                      Engine:{' '}
-                      <span className="text-slate-200 font-mono">
-                        {mcpHealth.online
-                          ? 'Live :3001 FFmpeg + MCP ($0 Local)'
-                          : activeProvider}
-                      </span>{' '}
-                      · Typical SaaS wrapper price:{' '}
-                      <span className="line-through text-rose-400">
-                        ${saasEquivalentCost.toFixed(2)}
-                      </span>
-                    </div>
+                    <label className="block text-[11px] text-white/45 mb-1">
+                      Tier
+                    </label>
+                    <select
+                      value={resolution}
+                      onChange={(e) =>
+                        setResolution(e.target.value as ResolutionTier)
+                      }
+                      className="w-full h-9 px-2 rounded-[8px] bg-[#252525] border border-white/[0.08] text-[12px] text-white outline-none"
+                    >
+                      <option value="720p">720p</option>
+                      <option value="1080p">1080p</option>
+                      <option value="4K">4K</option>
+                    </select>
                   </div>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => openProviderModal('byok')}
-                  className="text-[11px] font-mono text-emerald-300 hover:underline shrink-0"
-                >
-                  Switch Engine →
-                </button>
               </div>
+
+              {/* @Elements Lock */}
+              <div>
+                <div className="text-[11px] text-white/45 mb-2">
+                  Locked @Element Vaults
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {elements.map((el) => {
+                    const active = selectedHandles.includes(el.handle);
+                    return (
+                      <button
+                        key={el.id}
+                        type="button"
+                        onClick={() => toggleHandle(el.handle)}
+                        className={`p-2 rounded-[10px] border flex items-center gap-2.5 text-left transition-colors ${
+                          active
+                            ? 'bg-[#252525] border-white/45'
+                            : 'bg-[#141414] border-white/[0.08] hover:border-white/20'
+                        }`}
+                      >
+                        <div className="w-9 h-9 rounded-[6px] overflow-hidden bg-[#222222] shrink-0">
+                          <SmartMediaImage
+                            src={el.references[0]?.dataUrl}
+                            alt={el.name}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[12px] font-medium text-white truncate">
+                            {el.handle}
+                          </div>
+                          <div className="text-[10.5px] text-white/45 truncate">
+                            {el.category}
+                          </div>
+                        </div>
+                        {active && (
+                          <Check
+                            className="w-3.5 h-3.5 text-white shrink-0"
+                            strokeWidth={1.75}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Storyboard Beats */}
+            <div className="space-y-2.5">
+              {beats.map((beat, idx) => (
+                <div
+                  key={beat.id}
+                  className="p-3.5 rounded-[12px] bg-[#191919] border border-white/[0.08] flex gap-3.5"
+                >
+                  <div className="w-[132px] aspect-video rounded-[8px] overflow-hidden bg-[#141414] border border-white/[0.08] shrink-0">
+                    <SmartMediaImage
+                      src={beat.imageUrl}
+                      alt={beat.title}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <div className="flex-1 space-y-2 min-w-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <input
+                        value={beat.title}
+                        onChange={(e) =>
+                          setBeats((cur) =>
+                            cur.map((b, i) =>
+                              i === idx ? { ...b, title: e.target.value } : b
+                            )
+                          )
+                        }
+                        className="bg-transparent text-[12.5px] font-medium text-white outline-none flex-1"
+                      />
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          value={beat.cameraCurve}
+                          onChange={(e) =>
+                            setBeats((cur) =>
+                              cur.map((b, i) =>
+                                i === idx
+                                  ? {
+                                      ...b,
+                                      cameraCurve: e.target
+                                        .value as CameraTransitionCurve,
+                                    }
+                                  : b
+                              )
+                            )
+                          }
+                          className="h-6 px-2 rounded-[6px] bg-[#252525] text-[11px] text-white/85 outline-none"
+                        >
+                          {CURVES.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                        {beats.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setBeats((cur) => cur.filter((_, i) => i !== idx))
+                            }
+                            className="w-6 h-6 rounded-[6px] hover:bg-white/[0.08] flex items-center justify-center text-white/45 hover:text-white"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <textarea
+                      value={beat.prompt}
+                      onChange={(e) =>
+                        setBeats((cur) =>
+                          cur.map((b, i) =>
+                            i === idx ? { ...b, prompt: e.target.value } : b
+                          )
+                        )
+                      }
+                      rows={2}
+                      className="w-full bg-[#141414] rounded-[8px] px-2.5 py-1.5 text-[12px] text-white/85 outline-none resize-none border border-white/[0.06]"
+                    />
+                  </div>
+                </div>
+              ))}
 
               <button
                 type="button"
-                onClick={handleSynthesize}
-                disabled={appSynthesizing}
-                className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-violet-600 via-fuchsia-600 to-sky-500 hover:from-violet-500 hover:via-fuchsia-500 hover:to-sky-400 disabled:opacity-50 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-glow-dream transition"
+                onClick={() =>
+                  setBeats((cur) => [
+                    ...cur,
+                    {
+                      id: `beat-${Date.now()}`,
+                      title: `Beat 0${cur.length + 1} · New Shot`,
+                      prompt:
+                        'Cinematic follow shot locking @Hero_Kael in wet Neo-Shinjuku street reflections',
+                      imageUrl: '/media/shot01_rooftop.png',
+                      videoUrl: '/media/shot01_rooftop.mp4',
+                      durationSec: 6,
+                      cameraCurve: 'Dolly In',
+                    },
+                  ])
+                }
+                className="w-full h-9 rounded-[10px] border border-dashed border-white/[0.15] hover:border-white/35 text-[12px] text-white/70 hover:text-white flex items-center justify-center gap-1.5 transition-colors"
               >
-                <Clapperboard className="w-4 h-4" />
-                <span>
-                  {appSynthesizing
-                    ? 'Synthesizing & Stitching Multi-Shot Film (.mp4)...'
-                    : `Synthesize Multi-Shot Film (.mp4) · ${totalDurationSec}s`}
-                </span>
+                <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
+                <span>Add Story Beat</span>
               </button>
             </div>
           </div>
 
-          {/* Right Column: Live Master Cinema Player */}
+          {/* Right Master Output Column */}
           <div className="lg:col-span-5 space-y-4">
-            <div className="p-4 rounded-2xl bg-[#0D111B] border border-violet-500/35 shadow-2xl space-y-3.5 sticky top-4">
+            <div className="p-5 rounded-[14px] bg-[#191919] border border-white/[0.08] space-y-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Film className="w-4 h-4 text-violet-400" />
-                  <span className="text-xs font-bold text-white uppercase tracking-wider">
-                    Master Cinema Player (.mp4)
+                  <Film className="w-4 h-4 text-white/75" strokeWidth={1.5} />
+                  <span className="text-[13px] font-semibold text-white">
+                    Master Output Preview
                   </span>
                 </div>
-                <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 font-mono text-[10px] text-emerald-300">
-                  H.264 · AAC STEREO
+                <span className="font-mono text-[11px] text-white/50">
+                  {mcpHealth.online ? 'FFmpeg 8.0 Live' : 'Browser Render'}
                 </span>
               </div>
 
-              <div className="relative aspect-video w-full rounded-xl overflow-hidden bg-black border border-slate-800 shadow-inner">
-                <SmartMediaVideo
-                  videoUrl={playerVideoUrl}
-                  posterUrl={beats[0]?.imageUrl || '/media/shot01_rooftop.png'}
-                  playing
-                  muted={false}
+              <div className="aspect-video rounded-[10px] overflow-hidden bg-[#121212] border border-white/[0.08]">
+                <video
+                  key={masterRenderUrl || '/media/protocol_rain_master.mp4'}
+                  src={masterRenderUrl || '/media/protocol_rain_master.mp4'}
+                  poster="/media/shot01_rooftop.png"
                   controls
+                  autoPlay
                   loop
-                  className="w-full h-full object-contain bg-black"
-                  fallbackPrompt={filmTitle}
-                  fallbackSeed={777}
-                  fallbackDurationSec={totalDurationSec}
+                  muted
+                  playsInline
+                  className="w-full h-full object-cover"
                 />
               </div>
 
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="text-xs text-slate-300 font-medium truncate">
-                  {filmTitle} ({aspectRatio} · {resolution})
-                </div>
-
-                {playerVideoUrl && (
-                  <a
-                    href={playerVideoUrl}
-                    download={`${filmTitle
-                      .toLowerCase()
-                      .replace(/[^a-z0-9]+/g, '-')}-master.mp4`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 transition"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Download .mp4</span>
-                  </a>
+              <button
+                type="button"
+                disabled={appSynthesizing}
+                onClick={() =>
+                  void synthesizeShareableAppFilm({
+                    title: filmTitle,
+                    selectedHandles,
+                    beats,
+                    aspectRatio,
+                    resolution,
+                  })
+                }
+                className="w-full h-10 rounded-[10px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[13px] font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-60"
+              >
+                {appSynthesizing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.75} />
+                ) : (
+                  <Clapperboard className="w-4 h-4" strokeWidth={1.75} />
                 )}
-              </div>
+                <span>
+                  {appSynthesizing
+                    ? 'Synthesizing Multi-Beat Film…'
+                    : `Synthesize ${totalSec}s Master Film`}
+                </span>
+              </button>
 
-              {/* Shot Selector Strip */}
-              <div className="space-y-1.5 pt-1 border-t border-slate-800/80">
-                <div className="flex items-center justify-between text-[11px] text-slate-400">
-                  <span>Quick Preview Reel:</span>
-                  {masterRenderUrl && (
-                    <button
-                      type="button"
-                      onClick={() => setActivePreviewUrl(masterRenderUrl)}
-                      className="text-violet-300 hover:underline font-mono text-[10px]"
-                    >
-                      Play Stitched Master Cut
-                    </button>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-3 gap-2">
-                  {beats.slice(0, 3).map((b, idx) => (
-                    <button
-                      key={b.id}
-                      type="button"
-                      onClick={() =>
-                        setActivePreviewUrl(b.videoUrl || '/media/shot01_rooftop.mp4')
-                      }
-                      className="group relative h-16 rounded-lg overflow-hidden border border-slate-800 hover:border-violet-400 transition"
-                    >
-                      <SmartMediaImage
-                        src={b.imageUrl}
-                        alt={b.title}
-                        className="w-full h-full object-cover"
-                        fallbackPrompt={b.prompt}
-                        fallbackSeed={300 + idx}
-                      />
-                      <span className="absolute inset-x-0 bottom-0 bg-black/75 text-[9px] font-mono text-white py-0.5 truncate px-1">
-                        Shot 0{idx + 1} · {b.durationSec}s
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+              {masterRenderUrl && (
+                <a
+                  href={masterRenderUrl}
+                  download="open-dreamflow-app-film.mp4"
+                  className="w-full h-9 rounded-[9px] bg-[#252525] hover:bg-[#303030] text-[12px] text-white/90 flex items-center justify-center gap-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <span>Download Master .mp4</span>
+                </a>
+              )}
 
               {appRenderLog.length > 0 && (
-                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-emerald-300 space-y-1 max-h-36 overflow-y-auto">
-                  {appRenderLog.map((line, idx) => (
-                    <div key={idx} className="flex items-start gap-1.5">
-                      <Sparkles className="w-3 h-3 text-violet-400 shrink-0 mt-0.5" />
-                      <span>{line}</span>
-                    </div>
+                <div className="p-3 rounded-[9px] bg-[#141414] border border-white/[0.06] font-mono text-[11px] text-white/65 space-y-1 max-h-[150px] overflow-y-auto">
+                  {appRenderLog.map((line, i) => (
+                    <div key={i}>{line}</div>
                   ))}
                 </div>
               )}
