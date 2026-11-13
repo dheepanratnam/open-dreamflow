@@ -32,6 +32,10 @@
       "types": "./dist/browser-session-manager.d.ts",
       "import": "./dist/browser-session-manager.js"
     },
+    "./mcp-oauth": {
+      "types": "./dist/mcp-oauth.d.ts",
+      "import": "./dist/mcp-oauth.js"
+    },
     "./src/*": "./src/*"
   },
   "files": [

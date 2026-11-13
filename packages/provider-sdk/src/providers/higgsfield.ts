@@ -7,6 +7,7 @@
 import { resolveReferenceImageForCloud } from './reference-utils.js';
 
 export const HIGGSFIELD_DEFAULT_BASE_URL = 'https://platform.higgsfield.ai/v1';
+export const HIGGSFIELD_OFFICIAL_API_BASE_URL = 'https://api.higgsfield.ai';
 
 export interface HiggsfieldClientConfig {
   apiKey: string;
@@ -75,14 +76,33 @@ export class HiggsfieldClient {
   }
 
   private buildHeaders(): Record<string, string> {
-    const authToken =
-      this.secretKey && !this.apiKey.includes(':')
-        ? `Key ${this.apiKey}:${this.secretKey}`
-        : `Bearer ${this.apiKey}`;
+    let authToken: string;
+    let headerKey = this.apiKey;
+    let headerSecret = this.secretKey;
+
+    if (/^Key\s+/i.test(this.apiKey)) {
+      authToken = this.apiKey;
+      const stripped = this.apiKey.replace(/^Key\s+/i, '').trim();
+      const colonIdx = stripped.indexOf(':');
+      if (colonIdx > 0) {
+        headerKey = stripped.slice(0, colonIdx);
+        headerSecret = headerSecret || stripped.slice(colonIdx + 1);
+      }
+    } else if (this.secretKey && !this.apiKey.includes(':')) {
+      authToken = `Key ${this.apiKey}:${this.secretKey}`;
+    } else if (this.apiKey.includes(':')) {
+      authToken = `Key ${this.apiKey}`;
+      const colonIdx = this.apiKey.indexOf(':');
+      headerKey = this.apiKey.slice(0, colonIdx);
+      headerSecret = headerSecret || this.apiKey.slice(colonIdx + 1);
+    } else {
+      authToken = `Bearer ${this.apiKey}`;
+    }
+
     return {
       Authorization: authToken,
-      'hf-api-key': this.apiKey,
-      ...(this.secretKey ? { 'hf-secret': this.secretKey } : {}),
+      'hf-api-key': headerKey,
+      ...(headerSecret ? { 'hf-secret': headerSecret } : {}),
       'Content-Type': 'application/json',
       Accept: 'application/json',
     };
@@ -96,6 +116,20 @@ export class HiggsfieldClient {
     });
     const parsed = await this.parseJson(res);
     if (!res.ok) {
+      if (
+        res.status === 404 &&
+        this.baseUrl === HIGGSFIELD_DEFAULT_BASE_URL &&
+        (this.secretKey || this.apiKey.includes(':'))
+      ) {
+        const altRes = await this.fetchImpl(`${HIGGSFIELD_OFFICIAL_API_BASE_URL}/v1/user`, {
+          method: 'GET',
+          headers: this.buildHeaders(),
+          signal,
+        });
+        if (altRes.ok) {
+          return { ok: true, endpoint: HIGGSFIELD_OFFICIAL_API_BASE_URL };
+        }
+      }
       throw new HiggsfieldApiError(
         `Higgsfield API verification failed (${res.status}): ${this.extractErrorMessage(parsed)}`,
         res.status,

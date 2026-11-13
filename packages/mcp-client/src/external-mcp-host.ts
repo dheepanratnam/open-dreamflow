@@ -21,6 +21,28 @@ export interface ExternalMcpToolSchema {
   inputSchema?: Record<string, unknown>;
 }
 
+export interface McpOAuthAccountInfo {
+  email?: string;
+  name?: string;
+  username?: string;
+  sub?: string;
+  orgId?: string;
+  avatarUrl?: string;
+}
+
+export interface McpOAuthTokenConfig {
+  clientId: string;
+  tokenEndpoint: string;
+  authorizationEndpoint?: string;
+  registrationEndpoint?: string;
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
+  scope?: string;
+  resource?: string;
+  account?: McpOAuthAccountInfo;
+}
+
 export interface PersistedMcpServerConfig {
   id: string;
   name: string;
@@ -32,6 +54,7 @@ export interface PersistedMcpServerConfig {
   cwd?: string;
   url?: string;
   headers?: Record<string, string>;
+  oauth?: McpOAuthTokenConfig;
   createdAt: string;
   updatedAt: string;
 }
@@ -41,6 +64,8 @@ export interface PublicMcpServerSummary {
   name: string;
   platformId: string;
   transport: ExternalMcpTransport;
+  authType: 'oauth' | 'headers' | 'stdio';
+  account?: McpOAuthAccountInfo;
   command?: string;
   args?: string[];
   env?: Record<string, string>;
@@ -149,11 +174,18 @@ export class ExternalMcpHost {
 
   public toPublicSummary(runtime: LiveServerRuntime): PublicMcpServerSummary {
     const { config } = runtime;
+    const authType: PublicMcpServerSummary['authType'] = config.oauth?.accessToken
+      ? 'oauth'
+      : config.transport === 'stdio'
+        ? 'stdio'
+        : 'headers';
     return {
       id: config.id,
       name: config.name,
       platformId: config.platformId,
       transport: config.transport,
+      authType,
+      ...(config.oauth?.account ? { account: config.oauth.account } : {}),
       command: config.command,
       args: config.args,
       env: redactSecretRecord(config.env),
@@ -222,14 +254,22 @@ export class ExternalMcpHost {
 
     const keywordsByModality: Record<'image' | 'video' | 'audio', RegExp> = {
       image: /image|photo|picture|draw|flux|seedream|imagen|kolors|render_image|text_to_image/i,
-      video: /video|animate|i2v|t2v|kling|veo|seedance|wan|sora|motion/i,
+      video: /video|animate|i2v|t2v|kling|veo|seedance|wan|sora|motion|genjutsu/i,
       audio: /audio|speech|tts|voice|sound|sfx|music|eleven/i,
     };
+    const isStatusOrInfoTool = (t: ExternalMcpToolSchema) =>
+      /^(get_|list_|check_)?(gpu_status|account|credits|status|job_status|result|models|health|whoami|user_info)$/i.test(
+        t.name
+      );
     const pattern = keywordsByModality[modality];
     const matched = runtime.tools.find(
-      (t) => pattern.test(t.name) || pattern.test(t.description || '')
+      (t) => !isStatusOrInfoTool(t) && (pattern.test(t.name) || pattern.test(t.description || ''))
     );
-    return matched || runtime.tools[0];
+    return (
+      matched ||
+      runtime.tools.find((t) => !isStatusOrInfoTool(t)) ||
+      runtime.tools[0]
+    );
   }
 
   public async registerOrUpdateServer(input: Record<string, unknown>): Promise<PublicMcpServerSummary> {
@@ -301,6 +341,13 @@ export class ExternalMcpHost {
       throw new Error('MCP HTTP server requires a non-empty "url".');
     }
 
+    const oauthConfig =
+      typeof input.oauth === 'object' &&
+      input.oauth !== null &&
+      typeof (input.oauth as Record<string, unknown>).accessToken === 'string'
+        ? (input.oauth as McpOAuthTokenConfig)
+        : existing?.config.oauth;
+
     const nowIso = new Date().toISOString();
     const config: PersistedMcpServerConfig = {
       id: rawId,
@@ -312,6 +359,7 @@ export class ExternalMcpHost {
       ...(cwd ? { cwd } : {}),
       ...(url ? { url } : {}),
       ...(Object.keys(mergedHeaders).length > 0 ? { headers: mergedHeaders } : {}),
+      ...(oauthConfig ? { oauth: oauthConfig } : {}),
       createdAt: existing?.config.createdAt || nowIso,
       updatedAt: nowIso,
     };
@@ -714,14 +762,7 @@ export class ExternalMcpHost {
     }
 
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/event-stream',
-        ...(runtime.config.headers || {}),
-      };
-      if (runtime.httpSessionId) {
-        headers['Mcp-Session-Id'] = runtime.httpSessionId;
-      }
+      const headers = this.buildHttpHeaders(runtime);
       await fetch(runtime.config.url!, {
         method: 'POST',
         headers,
@@ -731,6 +772,107 @@ export class ExternalMcpHost {
     } catch {
       // Notifications are fire-and-forget
     }
+  }
+
+  private buildHttpHeaders(runtime: LiveServerRuntime): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      ...(runtime.config.headers || {}),
+    };
+    if (runtime.config.oauth?.accessToken && !headers.Authorization && !headers.authorization) {
+      headers.Authorization = `Bearer ${runtime.config.oauth.accessToken}`;
+    }
+    if (runtime.httpSessionId) {
+      headers['Mcp-Session-Id'] = runtime.httpSessionId;
+    }
+    return headers;
+  }
+
+  private async refreshOAuthToken(runtime: LiveServerRuntime): Promise<boolean> {
+    const oauth = runtime.config.oauth;
+    if (!oauth?.refreshToken || !oauth.tokenEndpoint || !oauth.clientId) {
+      return false;
+    }
+    try {
+      const form = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: oauth.refreshToken,
+        client_id: oauth.clientId,
+        ...(oauth.resource ? { resource: oauth.resource } : {}),
+      });
+      const res = await fetch(oauth.tokenEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+        },
+        body: form.toString(),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) return false;
+      const tok = (await res.json()) as Record<string, unknown>;
+      if (typeof tok.access_token !== 'string' || !tok.access_token) return false;
+
+      oauth.accessToken = tok.access_token;
+      if (typeof tok.refresh_token === 'string' && tok.refresh_token) {
+        oauth.refreshToken = tok.refresh_token;
+      }
+      if (typeof tok.expires_in === 'number' && tok.expires_in > 0) {
+        oauth.expiresAt = Date.now() + tok.expires_in * 1000;
+      }
+      runtime.config.updatedAt = new Date().toISOString();
+      this.persistRegistry();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private parseSseJsonRpcResponse(
+    rawText: string,
+    rpcId: number
+  ): Record<string, unknown> | null {
+    const blocks = rawText.split(/\r?\n\r?\n/);
+    const parsedFrames: Array<Record<string, unknown>> = [];
+
+    for (const block of blocks) {
+      const dataLines = block
+        .split(/\r?\n/)
+        .filter((l) => l.startsWith('data:'))
+        .map((l) => l.slice(5).trimStart());
+      if (dataLines.length === 0) continue;
+      const joined = dataLines.join('\n').trim();
+      if (!joined || joined === '[DONE]') continue;
+      try {
+        const obj = JSON.parse(joined) as Record<string, unknown>;
+        parsedFrames.push(obj);
+      } catch {
+        // Fallback: try parsing individual data lines
+        for (const dl of dataLines) {
+          try {
+            const obj = JSON.parse(dl) as Record<string, unknown>;
+            parsedFrames.push(obj);
+          } catch {
+            // Ignore non-JSON SSE comments/keepalives
+          }
+        }
+      }
+    }
+
+    // Prefer exact JSON-RPC `id` match first
+    const exactMatch = parsedFrames.find(
+      (f) => f.id === rpcId || String(f.id ?? '') === String(rpcId)
+    );
+    if (exactMatch) return exactMatch;
+
+    // Fallback: last response frame containing result or error
+    for (let i = parsedFrames.length - 1; i >= 0; i--) {
+      if ('result' in parsedFrames[i] || 'error' in parsedFrames[i]) {
+        return parsedFrames[i];
+      }
+    }
+    return null;
   }
 
   private async sendRpc(
@@ -770,22 +912,30 @@ export class ExternalMcpHost {
       });
     }
 
-    // Streamable HTTP JSON-RPC
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/event-stream',
-      ...(runtime.config.headers || {}),
-    };
-    if (runtime.httpSessionId) {
-      headers['Mcp-Session-Id'] = runtime.httpSessionId;
+    // Proactive OAuth refresh if token is within 60s of expiry
+    if (
+      runtime.config.oauth?.expiresAt &&
+      runtime.config.oauth.refreshToken &&
+      Date.now() > runtime.config.oauth.expiresAt - 60_000
+    ) {
+      await this.refreshOAuthToken(runtime);
     }
 
-    const res = await fetch(runtime.config.url!, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    const doHttpFetch = async () =>
+      fetch(runtime.config.url!, {
+        method: 'POST',
+        headers: this.buildHttpHeaders(runtime),
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+    let res = await doHttpFetch();
+    if (res.status === 401 && runtime.config.oauth?.refreshToken) {
+      const refreshed = await this.refreshOAuthToken(runtime);
+      if (refreshed) {
+        res = await doHttpFetch();
+      }
+    }
 
     const returnedSession = res.headers.get('mcp-session-id');
     if (returnedSession) {
@@ -799,26 +949,23 @@ export class ExternalMcpHost {
       );
     }
 
+    if ((res.status === 202 || res.status === 204) && !rawText.trim()) {
+      return { jsonrpc: '2.0', id: rpcId, result: {} };
+    }
+
     const contentType = (res.headers.get('content-type') || '').toLowerCase();
-    if (contentType.includes('text/event-stream') || rawText.startsWith('event:') || rawText.startsWith('data:')) {
-      const dataLines = rawText
-        .split(/\r?\n/)
-        .filter((l) => l.startsWith('data:'))
-        .map((l) => l.slice(5).trim())
-        .filter(Boolean);
-      for (const dl of dataLines.reverse()) {
-        try {
-          const parsed = JSON.parse(dl) as Record<string, unknown>;
-          if (parsed.result || parsed.error) {
-            if (parsed.error) {
-              const errObj = parsed.error as Record<string, unknown>;
-              throw new Error(String(errObj.message || JSON.stringify(errObj)));
-            }
-            return parsed;
-          }
-        } catch (err) {
-          if (err instanceof Error && !err.message.includes('JSON')) throw err;
+    if (
+      contentType.includes('text/event-stream') ||
+      rawText.startsWith('event:') ||
+      rawText.startsWith('data:')
+    ) {
+      const sseParsed = this.parseSseJsonRpcResponse(rawText, rpcId);
+      if (sseParsed) {
+        if (sseParsed.error) {
+          const errObj = sseParsed.error as Record<string, unknown>;
+          throw new Error(String(errObj.message || JSON.stringify(errObj)));
         }
+        return sseParsed;
       }
     }
 

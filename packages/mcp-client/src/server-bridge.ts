@@ -58,6 +58,7 @@ import {
   BrowserSessionManager,
   mapDomainToCreatorPlatformId,
 } from './browser-session-manager.js';
+import { McpOAuthManager } from './mcp-oauth.js';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -907,6 +908,7 @@ export class McpStdioBridgeServer {
   public readonly ffprobeAvailable: boolean;
   public readonly externalMcpHost: ExternalMcpHost;
   public readonly browserSessionManager: BrowserSessionManager;
+  public readonly mcpOAuthManager: McpOAuthManager;
 
   private httpServer: http.Server | null = null;
   private childProc: ChildProcessWithoutNullStreams | null = null;
@@ -965,6 +967,16 @@ export class McpStdioBridgeServer {
       quiet: this.quiet,
     });
     this.browserSessionManager = new BrowserSessionManager(this.dataDir);
+    this.mcpOAuthManager = new McpOAuthManager({
+      dataDir: this.dataDir,
+      externalMcpHost: this.externalMcpHost,
+      onSessionUpdate: (session) => {
+        this.broadcastBridgeWsPayload({
+          type: 'mcp_oauth_update',
+          session,
+        });
+      },
+    });
 
     try {
       fs.mkdirSync(this.mediaDir, { recursive: true });
@@ -3203,18 +3215,23 @@ export class McpStdioBridgeServer {
         typeof params.secretKey === 'string' && params.secretKey.trim()
           ? params.secretKey.trim()
           : undefined;
-      if (!apiKey) {
+      const accessKey =
+        typeof params.accessKey === 'string' && params.accessKey.trim()
+          ? params.accessKey.trim()
+          : '';
+      const resolvedHiggsfieldKey = apiKey || accessKey;
+      if (!resolvedHiggsfieldKey) {
         return {
           ok: false,
           valid: false,
           provider: 'higgsfield',
-          error: 'Higgsfield API key is required (or use Browser Credit Bridge on higgsfield.ai).',
+          error: 'Higgsfield API key is required (or connect Higgsfield Official MCP).',
         };
       }
       try {
         const sdk = await this.loadProviderSdk();
         const client = new sdk.HiggsfieldClient({
-          apiKey,
+          apiKey: resolvedHiggsfieldKey,
           secretKey,
           baseUrl: baseUrl || undefined,
         });
@@ -3764,11 +3781,41 @@ export class McpStdioBridgeServer {
     };
   }
 
+  public async checkBrowserConnectionsViaCdp(): Promise<{
+    cdpReachable: boolean;
+    cdpUrl: string;
+    discoveredPlatforms: string[];
+    openDomains: string[];
+    tabs: Array<{ title: string; url: string; platformId: string | null }>;
+  }> {
+    const cdp = await this.browserSessionManager.inspectOpenCreatorTabsViaCdp();
+    if (cdp.reachable && (cdp.openDomains.length > 0 || cdp.platforms.length > 0)) {
+      const platformsConnected: Record<string, boolean> = {};
+      for (const p of cdp.platforms) {
+        platformsConnected[p] = true;
+      }
+      this.recordBrowserBridgeHeartbeat({
+        source: 'cdp-inspector',
+        openDomains: cdp.openDomains,
+        platformsConnected,
+      });
+    }
+    return {
+      cdpReachable: cdp.reachable,
+      cdpUrl: cdp.cdpUrl,
+      discoveredPlatforms: cdp.platforms,
+      openDomains: cdp.openDomains,
+      tabs: cdp.tabs,
+    };
+  }
+
   public async getConnectionsStatus(): Promise<Record<string, unknown>> {
+    const cdpInfo = await this.checkBrowserConnectionsViaCdp();
     const catalog = await this.getPlatformsCatalogWithStatus();
     const rawPlatforms = (Array.isArray(catalog.platforms) ? catalog.platforms : []) as Array<
       Record<string, unknown> & { id: string; status?: Record<string, unknown> }
     >;
+    const mcpServers = this.externalMcpHost.listServers();
 
     const connectedBrowserPlatforms: string[] = [];
     const connectedMcpPlatforms: string[] = [];
@@ -3794,6 +3841,11 @@ export class McpStdioBridgeServer {
       if (mcpConnected && id !== 'custom-mcp') connectedMcpPlatforms.push(id);
       if (serverEnvConfigured) configuredApiKeyPlatforms.push(id);
 
+      const matchingMcp = mcpServers.filter(
+        (srv) => srv.platformId === id && srv.status === 'connected'
+      );
+      const primaryMcp = matchingMcp[0];
+
       const summary = {
         id,
         name: p.name,
@@ -3809,6 +3861,14 @@ export class McpStdioBridgeServer {
         mcpConnected,
         serverEnvConfigured,
         mcpServerIds: Array.isArray(st.mcpServerIds) ? st.mcpServerIds : [],
+        ...(primaryMcp
+          ? {
+              mcpAccount: primaryMcp.account || null,
+              mcpAuthType: primaryMcp.authType,
+              mcpToolsCount: primaryMcp.tools.length,
+              mcpServerName: primaryMcp.name,
+            }
+          : {}),
       };
       byId[id] = summary;
       return summary;
@@ -3816,16 +3876,20 @@ export class McpStdioBridgeServer {
 
     const detectedBrowser = this.browserSessionManager.detectBrowserBinary();
     const extensionConnected =
-      this.bridgeWsClients.size > 0 || Date.now() - this.lastExtensionHeartbeatAt <= 25_000;
+      this.bridgeWsClients.size > 0 ||
+      Date.now() - this.lastExtensionHeartbeatAt <= 25_000 ||
+      cdpInfo.cdpReachable;
 
     return {
       ok: true,
       extensionConnected,
+      cdpReachable: cdpInfo.cdpReachable,
       bridgeClients: this.bridgeWsClients.size,
       openDomains: Array.from(this.openCreatorDomains),
       connectedBrowserPlatforms,
       connectedMcpPlatforms,
       configuredApiKeyPlatforms,
+      mcpServers,
       browserLauncher: {
         available: Boolean(detectedBrowser),
         browserName: detectedBrowser?.browserName || null,
@@ -3934,7 +3998,7 @@ export class McpStdioBridgeServer {
       }
     }
 
-    if (!savedMedia) {
+    if (params.requireMedia === true && !savedMedia) {
       throw new BridgeHttpError(
         502,
         `MCP tool "${toolName}" on "${callOut.server.name}" completed without returning ingestible media${
@@ -3944,8 +4008,19 @@ export class McpStdioBridgeServer {
       );
     }
 
+    let structuredData: unknown = null;
+    if (callOut.rawResult.structuredContent !== undefined) {
+      structuredData = callOut.rawResult.structuredContent;
+    } else if (callOut.textSummary) {
+      try {
+        structuredData = JSON.parse(callOut.textSummary);
+      } catch {
+        structuredData = null;
+      }
+    }
+
     let waveform: number[] | undefined;
-    if (savedMedia.isAudio) {
+    if (savedMedia?.isAudio) {
       try {
         waveform = await this.computeAudioWaveform64(savedMedia.fullPath);
       } catch {
@@ -3959,14 +4034,20 @@ export class McpStdioBridgeServer {
       serverId,
       toolName,
       platformId: callOut.server.platformId,
-      mediaUrl: savedMedia.mediaUrl,
-      fullUrl: savedMedia.fullUrl,
-      imageUrl: savedMedia.imageUrl,
-      videoUrl: savedMedia.videoUrl,
-      audioUrl: savedMedia.audioUrl,
-      waveform,
-      bytes: savedMedia.bytes,
+      textContent: callOut.textSummary,
       textSummary: callOut.textSummary,
+      structuredData,
+      ...(savedMedia
+        ? {
+            mediaUrl: savedMedia.mediaUrl,
+            fullUrl: savedMedia.fullUrl,
+            imageUrl: savedMedia.imageUrl,
+            videoUrl: savedMedia.videoUrl,
+            audioUrl: savedMedia.audioUrl,
+            waveform,
+            bytes: savedMedia.bytes,
+          }
+        : {}),
       rawResult: callOut.rawResult,
     };
   }
@@ -4168,12 +4249,85 @@ export class McpStdioBridgeServer {
           ? (params.mcpArguments as Record<string, unknown>)
           : {};
 
-      const mcpOut = await this.executeExternalMcpToolCall({
+      let mcpOut = await this.executeExternalMcpToolCall({
         serverId: candidateMcpServer.id,
         toolName: chosenTool.name,
         arguments: { ...builtArgs, ...explicitMcpArgs },
         timeoutMs: params.timeoutMs,
       });
+
+      // If async MCP tool returned a request_id / job_id and server exposes a polling tool, poll until media completes
+      if (!mcpOut.mediaUrl) {
+        const structured = (
+          typeof mcpOut.structuredData === 'object' && mcpOut.structuredData !== null
+            ? mcpOut.structuredData
+            : mcpOut.rawResult
+        ) as Record<string, unknown>;
+        const pendingJobId = String(
+          structured.request_id || structured.job_id || structured.task_id || structured.id || ''
+        ).trim();
+        const statusTool =
+          candidateMcpServer.tools.find((t) =>
+            /(get_job|check_job|job_status|task_status|request_status|generation_status|poll|job_result|get_result)/i.test(
+              t.name
+            )
+          ) ||
+          candidateMcpServer.tools.find(
+            (t) =>
+              /status|result/i.test(t.name) &&
+              !/gpu_status|account|credit|user|health|model/i.test(t.name)
+          );
+        if (pendingJobId && statusTool) {
+          const pollStart = Date.now();
+          const pollMaxMs = Number(params.timeoutMs) || 120_000;
+          while (Date.now() - pollStart < pollMaxMs && !mcpOut.mediaUrl) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const statusProps = ((statusTool.inputSchema?.properties as Record<string, unknown>) || {}) as Record<string, unknown>;
+            const idKey =
+              'request_id' in statusProps
+                ? 'request_id'
+                : 'job_id' in statusProps
+                  ? 'job_id'
+                  : 'task_id' in statusProps
+                    ? 'task_id'
+                    : 'id';
+            mcpOut = await this.executeExternalMcpToolCall({
+              serverId: candidateMcpServer.id,
+              toolName: statusTool.name,
+              arguments: { [idKey]: pendingJobId },
+              timeoutMs: 30_000,
+            });
+            const polledObj = (
+              typeof mcpOut.structuredData === 'object' && mcpOut.structuredData !== null
+                ? mcpOut.structuredData
+                : mcpOut.rawResult
+            ) as Record<string, unknown>;
+            const polledStatus = String(polledObj.status || '').toLowerCase();
+            if (polledStatus === 'failed' || polledStatus === 'error' || polledStatus === 'cancelled') {
+              throw new BridgeHttpError(
+                502,
+                `MCP tool "${chosenTool.name}" job ${pendingJobId} failed (${polledStatus}).`,
+                platformId
+              );
+            }
+            if ((polledStatus === 'completed' || polledStatus === 'succeeded') && !mcpOut.mediaUrl) {
+              break;
+            }
+          }
+        }
+      }
+
+      if (!mcpOut.mediaUrl) {
+        throw new BridgeHttpError(
+          502,
+          `MCP tool "${chosenTool.name}" on "${candidateMcpServer.name}" completed without returning ingestible media${
+            typeof mcpOut.textContent === 'string' && mcpOut.textContent
+              ? `: ${mcpOut.textContent.slice(0, 220)}`
+              : ''
+          }`,
+          platformId
+        );
+      }
 
       return {
         ok: true,
@@ -4407,15 +4561,16 @@ export class McpStdioBridgeServer {
         }
 
         if (platformId === 'higgsfield') {
-          if (!apiKey) {
+          const resolvedHfKey = apiKey || accessKey;
+          if (!resolvedHfKey) {
             throw new BridgeHttpError(
               400,
-              'Higgsfield API key missing. Open https://higgsfield.ai with Chrome Bridge for Browser Credits, connect an MCP server, or enter a Higgsfield API key.',
+              'Higgsfield API key missing. Connect Higgsfield Official MCP, use Browser Credits, or enter a Console Key ID + Secret.',
               platformId
             );
           }
           const client = new sdk.HiggsfieldClient({
-            apiKey,
+            apiKey: resolvedHfKey,
             secretKey: secretKey || undefined,
             baseUrl,
             mediaDir: this.mediaDir,
@@ -7762,6 +7917,131 @@ export class McpStdioBridgeServer {
       return;
     }
 
+    if (pathname === '/api/connections/check-browser' && req.method === 'POST') {
+      try {
+        const cdp = await this.checkBrowserConnectionsViaCdp();
+        const statusPayload = await this.getConnectionsStatus();
+        this.sendJson(res, 200, {
+          ...statusPayload,
+          cdp,
+        });
+      } catch (err) {
+        this.sendJson(res, 500, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    // 4a-3. Stage 9A MCP OAuth 2.1 + PKCE Routes (`https://mcp.higgsfield.ai/mcp`, etc.)
+    if (pathname === '/api/mcp/oauth/start' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const activePort = this.boundPort || this.port || 3001;
+        const reqHost = String(req.headers.host || '').trim();
+        const explicitRedirect =
+          typeof bodyObj.redirectUri === 'string' && bodyObj.redirectUri.trim()
+            ? bodyObj.redirectUri.trim()
+            : undefined;
+        const redirectUri =
+          explicitRedirect ||
+          (activePort === 3001
+            ? 'http://localhost:3001/api/mcp/oauth/callback'
+            : `http://${reqHost || `localhost:${activePort}`}/api/mcp/oauth/callback`);
+
+        const session = await this.mcpOAuthManager.startOAuth({
+          platformId: typeof bodyObj.platformId === 'string' ? bodyObj.platformId : 'higgsfield',
+          mcpUrl: typeof bodyObj.mcpUrl === 'string' ? bodyObj.mcpUrl : undefined,
+          serverName: typeof bodyObj.serverName === 'string' ? bodyObj.serverName : undefined,
+          redirectUri,
+        });
+
+        this.sendJson(res, 200, {
+          ok: true,
+          sessionId: session.sessionId,
+          state: session.state,
+          platformId: session.platformId,
+          mcpUrl: session.mcpUrl,
+          redirectUri: session.redirectUri,
+          authorizeUrl: session.authorizeUrl,
+          step: session.step,
+          session,
+        });
+      } catch (err) {
+        this.sendJson(res, 400, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (
+      pathname === '/api/mcp/oauth/callback' &&
+      (req.method === 'GET' || req.method === 'POST')
+    ) {
+      let code = reqUrl.searchParams.get('code') || undefined;
+      let state = reqUrl.searchParams.get('state') || undefined;
+      let error = reqUrl.searchParams.get('error') || undefined;
+      let errorDescription = reqUrl.searchParams.get('error_description') || undefined;
+
+      if (req.method === 'POST') {
+        const rawBody = await this.readRawBody(req);
+        if (rawBody) {
+          const contentType = String(req.headers['content-type'] || '').toLowerCase();
+          if (contentType.includes('application/json')) {
+            try {
+              const j = JSON.parse(rawBody) as Record<string, unknown>;
+              if (typeof j.code === 'string') code = code || j.code;
+              if (typeof j.state === 'string') state = state || j.state;
+              if (typeof j.error === 'string') error = error || j.error;
+              if (typeof j.error_description === 'string') {
+                errorDescription = errorDescription || j.error_description;
+              }
+            } catch {
+              // Ignore malformed JSON
+            }
+          } else {
+            const form = new URLSearchParams(rawBody);
+            code = code || form.get('code') || undefined;
+            state = state || form.get('state') || undefined;
+            error = error || form.get('error') || undefined;
+            errorDescription = errorDescription || form.get('error_description') || undefined;
+          }
+        }
+      }
+
+      const result = await this.mcpOAuthManager.handleCallback({
+        code,
+        state,
+        error,
+        errorDescription,
+      });
+      res.writeHead(result.statusCode, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': this.corsOrigin,
+      });
+      res.end(result.html);
+      return;
+    }
+
+    const oauthStatusMatch = /^\/api\/mcp\/oauth\/status\/([^/]+)$/.exec(pathname);
+    if (oauthStatusMatch && req.method === 'GET') {
+      const sessionId = decodeURIComponent(oauthStatusMatch[1]);
+      const session = this.mcpOAuthManager.getSession(sessionId);
+      if (!session) {
+        this.sendJson(res, 404, {
+          ok: false,
+          error: `MCP OAuth session not found: ${sessionId}`,
+        });
+        return;
+      }
+      this.sendJson(res, 200, { ok: true, session });
+      return;
+    }
+
     // 4b. Stage 7 Multi-Platform Catalog & External Multi-Server MCP Host Routes
     if (pathname === '/api/platforms' && req.method === 'GET') {
       try {
@@ -8269,14 +8549,18 @@ export class McpStdioBridgeServer {
     }
   }
 
-  private async readJsonBody(
-    req: http.IncomingMessage
-  ): Promise<Record<string, unknown> | null> {
+  private async readRawBody(req: http.IncomingMessage): Promise<string> {
     const chunks: Buffer[] = [];
     for await (const chunk of req) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
-    const raw = Buffer.concat(chunks).toString('utf8').trim();
+    return Buffer.concat(chunks).toString('utf8').trim();
+  }
+
+  private async readJsonBody(
+    req: http.IncomingMessage
+  ): Promise<Record<string, unknown> | null> {
+    const raw = await this.readRawBody(req);
     if (!raw) return null;
     try {
       return JSON.parse(raw) as Record<string, unknown>;

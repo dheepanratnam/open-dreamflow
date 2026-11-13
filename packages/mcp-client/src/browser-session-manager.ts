@@ -301,9 +301,11 @@ export class BrowserSessionManager {
       };
     }
 
+    const cdpPort = Number(process.env.DREAMFLOW_CHROME_CDP_PORT || 9229) || 9229;
     const args = [
       `--user-data-dir=${profileDir}`,
       `--load-extension=${extensionPath}`,
+      `--remote-debugging-port=${cdpPort}`,
       '--no-first-run',
       '--no-default-browser-check',
       ...urls,
@@ -344,5 +346,68 @@ export class BrowserSessionManager {
       pid: child.pid,
       activeTabsConnected,
     };
+  }
+
+  /**
+   * Inspects Chrome DevTools Protocol (`http://127.0.0.1:9229/json/list`) to detect
+   * signed-in creator tabs directly even when Chrome Stable skips unpacked extension loading.
+   */
+  public async inspectOpenCreatorTabsViaCdp(cdpPort?: number): Promise<{
+    reachable: boolean;
+    cdpUrl: string;
+    openDomains: string[];
+    platforms: LaunchableCreatorPlatformId[];
+    tabs: Array<{ title: string; url: string; platformId: LaunchableCreatorPlatformId | null }>;
+  }> {
+    const port = cdpPort || Number(process.env.DREAMFLOW_CHROME_CDP_PORT || 9229) || 9229;
+    const cdpUrl = `http://127.0.0.1:${port}/json/list`;
+    try {
+      const res = await fetch(cdpUrl, {
+        method: 'GET',
+        signal: AbortSignal.timeout(600),
+      });
+      if (!res.ok) {
+        return { reachable: false, cdpUrl, openDomains: [], platforms: [], tabs: [] };
+      }
+      const rawTabs = (await res.json()) as Array<Record<string, unknown>>;
+      if (!Array.isArray(rawTabs)) {
+        return { reachable: true, cdpUrl, openDomains: [], platforms: [], tabs: [] };
+      }
+
+      const domains = new Set<string>();
+      const platforms = new Set<LaunchableCreatorPlatformId>();
+      const tabs: Array<{
+        title: string;
+        url: string;
+        platformId: LaunchableCreatorPlatformId | null;
+      }> = [];
+
+      for (const tab of rawTabs) {
+        const url = typeof tab?.url === 'string' ? tab.url.trim() : '';
+        const title = typeof tab?.title === 'string' ? tab.title.trim() : '';
+        if (!url || !/^https?:/i.test(url)) continue;
+        const platformId = mapDomainToCreatorPlatformId(url);
+        if (platformId) {
+          platforms.add(platformId);
+          try {
+            const host = new URL(url).hostname.toLowerCase();
+            if (host) domains.add(host);
+          } catch {
+            // Ignore malformed URL
+          }
+        }
+        tabs.push({ title, url, platformId });
+      }
+
+      return {
+        reachable: true,
+        cdpUrl,
+        openDomains: Array.from(domains),
+        platforms: Array.from(platforms),
+        tabs,
+      };
+    } catch {
+      return { reachable: false, cdpUrl, openDomains: [], platforms: [], tabs: [] };
+    }
   }
 }
