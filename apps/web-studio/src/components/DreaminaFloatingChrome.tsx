@@ -24,6 +24,7 @@ import {
   MousePointer2,
   MoreHorizontal,
   Palette,
+  Play,
   Plus,
   RotateCcw,
   Search,
@@ -60,7 +61,7 @@ const DOCK_TOOLS: DockToolItem[] = [
   { id: 'video', label: 'Video', shortcut: 'G', icon: Clapperboard },
   { id: 'audio', label: 'Audio', shortcut: 'A', icon: AudioLines },
   { id: 'timeline', label: 'Timeline', icon: Film },
-  { id: 'element', label: 'Element (@Vault)', icon: UserSquare2 },
+  { id: 'element', label: 'Reference (@Element)', icon: UserSquare2 },
   { id: 'cinema-kit', label: 'Cinema Kit', beta: true, icon: Palette },
   { id: 'camera-3d', label: '3D Director Console', icon: Compass },
   { id: 'image-editor', label: '9-Grid Contact Sheet', icon: Layers },
@@ -84,7 +85,6 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const showMinimap = useStudioStore((s) => s.showMinimap);
   const showConnections = useStudioStore((s) => s.showConnections);
   const mcpHealth = useStudioStore((s) => s.mcpHealth);
-  const activeProvider = useStudioStore((s) => s.activeProvider);
   const chromeBridge = useStudioStore((s) => s.chromeBridge);
   const bridgeWsConnected = useStudioStore((s) => s.bridgeWsConnected);
   const byok = useStudioStore((s) => s.byok);
@@ -97,6 +97,9 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const directorModalOpen = useStudioStore((s) => s.directorModalOpen);
   const directorRunning = useStudioStore((s) => s.directorRunning);
   const directorStepLog = useStudioStore((s) => s.directorStepLog);
+  const workflowRunning = useStudioStore((s) => s.workflowRunning);
+  const workflowProgressText = useStudioStore((s) => s.workflowProgressText);
+  const externalMcpServers = useStudioStore((s) => s.externalMcpServers);
   const past = useStudioStore((s) => s.past);
   const future = useStudioStore((s) => s.future);
   const chatMessages = useStudioStore((s) => s.chatMessages);
@@ -140,6 +143,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const runAutonomousDirectorAgent = useStudioStore(
     (s) => s.runAutonomousDirectorAgent
   );
+  const runWorkflowPipeline = useStudioStore((s) => s.runWorkflowPipeline);
   const showToast = useStudioStore((s) => s.showToast);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -152,8 +156,24 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [chatInput, setChatInput] = useState('');
   const [directorBrief, setDirectorBrief] = useState(
-    '35mm Kodak Vision3 250D coastal portrait film starring @Clara_Vidal holding @Leica_M6 inside @Limestone_Villa, transitioning to golden Atlantic cliffs.'
+    '35mm natural daylight architectural portrait sequence in a warm travertine courtyard transitioning to sunlit coastal cliffs.'
   );
+
+  const connectedCreditSourcesCount =
+    [
+      byok.higgsfieldApiKey,
+      byok.klingAccessKey || byok.klingApiKey,
+      byok.seedanceApiKey,
+      byok.geminiApiKey,
+      byok.elevenlabsApiKey,
+      byok.openartApiKey,
+      byok.imagineartApiKey,
+      byok.openaiApiKey,
+      byok.falApiKey,
+      byok.replicateApiKey,
+    ].filter((v) => Boolean(v?.trim())).length +
+    externalMcpServers.filter((srv) => srv.status === 'connected').length +
+    Object.values(chromeBridge.connectedPlatforms || {}).filter(Boolean).length;
 
   const getViewportCenterWorld = () => {
     const w = typeof window !== 'undefined' ? window.innerWidth : 1440;
@@ -293,7 +313,40 @@ export const DreaminaFloatingChrome: React.FC = () => {
           </span>
 
           {projectMenuOpen && (
-            <div className="absolute left-0 top-[42px] w-[268px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
+            <div className="absolute left-0 top-[42px] w-[288px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
+              <button
+                type="button"
+                onClick={() => {
+                  void createNewBlankProject('Untitled Canvas');
+                  setProjectMenuOpen(false);
+                }}
+                className="w-full h-8 px-2.5 rounded-[8px] bg-white hover:bg-[#e6e6e6] text-[#0e0e0e] text-left text-[12px] font-semibold flex items-center gap-2 transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" strokeWidth={2} />
+                <span>+ New Blank Canvas</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  loadPresetProject('cross-platform-blueprint');
+                  setProjectMenuOpen(false);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-[8px] hover:bg-white/[0.08] text-left flex items-center justify-between gap-2 transition-colors"
+              >
+                <div className="min-w-0">
+                  <div className="text-[11.5px] font-medium text-white truncate">
+                    Workflow Blueprint · Multi-Credit
+                  </div>
+                  <div className="text-[10px] text-[#20D5EC] truncate">
+                    Higgsfield ChatGPT 2.6 → Kling 4.0 → ElevenLabs
+                  </div>
+                </div>
+                <GitBranch className="w-3.5 h-3.5 text-[#20D5EC] shrink-0" strokeWidth={1.6} />
+              </button>
+
+              <div className="my-1 h-px bg-white/[0.07]" />
+
               <div className="px-2.5 py-1 text-[11px] text-white/45 font-medium flex items-center justify-between">
                 <span>Saved Projects (Disk)</span>
                 <span className="font-mono text-[10px] text-white/35">
@@ -302,7 +355,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
               </div>
 
               {diskProjects.length > 0 && (
-                <div className="max-h-[164px] overflow-y-auto space-y-0.5 pb-0.5">
+                <div className="max-h-[152px] overflow-y-auto space-y-0.5 pb-0.5">
                   {diskProjects.map((proj) => {
                     const isCurrent = proj.id === activeProjectId;
                     return (
@@ -357,11 +410,19 @@ export const DreaminaFloatingChrome: React.FC = () => {
               <div className="my-1 h-px bg-white/[0.07]" />
 
               <div className="px-2.5 py-1 text-[11px] text-white/45 font-medium flex items-center justify-between">
-                <span>Photography Presets (35mm)</span>
-                <span className="font-mono text-[10px] text-white/35">3</span>
+                <span>Demo Showcases (35mm)</span>
+                <span className="font-mono text-[10px] text-white/35">
+                  {
+                    STUDIO_PRESETS.filter(
+                      (p) => p.id !== 'blank' && p.id !== 'cross-platform-blueprint'
+                    ).length
+                  }
+                </span>
               </div>
 
-              {STUDIO_PRESETS.filter((p) => p.id !== 'blank').map((preset) => {
+              {STUDIO_PRESETS.filter(
+                (p) => p.id !== 'blank' && p.id !== 'cross-platform-blueprint'
+              ).map((preset) => {
                 const isPresetActive = activeProjectId.startsWith(preset.id);
                 return (
                   <button
@@ -397,18 +458,6 @@ export const DreaminaFloatingChrome: React.FC = () => {
                   </button>
                 );
               })}
-
-              <button
-                type="button"
-                onClick={() => {
-                  void createNewBlankProject('Untitled canvas');
-                  setProjectMenuOpen(false);
-                }}
-                className="w-full h-8 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/90 flex items-center gap-2"
-              >
-                <Plus className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
-                <span>New Blank Canvas</span>
-              </button>
 
               <div className="my-1 h-px bg-white/[0.07]" />
 
@@ -669,42 +718,56 @@ export const DreaminaFloatingChrome: React.FC = () => {
             )}
           </div>
 
-          {/* MCP · BYOK · Live Bridge Config Pill */}
+          {/* Run Multi-Platform Workflow Chain Pill */}
           <button
             type="button"
-            onClick={() =>
-              openProviderModal(
-                activeProvider === 'dreamina-bridge' ||
-                  activeProvider === 'flow-bridge' ||
-                  activeProvider === 'chrome-bridge-dreamina' ||
-                  activeProvider === 'chrome-bridge-flow'
-                  ? 'bridge'
-                  : 'byok'
-              )
-            }
-            className="h-[34px] px-3 rounded-[10px] dreamina-levitation hover:bg-[#222222] text-[12px] font-medium text-white/85 hover:text-white flex items-center gap-1.5 transition-colors"
+            disabled={workflowRunning}
+            onClick={() => void runWorkflowPipeline()}
+            title="Execute connected canvas nodes in topological order (e.g. Higgsfield Image → Kling 4.0 Video)"
+            className={`h-[34px] px-3 rounded-[10px] text-[12px] font-semibold flex items-center gap-1.5 transition-colors ${
+              workflowRunning
+                ? 'bg-[#252525] text-[#20D5EC] border border-[#20D5EC]/35'
+                : 'bg-white hover:bg-[#e6e6e6] text-[#0e0e0e]'
+            }`}
           >
-            {(Boolean(byok.geminiApiKey?.trim()) ||
-              chromeBridge.dreaminaTabConnected ||
-              chromeBridge.flowTabConnected) && (
-              <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
+            {workflowRunning ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+                <span className="max-w-[160px] truncate">
+                  {workflowProgressText || 'Running Workflow…'}
+                </span>
+              </>
+            ) : (
+              <>
+                <Play className="w-3.5 h-3.5 fill-current" strokeWidth={1.75} />
+                <span>Run Workflow</span>
+              </>
             )}
-            <span>BYOK · MCP</span>
           </button>
 
-          {/* Live Engine / Bridge Status Pill */}
+          {/* Connections · Credits · MCP Config Pill */}
           <button
             type="button"
-            onClick={() =>
-              openProviderModal(
-                activeProvider === 'dreamina-bridge' ||
-                  activeProvider === 'flow-bridge' ||
-                  activeProvider === 'chrome-bridge-dreamina' ||
-                  activeProvider === 'chrome-bridge-flow'
-                  ? 'bridge'
-                  : 'mcp'
-              )
-            }
+            onClick={() => openProviderModal('byok')}
+            className="h-[34px] px-3 rounded-[10px] dreamina-levitation hover:bg-[#222222] text-[12px] font-medium text-white/90 hover:text-white flex items-center gap-1.5 transition-colors"
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                connectedCreditSourcesCount > 0 ? 'bg-[#10b981]' : 'bg-white/35'
+              }`}
+            />
+            <span>Connections · Credits</span>
+            {connectedCreditSourcesCount > 0 && (
+              <span className="px-1.5 py-[1px] rounded-[5px] bg-[#10b981]/15 text-[#34d399] font-mono text-[10px]">
+                {connectedCreditSourcesCount}
+              </span>
+            )}
+          </button>
+
+          {/* Live Engine / MCP Server Status Pill */}
+          <button
+            type="button"
+            onClick={() => openProviderModal('mcp')}
             className="h-[34px] px-3 rounded-[10px] dreamina-levitation hover:bg-[#222222] text-[12px] font-medium text-white/90 flex items-center gap-2 transition-colors"
           >
             <span
@@ -713,30 +776,16 @@ export const DreaminaFloatingChrome: React.FC = () => {
               }`}
             />
             <span>
-              {activeProvider === 'dreamina-bridge' ||
-              activeProvider === 'chrome-bridge-dreamina'
-                ? 'Dreamina Live'
-                : activeProvider === 'flow-bridge' ||
-                  activeProvider === 'chrome-bridge-flow'
-                ? 'Google Flow Live'
-                : activeProvider === 'gemini-api' ||
-                  activeProvider === 'gemini-omni'
-                ? 'Gemini / Veo 3.1'
+              {externalMcpServers.filter((srv) => srv.status === 'connected').length > 0
+                ? `${externalMcpServers.filter((srv) => srv.status === 'connected').length} MCP Live`
+                : bridgeWsConnected
+                ? 'Bridge Ready'
                 : mcpHealth.online
-                ? 'MCP Live'
-                : 'Local Studio'}
+                ? 'Studio :3001'
+                : 'Offline'}
             </span>
             <span className="text-white/35">·</span>
-            <span className="font-mono text-[11.5px] text-white/85 flex items-center gap-1">
-              <Sparkles className="w-3 h-3 text-[#face15]" strokeWidth={1.75} />
-              {activeProvider === 'gemini-api' || activeProvider === 'gemini-omni'
-                ? '$0.04'
-                : activeProvider === 'fal' ||
-                  activeProvider === 'replicate' ||
-                  activeProvider === 'seedance'
-                ? '$0.05'
-                : '$0.00'}
-            </span>
+            <span className="font-mono text-[11px] text-white/80">$0 Markup</span>
           </button>
         </div>
       </header>

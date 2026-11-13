@@ -32,6 +32,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { CanvasNode, DreaminaToolId } from '../types/studio';
+import { getPlatformBadgeLabel } from '../presets/platformCatalog';
 import { useStudioStore } from '../store/useStudioStore';
 import { createDefaultWaveform } from '../utils/proceduralMedia';
 import {
@@ -77,8 +78,8 @@ const CREATE_FLYOUT_ITEMS: Array<{
   { id: 'image', label: 'Image', shortcut: 'I', icon: ImageIcon },
   { id: 'video', label: 'Video', shortcut: 'G', icon: Clapperboard },
   { id: 'audio', label: 'Audio', shortcut: 'A', icon: AudioLines },
+  { id: 'element', label: 'Reference (@Element)', icon: UserSquare2 },
   { id: 'timeline', label: 'Timeline', icon: Film },
-  { id: 'element', label: 'Element', icon: UserSquare2 },
   { id: 'cinema-kit', label: 'Cinema Kit', icon: Palette },
   { id: 'camera-3d', label: '3D Director Console', icon: Compass },
   { id: 'image-editor', label: '9-Grid Contact Sheet', icon: Layers },
@@ -91,14 +92,12 @@ const WIRE_DROP_ITEMS: Array<{
   label: string;
   icon: LucideIcon;
 }> = [
-  { id: 'text', label: 'Text', icon: Type },
-  { id: 'image', label: 'Image', icon: ImageIcon },
-  { id: 'video', label: 'Video', icon: Clapperboard },
-  { id: 'audio', label: 'Audio', icon: AudioLines },
-  { id: 'timeline', label: 'Timeline', icon: Film },
-  { id: 'element', label: 'Element', icon: UserSquare2 },
-  { id: 'camera-3d', label: '3D Director Console', icon: Compass },
-  { id: 'blend', label: 'Keyframe Bridge · A→B', icon: GitBranch },
+  { id: 'image', label: 'Create Image', icon: ImageIcon },
+  { id: 'video', label: 'Create Video (from Ref)', icon: Clapperboard },
+  { id: 'audio', label: 'Create Voice / SFX', icon: AudioLines },
+  { id: 'element', label: 'Reference (@Element)', icon: UserSquare2 },
+  { id: 'text', label: 'Prompt / Script Note', icon: Type },
+  { id: 'timeline', label: 'Send to Timeline', icon: Film },
 ];
 
 function getNodeKindIcon(kind: CanvasNode['kind']): LucideIcon {
@@ -171,6 +170,14 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
   const duplicateNodes = useStudioStore((s) => s.duplicateNodes);
   const spawnDreaminaNodeAt = useStudioStore((s) => s.spawnDreaminaNodeAt);
   const uploadLocalMediaNode = useStudioStore((s) => s.uploadLocalMediaNode);
+  const uploadReferenceToNode = useStudioStore((s) => s.uploadReferenceToNode);
+  const saveNodeAsElementReference = useStudioStore(
+    (s) => s.saveNodeAsElementReference
+  );
+  const generateSingleNode = useStudioStore((s) => s.generateSingleNode);
+  const runWorkflowPipeline = useStudioStore((s) => s.runWorkflowPipeline);
+  const platformsCatalog = useStudioStore((s) => s.platformsCatalog);
+  const externalMcpServers = useStudioStore((s) => s.externalMcpServers);
   const sendNodeToTimeline = useStudioStore((s) => s.sendNodeToTimeline);
   const sliceContactSheetNode = useStudioStore((s) => s.sliceContactSheetNode);
   const branchVideoMultiTurn = useStudioStore((s) => s.branchVideoMultiTurn);
@@ -186,12 +193,15 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
 
   const boardRef = useRef<HTMLDivElement | null>(null);
   const fileUploadRef = useRef<HTMLInputElement | null>(null);
+  const nodeRefUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingNodeUploadIdRef = useRef<string | null>(null);
   const pendingUploadWorldRef = useRef<{ x: number; y: number } | null>(null);
 
   const [spacePressed, setSpacePressed] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [renamingNodeId, setRenamingNodeId] = useState<string | null>(null);
+  const [editingHandleNodeId, setEditingHandleNodeId] = useState<string | null>(null);
   const [unmutedNodeIds, setUnmutedNodeIds] = useState<Record<string, boolean>>({});
   const [pausedNodeIds, setPausedNodeIds] = useState<Record<string, boolean>>({});
 
@@ -711,6 +721,23 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
         }}
       />
 
+      {/* Hidden File Input for Per-Node Reference Image Upload */}
+      <input
+        ref={nodeRefUploadInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          const targetId = pendingNodeUploadIdRef.current;
+          if (file && targetId) {
+            void uploadReferenceToNode(targetId, file);
+            pendingNodeUploadIdRef.current = null;
+            e.target.value = '';
+          }
+        }}
+      />
+
       {/* Transformed World Plane */}
       <div
         style={{
@@ -803,6 +830,26 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
           const KindIcon = getNodeKindIcon(node.kind);
           const isUnmuted = Boolean(unmutedNodeIds[node.id]);
           const isPaused = Boolean(pausedNodeIds[node.id]);
+          const platformBadge = getPlatformBadgeLabel(
+            node.platformId,
+            node.modelId,
+            platformsCatalog,
+            externalMcpServers
+          );
+          const incomingUpstreamNodes = edges
+            .filter((ed) => ed.targetId === node.id)
+            .map((ed) => nodeMap.get(ed.sourceId))
+            .filter((nn): nn is CanvasNode => Boolean(nn));
+          const readyUpstreamImages = incomingUpstreamNodes.filter(
+            (nn) =>
+              (nn.kind === 'image' || nn.kind === 'element' || nn.kind === 'contact-sheet') &&
+              Boolean(nn.imageUrl)
+          );
+          const pendingUpstreamImages = incomingUpstreamNodes.filter(
+            (nn) =>
+              (nn.kind === 'image' || nn.kind === 'element' || nn.kind === 'contact-sheet') &&
+              !nn.imageUrl
+          );
 
           return (
             <div
@@ -865,18 +912,32 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   )}
                 </div>
 
-                {node.resolution && node.kind !== 'timeline' && node.kind !== 'sticky' && (
-                  <span className="font-mono text-[10.5px] text-white/32 shrink-0">
-                    {node.resolution}
-                  </span>
-                )}
+                <div className="flex items-center gap-1.5 shrink-0 max-w-[68%]">
+                  {platformBadge &&
+                    node.kind !== 'timeline' &&
+                    node.kind !== 'sticky' &&
+                    node.kind !== 'text' && (
+                      <span className="px-1.5 py-0.5 rounded-[5px] bg-[#191919] border border-white/[0.08] text-[10px] font-medium text-white/65 truncate">
+                        {platformBadge}
+                      </span>
+                    )}
+                  {node.resolution &&
+                    node.kind !== 'timeline' &&
+                    node.kind !== 'sticky' &&
+                    node.kind !== 'text' &&
+                    node.kind !== 'audio' && (
+                      <span className="font-mono text-[10px] text-white/35 shrink-0">
+                        {node.resolution}
+                      </span>
+                    )}
+                </div>
               </div>
 
               {/* Left (+) Circular Port Handle */}
               <button
                 type="button"
                 onPointerDown={(e) => handlePortPointerDown(e, node, 'left')}
-                title="Drag wire or click to place upstream node"
+                title="Drag wire or click to place upstream reference node"
                 className={`absolute -left-[34px] top-1/2 -translate-y-1/2 w-[26px] h-[26px] rounded-full bg-[#191919] border border-white/25 hover:border-[#20D5EC] text-white/75 hover:text-[#20D5EC] hover:shadow-[0_0_0_4px_rgba(32,213,236,0.18)] flex items-center justify-center transition-all z-20 ${
                   showPorts
                     ? 'opacity-100 scale-100'
@@ -890,7 +951,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
               <button
                 type="button"
                 onPointerDown={(e) => handlePortPointerDown(e, node, 'right')}
-                title="Drag wire or click to spawn connected node"
+                title="Drag wire or click to spawn connected downstream node"
                 className={`absolute -right-[34px] top-1/2 -translate-y-1/2 w-[26px] h-[26px] rounded-full bg-[#191919] border border-white/25 hover:border-[#20D5EC] text-white/75 hover:text-[#20D5EC] hover:shadow-[0_0_0_4px_rgba(32,213,236,0.18)] flex items-center justify-center transition-all z-20 ${
                   showPorts
                     ? 'opacity-100 scale-100'
@@ -914,75 +975,123 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                 {/* 2. VIDEO NODE */}
                 {node.kind === 'video' && (
                   <div className="relative w-full h-full bg-[#141414]">
-                    <SmartMediaVideo
-                      videoUrl={node.videoUrl}
-                      posterUrl={node.imageUrl}
-                      playing={!isPaused}
-                      muted={!isUnmuted}
-                      fallbackPrompt={node.prompt}
-                      fallbackSeed={node.seed}
-                      fallbackTheme={node.videoTheme}
-                      fallbackDurationSec={node.durationSec || 6}
-                      aspectRatio={node.aspectRatio}
-                      className="w-full h-full object-cover"
-                    />
+                    {node.videoUrl ? (
+                      <>
+                        <SmartMediaVideo
+                          videoUrl={node.videoUrl}
+                          posterUrl={node.imageUrl || readyUpstreamImages[0]?.imageUrl}
+                          playing={!isPaused}
+                          muted={!isUnmuted}
+                          fallbackPrompt={node.prompt}
+                          fallbackSeed={node.seed}
+                          fallbackTheme={node.videoTheme}
+                          fallbackDurationSec={node.durationSec || 5}
+                          aspectRatio={node.aspectRatio}
+                          className="w-full h-full object-cover"
+                        />
 
-                    {/* Stage 5: Subtle A → B Keyframe Bridge Micro-Pill */}
-                    {(node.bridgeMode || (node.startImageUrl && node.endImageUrl)) &&
-                      !node.editBadge && (
-                        <div className="absolute top-2.5 left-2.5 px-2 py-0.5 rounded-[6px] bg-black/65 backdrop-blur-md border border-white/[0.12] flex items-center gap-1.5 pointer-events-none">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
-                          <span className="text-[10.5px] font-medium text-white/90 tracking-tight">
-                            A → B Bridge
-                          </span>
+                        {/* Subtle Hover Audio & Play Micro-Controls */}
+                        <div
+                          onPointerDown={(e) => e.stopPropagation()}
+                          className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPausedNodeIds((p) => ({
+                                ...p,
+                                [node.id]: !p[node.id],
+                              }))
+                            }
+                            className="w-7 h-7 rounded-full bg-black/65 hover:bg-black/85 backdrop-blur-md flex items-center justify-center text-white/90"
+                            title={isPaused ? 'Play video' : 'Pause video'}
+                          >
+                            {isPaused ? (
+                              <Play className="w-3.5 h-3.5 ml-0.5" strokeWidth={1.75} />
+                            ) : (
+                              <Pause className="w-3.5 h-3.5" strokeWidth={1.75} />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setUnmutedNodeIds((m) => ({
+                                ...m,
+                                [node.id]: !m[node.id],
+                              }))
+                            }
+                            className="w-7 h-7 rounded-full bg-black/65 hover:bg-black/85 backdrop-blur-md flex items-center justify-center text-white/90"
+                            title={isUnmuted ? 'Mute clip audio' : 'Unmute clip audio'}
+                          >
+                            {isUnmuted ? (
+                              <Volume2
+                                className="w-3.5 h-3.5 text-[#20D5EC]"
+                                strokeWidth={1.75}
+                              />
+                            ) : (
+                              <VolumeX
+                                className="w-3.5 h-3.5 text-white/75"
+                                strokeWidth={1.75}
+                              />
+                            )}
+                          </button>
                         </div>
-                      )}
 
-                    {/* Subtle Hover Audio & Play Micro-Controls */}
-                    <div
-                      onPointerDown={(e) => e.stopPropagation()}
-                      className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setPausedNodeIds((p) => ({
-                            ...p,
-                            [node.id]: !p[node.id],
-                          }))
-                        }
-                        className="w-7 h-7 rounded-full bg-black/65 hover:bg-black/85 backdrop-blur-md flex items-center justify-center text-white/90"
-                        title={isPaused ? 'Play video' : 'Pause video'}
-                      >
-                        {isPaused ? (
-                          <Play className="w-3.5 h-3.5 ml-0.5" strokeWidth={1.75} />
-                        ) : (
-                          <Pause className="w-3.5 h-3.5" strokeWidth={1.75} />
+                        {/* Dreamina Minimal Bottom-Right Duration Pill */}
+                        <div className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-[6px] bg-black/65 backdrop-blur-md font-mono text-[11px] tabular-nums text-white/90 pointer-events-none">
+                          {formatDurationPill(node.durationSec)}
+                        </div>
+                      </>
+                    ) : readyUpstreamImages.length > 0 ? (
+                      <div className="relative w-full h-full bg-[#191919] flex flex-col items-center justify-center">
+                        <SmartMediaImage
+                          src={readyUpstreamImages[0].imageUrl}
+                          alt={readyUpstreamImages[0].title}
+                          aspectRatio={node.aspectRatio}
+                          className="absolute inset-0 w-full h-full object-cover opacity-35"
+                        />
+                        <div className="relative z-10 px-4 py-3 rounded-[10px] bg-[#141414]/90 backdrop-blur-md border border-white/[0.12] flex flex-col items-center gap-1.5 text-center max-w-[85%]">
+                          <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-[#20D5EC]">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
+                            <span>
+                              Reference Ready · {readyUpstreamImages[0].title}
+                              {readyUpstreamImages.length > 1
+                                ? ` +${readyUpstreamImages.length - 1}`
+                                : ''}
+                            </span>
+                          </div>
+                          <p className="text-[11.5px] text-white/65 leading-snug">
+                            {node.prompt.trim()
+                              ? node.prompt
+                              : 'Select video model & prompt below to animate this reference'}
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="w-full h-full bg-[#191919] p-5 flex flex-col items-center justify-center text-center gap-2.5">
+                        <div className="w-10 h-10 rounded-[10px] bg-[#252525] border border-white/[0.07] flex items-center justify-center text-white/45">
+                          <Clapperboard className="w-5 h-5" strokeWidth={1.5} />
+                        </div>
+                        <div className="space-y-1 max-w-[86%]">
+                          <div className="text-[12.5px] font-medium text-white/80">
+                            {platformBadge || 'Create Video'}
+                          </div>
+                          <p className="text-[11.5px] text-white/42 leading-relaxed">
+                            {node.prompt.trim()
+                              ? node.prompt
+                              : 'Choose platform, video model & prompt in the bar below'}
+                          </p>
+                        </div>
+                        {pendingUpstreamImages.length > 0 && (
+                          <div className="mt-1 px-2.5 py-1 rounded-[6px] bg-[#252525] border border-[#20D5EC]/30 text-[11px] text-[#20D5EC] flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
+                            <span>
+                              Linked to {pendingUpstreamImages[0].title} · Waiting for image
+                            </span>
+                          </div>
                         )}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setUnmutedNodeIds((m) => ({
-                            ...m,
-                            [node.id]: !m[node.id],
-                          }))
-                        }
-                        className="w-7 h-7 rounded-full bg-black/65 hover:bg-black/85 backdrop-blur-md flex items-center justify-center text-white/90"
-                        title={isUnmuted ? 'Mute clip audio' : 'Unmute clip audio'}
-                      >
-                        {isUnmuted ? (
-                          <Volume2 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.75} />
-                        ) : (
-                          <VolumeX className="w-3.5 h-3.5 text-white/75" strokeWidth={1.75} />
-                        )}
-                      </button>
-                    </div>
-
-                    {/* Dreamina Minimal Bottom-Right Duration Pill */}
-                    <div className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-[6px] bg-black/65 backdrop-blur-md font-mono text-[11px] tabular-nums text-white/90 pointer-events-none">
-                      {formatDurationPill(node.durationSec)}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -992,7 +1101,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   node.kind === 'element') && (
                   <div
                     style={
-                      node.isTransparentCutout
+                      node.isTransparentCutout && node.imageUrl
                         ? {
                             backgroundImage:
                               'repeating-conic-gradient(#1b1b1b 0% 25%, #111111 0% 50%)',
@@ -1002,25 +1111,138 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                     }
                     className="relative w-full h-full bg-[#141414]"
                   >
-                    <SmartMediaImage
-                      src={node.imageUrl}
-                      alt={node.title}
-                      aspectRatio={node.aspectRatio}
-                      fallbackPrompt={node.prompt}
-                      fallbackSeed={node.seed}
-                      isContactSheet={node.kind === 'contact-sheet'}
-                      className={`w-full h-full ${
-                        node.isTransparentCutout ? 'object-contain' : 'object-cover'
-                      }`}
-                    />
+                    {node.imageUrl ? (
+                      <>
+                        <SmartMediaImage
+                          src={node.imageUrl}
+                          alt={node.title}
+                          aspectRatio={node.aspectRatio}
+                          fallbackPrompt={node.prompt}
+                          fallbackSeed={node.seed}
+                          isContactSheet={node.kind === 'contact-sheet'}
+                          className={`w-full h-full ${
+                            node.isTransparentCutout ? 'object-contain' : 'object-cover'
+                          }`}
+                        />
 
-                    {node.kind === 'element' && node.elementHandles[0] && (
-                      <div className="absolute bottom-2.5 left-2.5 px-2 py-0.5 rounded-[6px] bg-black/70 backdrop-blur-md border border-white/[0.12] text-[11px] font-medium text-white/90 pointer-events-none">
-                        {node.elementHandles[0]}
+                        {node.generatedOutputs && node.generatedOutputs.length > 1 && (
+                          <div
+                            onPointerDown={(e) => e.stopPropagation()}
+                            className="absolute bottom-2.5 left-2.5 flex items-center gap-1 p-1 rounded-[8px] bg-black/75 backdrop-blur-md border border-white/[0.14]"
+                          >
+                            {node.generatedOutputs.map((outUrl, idx) => (
+                              <button
+                                key={idx}
+                                type="button"
+                                onClick={() =>
+                                  updateNodeFields(node.id, { imageUrl: outUrl })
+                                }
+                                title={`Select batch output #${idx + 1}`}
+                                className={`w-8 h-8 rounded-[5px] overflow-hidden border transition-all ${
+                                  node.imageUrl === outUrl
+                                    ? 'border-[#20D5EC] scale-105'
+                                    : 'border-white/20 opacity-70 hover:opacity-100'
+                                }`}
+                              >
+                                <SmartMediaImage
+                                  src={outUrl}
+                                  alt={`Variant ${idx + 1}`}
+                                  className="w-full h-full object-cover"
+                                />
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="w-full h-full bg-[#191919] p-4 flex flex-col items-center justify-center text-center gap-2.5">
+                        <div className="w-10 h-10 rounded-[10px] bg-[#252525] border border-white/[0.07] flex items-center justify-center text-white/45">
+                          <KindIcon className="w-5 h-5" strokeWidth={1.5} />
+                        </div>
+                        <div className="space-y-1 max-w-[88%]">
+                          <div className="text-[12.5px] font-medium text-white/80">
+                            {node.kind === 'element'
+                              ? `Reference Anchor ${node.elementHandles[0] || '@Ref_1'}`
+                              : platformBadge || 'Create Image'}
+                          </div>
+                          <p className="text-[11.5px] text-white/42 leading-relaxed line-clamp-2">
+                            {node.prompt.trim()
+                              ? node.prompt
+                              : 'Select model & prompt below to generate, or upload a reference'}
+                          </p>
+                        </div>
+
+                        <div
+                          onPointerDown={(e) => e.stopPropagation()}
+                          className="flex items-center gap-2 mt-0.5"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              pendingNodeUploadIdRef.current = node.id;
+                              nodeRefUploadInputRef.current?.click();
+                            }}
+                            className="h-7 px-2.5 rounded-[7px] bg-[#252525] hover:bg-white/[0.12] border border-white/[0.09] text-[11.5px] text-white/85 flex items-center gap-1.5 transition-colors"
+                          >
+                            <Upload className="w-3 h-3 text-white/65" strokeWidth={1.6} />
+                            <span>Upload Image</span>
+                          </button>
+                        </div>
+
+                        {(readyUpstreamImages.length > 0 ||
+                          pendingUpstreamImages.length > 0) && (
+                          <div className="mt-0.5 px-2.5 py-1 rounded-[6px] bg-[#252525] border border-[#20D5EC]/30 text-[10.5px] text-[#20D5EC] flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
+                            <span>
+                              {readyUpstreamImages.length > 0
+                                ? `Ref: ${readyUpstreamImages[0].title}${
+                                    readyUpstreamImages.length > 1
+                                      ? ` +${readyUpstreamImages.length - 1}`
+                                      : ''
+                                  }`
+                                : `Linked to ${pendingUpstreamImages[0].title} · Waiting`}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    {node.kind === 'contact-sheet' && (
+                    {node.kind === 'element' && (
+                      <div
+                        onPointerDown={(e) => e.stopPropagation()}
+                        className="absolute top-2.5 left-2.5"
+                      >
+                        {editingHandleNodeId === node.id ? (
+                          <input
+                            autoFocus
+                            defaultValue={node.elementHandles[0] || '@Ref_1'}
+                            onBlur={(e) => {
+                              const raw = e.target.value.trim() || '@Ref_1';
+                              const clean = raw.startsWith('@') ? raw : `@${raw}`;
+                              updateNodeFields(node.id, { elementHandles: [clean] });
+                              setEditingHandleNodeId(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === 'Escape') {
+                                (e.target as HTMLInputElement).blur();
+                              }
+                            }}
+                            className="w-28 h-6 px-2 rounded-[6px] bg-[#252525] border border-[#20D5EC]/60 text-[11px] font-mono text-white outline-none"
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setEditingHandleNodeId(node.id)}
+                            title="Click to rename @Reference tag"
+                            className="px-2 py-0.5 rounded-[6px] bg-black/75 hover:bg-[#252525] backdrop-blur-md border border-white/[0.14] text-[11px] font-mono text-[#20D5EC]"
+                          >
+                            {node.elementHandles[0] || '@Ref_1'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {node.kind === 'contact-sheet' && node.imageUrl && (
                       <button
                         type="button"
                         onPointerDown={(e) => e.stopPropagation()}
@@ -1033,7 +1255,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                     )}
 
                     {/* Interactive Brush Mask Overlay when Inpaint is active */}
-                    {activeInpaintNodeId === node.id && (
+                    {activeInpaintNodeId === node.id && node.imageUrl && (
                       <InpaintMaskOverlay
                         node={node}
                         onCancel={onCloseInpaint}
@@ -1468,6 +1690,63 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
 
                 <div className="my-1 h-px bg-white/[0.07]" />
 
+                {(contextNode.kind === 'image' ||
+                  contextNode.kind === 'video' ||
+                  contextNode.kind === 'audio' ||
+                  contextNode.kind === 'element' ||
+                  contextNode.kind === 'contact-sheet') && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void generateSingleNode(contextNode.id);
+                        setContextMenu(null);
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/95 font-medium flex items-center gap-2"
+                    >
+                      <Play className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.75} />
+                      <span>Generate Node</span>
+                    </button>
+
+                    {edges.some((ed) => ed.sourceId === contextNode.id) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void runWorkflowPipeline(contextNode.id);
+                          setContextMenu(null);
+                        }}
+                        className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
+                      >
+                        <GitBranch
+                          className="w-3.5 h-3.5 text-[#20D5EC]"
+                          strokeWidth={1.6}
+                        />
+                        <span>Generate &amp; Run Downstream</span>
+                      </button>
+                    )}
+
+                    <div className="my-1 h-px bg-white/[0.07]" />
+                  </>
+                )}
+
+                {(contextNode.kind === 'image' || contextNode.kind === 'element') &&
+                  contextNode.imageUrl && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        saveNodeAsElementReference(contextNode.id);
+                        setContextMenu(null);
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
+                    >
+                      <UserSquare2
+                        className="w-3.5 h-3.5 text-white/65"
+                        strokeWidth={1.5}
+                      />
+                      <span>Save as @Element Reference</span>
+                    </button>
+                  )}
+
                 {(contextNode.kind === 'video' ||
                   contextNode.kind === 'image' ||
                   contextNode.kind === 'contact-sheet' ||
@@ -1780,13 +2059,38 @@ const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
   };
 
   const modeLabel =
-    node.audioMode === 'voiceover'
-      ? 'Voiceover'
+    node.audioMode === 'tts' || node.audioMode === 'voiceover'
+      ? 'Voice TTS'
       : node.audioMode === 'sfx'
-      ? 'Foley SFX'
-      : 'Ambient Foley';
+      ? 'Sound Effects (SFX)'
+      : 'Ambient Audio';
 
-  const displaySec = liveDuration || node.durationSec || 12;
+  const displaySec = liveDuration || node.durationSec || 8;
+
+  if (!playableSrc) {
+    return (
+      <div className="w-full h-full px-4 py-3 bg-[#191919] flex flex-col justify-between">
+        <div className="flex items-center justify-between gap-2">
+          <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] border border-white/[0.06] text-[10.5px] font-medium text-white/80">
+            {modeLabel}
+          </span>
+          <span className="font-mono text-[10.5px] text-white/40">
+            {formatDurationPill(displaySec)}
+          </span>
+        </div>
+        <div className="flex items-center gap-2.5 text-white/55">
+          <div className="w-8 h-8 rounded-full bg-[#252525] border border-white/[0.08] flex items-center justify-center shrink-0">
+            <AudioLines className="w-4 h-4 text-white/50" strokeWidth={1.5} />
+          </div>
+          <div className="text-[11.5px] text-white/50 line-clamp-2 leading-snug">
+            {node.prompt.trim()
+              ? node.prompt
+              : 'Select voice or SFX & enter script below to generate'}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full h-full px-4 py-3 bg-[#191919] flex flex-col justify-between">

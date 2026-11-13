@@ -1,12 +1,18 @@
 import type {
   AspectRatio,
   BridgeIncomingEvent,
+  BrowserPlatformTarget,
   BYOKCredentials,
+  ConnectionTransport,
   DiskProjectMeta,
   DiskProjectRecord,
+  ExternalMcpServerRecord,
   KeyframeBridgeCurve,
   MCPToolDefinition,
   McpBackendHealth,
+  ModelModality,
+  PlatformDefinition,
+  PlatformId,
   ProviderId,
   ProviderVerificationResult,
   ResolutionTier,
@@ -306,8 +312,21 @@ export async function probeLiveMcpBackend(): Promise<McpBackendHealth> {
 }
 
 export async function verifyProviderViaBackend(params: {
-  provider: 'gemini' | 'fal' | 'replicate' | 'seedance' | 'comfyui';
+  provider:
+    | 'gemini'
+    | 'fal'
+    | 'replicate'
+    | 'seedance'
+    | 'comfyui'
+    | 'kling'
+    | 'elevenlabs'
+    | 'openai'
+    | 'higgsfield'
+    | 'openart'
+    | 'imagineart';
   apiKey?: string;
+  accessKey?: string;
+  secretKey?: string;
   baseUrl?: string;
 }): Promise<ProviderVerificationResult> {
   try {
@@ -349,6 +368,304 @@ export async function verifyProviderViaBackend(params: {
           ? `Could not reach :3001 verification endpoint (${err.message})`
           : 'Could not reach :3001 verification endpoint',
     };
+  }
+}
+
+export async function fetchPlatformCatalogViaBackend(): Promise<{
+  ok: boolean;
+  platforms: PlatformDefinition[];
+}> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/platforms`, {
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return { ok: false, platforms: [] };
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      platforms?: PlatformDefinition[];
+    };
+    if (!Array.isArray(json.platforms)) return { ok: false, platforms: [] };
+    return { ok: true, platforms: json.platforms };
+  } catch {
+    return { ok: false, platforms: [] };
+  }
+}
+
+export interface GenerateNodeBackendParams {
+  nodeId: string;
+  kind: ModelModality;
+  platformId: PlatformId;
+  connectionMode: ConnectionTransport;
+  modelId: string;
+  prompt: string;
+  negativePrompt?: string;
+  settings: {
+    aspectRatio?: AspectRatio;
+    resolution?: ResolutionTier;
+    batchCount?: 1 | 2 | 4;
+    durationSec?: number;
+    audioEnabled?: boolean;
+    audioMode?: 'tts' | 'ambient' | 'voiceover' | 'sfx';
+    voiceId?: string;
+    seed?: number;
+  };
+  referenceImages?: string[];
+  mcpServerId?: string;
+  mcpToolName?: string;
+  credentials?: {
+    apiKey?: string;
+    accessKey?: string;
+    secretKey?: string;
+    baseUrl?: string;
+  };
+}
+
+export interface GenerateNodeBackendResult {
+  ok: boolean;
+  platformId?: string;
+  modelId?: string;
+  transportUsed?: string;
+  providerUsed?: string;
+  mediaUrl?: string;
+  fullUrl?: string;
+  imageUrl?: string;
+  videoUrl?: string;
+  audioUrl?: string;
+  waveform?: number[];
+  outputs?: string[];
+  jobId?: string;
+  error?: string;
+}
+
+export async function generateNodeViaBackend(
+  params: GenerateNodeBackendParams
+): Promise<GenerateNodeBackendResult> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 240000);
+    const cleanedRefs = (params.referenceImages || [])
+      .filter(Boolean)
+      .map((u) => toBackendRelativeMediaPath(u) || u);
+
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/generate-node`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        ...params,
+        referenceImages: cleanedRefs,
+      }),
+    });
+    clearTimeout(timer);
+
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        error:
+          (typeof json.error === 'string' && json.error) ||
+          (typeof json.message === 'string' && json.message) ||
+          `Generation failed on ${params.platformId} (HTTP ${res.status})`,
+      };
+    }
+
+    const rawMedia =
+      (typeof json.mediaUrl === 'string' && json.mediaUrl) ||
+      (typeof json.url === 'string' && json.url) ||
+      undefined;
+    const rawImg =
+      (typeof json.imageUrl === 'string' && json.imageUrl) ||
+      (typeof json.localImageUrl === 'string' && json.localImageUrl) ||
+      (params.kind === 'image' ? rawMedia : undefined);
+    const rawVid =
+      (typeof json.videoUrl === 'string' && json.videoUrl) ||
+      (typeof json.localVideoUrl === 'string' && json.localVideoUrl) ||
+      (params.kind === 'video' ? rawMedia : undefined);
+    const rawAud =
+      (typeof json.audioUrl === 'string' && json.audioUrl) ||
+      (typeof json.localAudioUrl === 'string' && json.localAudioUrl) ||
+      (params.kind === 'audio' ? rawMedia : undefined);
+
+    const normImg = rawImg ? toBackendRelativeMediaPath(rawImg) || rawImg : undefined;
+    const normVid = rawVid ? toBackendRelativeMediaPath(rawVid) || rawVid : undefined;
+    const normAud = rawAud ? toBackendRelativeMediaPath(rawAud) || rawAud : undefined;
+    const normMedia =
+      normVid ||
+      normImg ||
+      normAud ||
+      (rawMedia ? toBackendRelativeMediaPath(rawMedia) || rawMedia : undefined);
+
+    const rawOutputs = Array.isArray(json.outputs)
+      ? (json.outputs as unknown[]).filter((x): x is string => typeof x === 'string')
+      : [];
+    const outputs = rawOutputs.map((u) => toBackendRelativeMediaPath(u) || u);
+
+    if (!normMedia && outputs.length === 0) {
+      return {
+        ok: false,
+        error:
+          (typeof json.error === 'string' && json.error) ||
+          `No media output returned from ${params.platformId} (${params.modelId}).`,
+      };
+    }
+
+    const primaryMedia = normMedia || outputs[0];
+    return {
+      ok: true,
+      platformId: (json.platformId as string) || params.platformId,
+      modelId: (json.modelId as string) || params.modelId,
+      transportUsed: json.transportUsed as string | undefined,
+      providerUsed:
+        (typeof json.providerUsed === 'string' && json.providerUsed) ||
+        `${params.platformId} · ${params.modelId}`,
+      mediaUrl: primaryMedia,
+      fullUrl:
+        (typeof json.fullUrl === 'string' && json.fullUrl) ||
+        normalizeBackendMediaUrl(primaryMedia, true),
+      imageUrl: normImg || (params.kind === 'image' ? primaryMedia : undefined),
+      videoUrl: normVid || (params.kind === 'video' ? primaryMedia : undefined),
+      audioUrl: normAud || (params.kind === 'audio' ? primaryMedia : undefined),
+      waveform: Array.isArray(json.waveform)
+        ? (json.waveform as number[])
+        : undefined,
+      outputs: outputs.length > 0 ? outputs : primaryMedia ? [primaryMedia] : [],
+      jobId: json.jobId as string | undefined,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error && err.name === 'AbortError'
+          ? `Timed out waiting for ${params.platformId} (${params.modelId}) to finish generating.`
+          : err instanceof Error
+          ? `Could not reach :3001 /api/generate-node (${err.message})`
+          : 'Could not reach :3001 /api/generate-node',
+    };
+  }
+}
+
+export async function listExternalMcpServers(): Promise<{
+  ok: boolean;
+  servers: ExternalMcpServerRecord[];
+}> {
+  try {
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/servers`);
+    if (!res.ok) return { ok: false, servers: [] };
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      servers?: ExternalMcpServerRecord[];
+    };
+    return {
+      ok: Boolean(json.ok ?? true),
+      servers: Array.isArray(json.servers) ? json.servers : [],
+    };
+  } catch {
+    return { ok: false, servers: [] };
+  }
+}
+
+export async function registerExternalMcpServer(payload: {
+  id?: string;
+  name: string;
+  platformId: string;
+  transport: 'stdio' | 'http';
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+}): Promise<{
+  ok: boolean;
+  server?: ExternalMcpServerRecord;
+  error?: string;
+}> {
+  try {
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/servers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      server?: ExternalMcpServerRecord;
+      error?: string;
+    };
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        error: json.error || `Failed to connect MCP server (HTTP ${res.status})`,
+      };
+    }
+    return { ok: true, server: json.server };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Failed to connect MCP server on :3001',
+    };
+  }
+}
+
+export async function refreshExternalMcpServer(id: string): Promise<{
+  ok: boolean;
+  server?: ExternalMcpServerRecord;
+  error?: string;
+}> {
+  try {
+    const res = await fetch(
+      `${LOCAL_MCP_BASE}/api/mcp/servers/${encodeURIComponent(id)}/refresh`,
+      { method: 'POST' }
+    );
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      server?: ExternalMcpServerRecord;
+      error?: string;
+    };
+    if (!res.ok || json.ok === false) {
+      return { ok: false, error: json.error || 'Refresh failed' };
+    }
+    return { ok: true, server: json.server };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Refresh failed' };
+  }
+}
+
+export async function deleteExternalMcpServer(id: string): Promise<{ ok: boolean }> {
+  try {
+    const res = await fetch(
+      `${LOCAL_MCP_BASE}/api/mcp/servers/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    );
+    return { ok: res.ok };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function callExternalMcpTool(params: {
+  serverId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+}): Promise<{ ok: boolean; result?: unknown; error?: string }> {
+  try {
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      result?: unknown;
+      error?: string;
+    };
+    if (!res.ok || json.ok === false) {
+      return { ok: false, error: json.error || `MCP tool call failed (${res.status})` };
+    }
+    return { ok: true, result: json.result ?? json };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'MCP tool call failed' };
   }
 }
 
@@ -425,9 +742,10 @@ export async function generateImageViaBackend(params: {
 }
 
 export async function enqueueLiveBridgeJobViaBackend(params: {
-  target: 'dreamina' | 'google-flow';
-  mode: 'image' | 'video';
+  target: BrowserPlatformTarget;
+  mode: 'image' | 'video' | 'audio';
   prompt: string;
+  modelId?: string;
   aspectRatio?: AspectRatio;
   durationSec?: number;
   referenceImages?: string[];
@@ -1328,7 +1646,9 @@ export function pingChromeBridge(): void {
 
 export function dispatchBridgeJob(payload: {
   jobId: string;
-  target: 'google-flow' | 'dreamina';
+  target: BrowserPlatformTarget;
+  mode?: 'image' | 'video' | 'audio';
+  modelId?: string;
   prompt: string;
   aspectRatio: AspectRatio;
   durationSec: number;
@@ -1758,7 +2078,7 @@ export async function keyframeBridgeViaBackend(params: {
 
 export async function generateAudioViaBackend(params: {
   prompt: string;
-  mode?: 'voiceover' | 'ambient' | 'sfx';
+  mode?: 'tts' | 'voiceover' | 'ambient' | 'sfx';
   voiceText?: string;
   durationSec?: number;
 }): Promise<{
@@ -1766,7 +2086,7 @@ export async function generateAudioViaBackend(params: {
   audioUrl?: string;
   fullUrl?: string;
   durationSec?: number;
-  mode?: 'voiceover' | 'ambient' | 'sfx';
+  mode?: 'tts' | 'voiceover' | 'ambient' | 'sfx';
   waveform?: number[];
 }> {
   try {

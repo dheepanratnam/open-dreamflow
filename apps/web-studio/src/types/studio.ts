@@ -1,4 +1,4 @@
-export type AspectRatio = '16:9' | '9:16' | '21:9' | '1:1';
+export type AspectRatio = '16:9' | '9:16' | '21:9' | '1:1' | '4:3' | '3:4';
 
 export type NodeKind =
   | 'text'
@@ -26,7 +26,82 @@ export type DreaminaToolId =
   | 'assets'
   | 'upload';
 
-export type ResolutionTier = '360p' | '720p' | '1080p' | '2K' | '4K';
+export type ResolutionTier = '360p' | '720p' | '1080p' | '1K' | '2K' | '4K';
+
+export type PlatformId =
+  | 'higgsfield'
+  | 'kling'
+  | 'dreamina'
+  | 'google-flow'
+  | 'openart'
+  | 'imagineart'
+  | 'elevenlabs'
+  | 'openai'
+  | 'fal'
+  | 'replicate'
+  | 'comfyui'
+  | 'custom-mcp';
+
+export type BrowserPlatformTarget =
+  | 'dreamina'
+  | 'google-flow'
+  | 'higgsfield'
+  | 'kling'
+  | 'openart'
+  | 'imagineart'
+  | 'elevenlabs';
+
+export type ModelModality = 'image' | 'video' | 'audio';
+
+export type ConnectionTransport = 'auto' | 'mcp' | 'browser-bridge' | 'api-key';
+
+export interface PlatformModelDefinition {
+  id: string;
+  label: string;
+  modality: ModelModality;
+  description?: string;
+  supportsReferences?: boolean;
+  maxReferences?: number;
+  supportsAudio?: boolean;
+  defaultAspect?: AspectRatio;
+  defaultResolution?: ResolutionTier;
+  defaultDurationSec?: number;
+}
+
+export interface PlatformDefinition {
+  id: PlatformId;
+  name: string;
+  shortLabel: string;
+  webUrl: string;
+  modalities: ModelModality[];
+  models: PlatformModelDefinition[];
+  supportsBrowserBridge: boolean;
+  supportsApiKey: boolean;
+  supportsMcp: boolean;
+  connected?: boolean;
+  activeTransports?: string[];
+}
+
+export interface ExternalMcpToolItem {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+export interface ExternalMcpServerRecord {
+  id: string;
+  name: string;
+  platformId: PlatformId | string;
+  transport: 'stdio' | 'http';
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  status: 'connected' | 'connecting' | 'error' | 'disconnected' | string;
+  error?: string;
+  tools: ExternalMcpToolItem[];
+}
 
 export type FrameLayerType = 'fg' | 'bg' | 'mask' | 'text';
 
@@ -81,6 +156,7 @@ export type StudioPresetId =
   | 'salt-terracotta'
   | 'kyoto-joinery'
   | 'alpine-pass'
+  | 'cross-platform-blueprint'
   | 'blank';
 
 export interface CanvasNode {
@@ -93,11 +169,22 @@ export interface CanvasNode {
   width: number;
   height: number;
   aspectRatio: AspectRatio;
-  status: 'ready' | 'generating' | 'error';
+  status: 'idle' | 'ready' | 'generating' | 'error';
   progress?: number;
   imageUrl?: string;
   videoUrl?: string;
   audioUrl?: string;
+  platformId?: PlatformId;
+  connectionMode?: ConnectionTransport;
+  modelId?: string;
+  batchCount?: 1 | 2 | 4;
+  negativePrompt?: string;
+  audioEnabled?: boolean;
+  voiceId?: string;
+  mcpServerId?: string;
+  mcpToolName?: string;
+  referenceUrls?: string[];
+  generatedOutputs?: string[];
   videoTheme?:
     | 'coastal-daylight'
     | 'craft-macro'
@@ -116,7 +203,7 @@ export interface CanvasNode {
   startNodeId?: string;
   endNodeId?: string;
   motionCurve?: KeyframeBridgeCurve;
-  audioMode?: 'ambient' | 'voiceover' | 'sfx';
+  audioMode?: 'tts' | 'ambient' | 'voiceover' | 'sfx';
   waveform?: number[];
   interactionId?: string;
   previousInteractionId?: string;
@@ -224,6 +311,11 @@ export type ProviderId =
   | 'ffmpeg-local'
   | 'mcp-router'
   | 'openai'
+  | 'kling'
+  | 'higgsfield'
+  | 'elevenlabs'
+  | 'openart'
+  | 'imagineart'
   | 'local-canvas'
   | 'gemini-omni'
   | 'chrome-bridge-flow'
@@ -249,6 +341,13 @@ export interface BYOKCredentials {
   replicateApiKey: string;
   openaiApiKey: string;
   comfyUiUrl: string;
+  higgsfieldApiKey: string;
+  klingAccessKey: string;
+  klingSecretKey: string;
+  klingApiKey: string;
+  openartApiKey: string;
+  imagineartApiKey: string;
+  elevenlabsApiKey: string;
 }
 
 export interface MCPServerEntry {
@@ -263,7 +362,7 @@ export interface MCPServerEntry {
 
 export interface ChromeBridgeJob {
   jobId: string;
-  target: 'google-flow' | 'dreamina';
+  target: BrowserPlatformTarget;
   prompt: string;
   status: 'queued' | 'injecting-dom' | 'rendering' | 'completed' | 'bridge-offline';
   createdAt: number;
@@ -274,6 +373,7 @@ export interface ChromeBridgeState {
   extensionDetected: boolean;
   flowTabConnected: boolean;
   dreaminaTabConnected: boolean;
+  connectedPlatforms: Record<string, boolean>;
   injectElementRefs: boolean;
   autoStreamMutationObserver: boolean;
   jobs: ChromeBridgeJob[];
@@ -344,15 +444,17 @@ export interface BridgeIncomingEvent {
     | 'bridge_session'
     | 'bridge_job_complete'
     | 'dispatch_bridge_job';
-  source?: 'dreamina' | 'flow' | 'google-flow' | 'manual';
+  source?: BrowserPlatformTarget | 'flow' | 'manual' | string;
   jobId?: string;
-  target?: 'dreamina' | 'google-flow';
+  target?: BrowserPlatformTarget | string;
   status?: string;
   mediaUrl?: string;
   imageUrl?: string;
   localImageUrl?: string;
   videoUrl?: string;
   localVideoUrl?: string;
+  audioUrl?: string;
+  localAudioUrl?: string;
   error?: string;
   title?: string;
   prompt?: string;

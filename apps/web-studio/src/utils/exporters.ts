@@ -326,6 +326,15 @@ export interface CompactRecipePayload {
     x: number;
     y: number;
     aspectRatio: CanvasNode['aspectRatio'];
+    status?: CanvasNode['status'];
+    platformId?: CanvasNode['platformId'];
+    connectionMode?: CanvasNode['connectionMode'];
+    modelId?: string;
+    batchCount?: 1 | 2 | 4;
+    negativePrompt?: string;
+    audioEnabled?: boolean;
+    audioMode?: CanvasNode['audioMode'];
+    voiceId?: string;
     seed: number;
     resolution: CanvasNode['resolution'];
     durationSec?: number;

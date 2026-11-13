@@ -35,31 +35,37 @@ export interface StudioPresetDescriptor {
 
 export const STUDIO_PRESETS: StudioPresetDescriptor[] = [
   {
+    id: 'blank',
+    title: 'New Blank Canvas',
+    subtitle: '100% clean workspace — zero demo tags, zero pre-filled media',
+    badge: 'CLEAN',
+  },
+  {
+    id: 'cross-platform-blueprint',
+    title: 'Workflow Blueprint: Higgsfield → Kling 4.0 → ElevenLabs',
+    subtitle: 'Shareable zero-markup chain: ChatGPT Image 2.6 → Kling 4.0 I2V + ElevenLabs VO',
+    badge: 'BLUEPRINT',
+  },
+  {
     id: 'salt-terracotta',
-    title: 'Salt & Terracotta — Coastal Short',
-    subtitle: '35mm Kodak 250D · Natural Daylight + Bridge + A1 Audio',
+    title: 'Salt & Terracotta — Coastal Short (Demo)',
+    subtitle: '35mm Kodak 250D · Natural Daylight + Reference + A1 Audio',
     thumbnailUrl: '/media/real_courtyard_sun.jpg',
-    badge: 'DEFAULT',
+    badge: 'DEMO',
   },
   {
     id: 'kyoto-joinery',
-    title: 'Kyoto Joinery — Craft Study',
+    title: 'Kyoto Joinery — Craft Study (Demo)',
     subtitle: '50mm Leica Summilux · Cedar Atelier Documentary',
     thumbnailUrl: '/media/real_kyoto_timber.jpg',
     badge: 'CRAFT',
   },
   {
     id: 'alpine-pass',
-    title: 'Alpine Pass — Architectural Monograph',
+    title: 'Alpine Pass — Architectural Monograph (Demo)',
     subtitle: '24mm Wide Prime · Morning Mist & Timber Monograph',
     thumbnailUrl: '/media/real_alpine_road.jpg',
     badge: 'MONOGRAPH',
-  },
-  {
-    id: 'blank',
-    title: 'New Blank Canvas',
-    subtitle: 'Clean spatial canvas with empty Timelines 1 sequence',
-    badge: 'EMPTY',
   },
 ];
 
@@ -335,28 +341,107 @@ export function buildBlankStudioGraph(): {
   bridges: MultiframeBridge[];
   timelineClips: TimelineClip[];
 } {
-  const timelineNode: CanvasNode = {
-    id: 'node-timeline-1',
-    kind: 'timeline',
-    title: 'Timelines 1',
-    prompt: 'Master Rough-Cut Sequence',
-    x: 220,
-    y: 520,
-    width: 1120,
-    height: 196,
+  return {
+    nodes: [],
+    edges: [],
+    multiframes: [],
+    bridges: [],
+    timelineClips: [],
+  };
+}
+
+export function buildCrossPlatformBlueprintGraph(): {
+  nodes: CanvasNode[];
+  edges: CanvasEdge[];
+  multiframes: MultiframeCard[];
+  bridges: MultiframeBridge[];
+  timelineClips: TimelineClip[];
+} {
+  const now = Date.now();
+  const baseImageNode: CanvasNode = {
+    id: 'node-bp-img-1',
+    kind: 'image',
+    title: 'Images 1',
+    prompt:
+      'Natural daylight medium shot of an artisan ceramicist shaping wet terracotta on a stone wheel inside a sunlit Mediterranean workshop, tactile 35mm documentary still',
+    x: 120,
+    y: 160,
+    width: 384,
+    height: 216,
     aspectRatio: '16:9',
-    status: 'ready',
-    seed: 100,
+    status: 'idle',
+    platformId: 'higgsfield',
+    connectionMode: 'auto',
+    modelId: 'chatgpt-image-2.6',
+    batchCount: 1,
+    seed: 1042,
+    resolution: '2K',
+    elementHandles: [],
+    layers: [],
+    providerUsed: 'Higgsfield · ChatGPT Image 2.6',
+    createdAt: now - 3000,
+  };
+
+  const klingVideoNode: CanvasNode = {
+    id: 'node-bp-vid-1',
+    kind: 'video',
+    title: 'Videos 1',
+    prompt:
+      'Slow handheld 35mm push-in as the ceramicist smooths the spinning clay rim, warm dust motes drifting through sunlit window light',
+    x: 640,
+    y: 140,
+    width: 480,
+    height: 270,
+    aspectRatio: '16:9',
+    status: 'idle',
+    platformId: 'kling',
+    connectionMode: 'auto',
+    modelId: 'kling-4.0',
+    audioEnabled: true,
+    seed: 1084,
+    resolution: '1080p',
+    durationSec: 5,
+    elementHandles: [],
+    layers: [],
+    providerUsed: 'Kling AI · Kling 4.0',
+    createdAt: now - 2000,
+  };
+
+  const elevenAudioNode: CanvasNode = {
+    id: 'node-bp-aud-1',
+    kind: 'audio',
+    title: 'Audio 1',
+    prompt: 'Every vessel carries the quiet memory of salt, water, and afternoon sun.',
+    x: 640,
+    y: 470,
+    width: 340,
+    height: 128,
+    aspectRatio: '16:9',
+    status: 'idle',
+    platformId: 'elevenlabs',
+    connectionMode: 'auto',
+    modelId: 'eleven_multilingual_v2',
+    audioMode: 'tts',
+    voiceId: 'JBFqnCBsd6RMkjVDRZzb',
+    durationSec: 8,
+    seed: 1120,
     resolution: '1080p',
     elementHandles: [],
     layers: [],
-    providerUsed: 'Dreamina Spatial Timeline',
-    createdAt: Date.now(),
+    providerUsed: 'ElevenLabs · Multilingual v2',
+    createdAt: now - 1000,
   };
 
   return {
-    nodes: [timelineNode],
-    edges: [],
+    nodes: [baseImageNode, klingVideoNode, elevenAudioNode],
+    edges: [
+      {
+        id: 'edge-bp-img-to-vid',
+        sourceId: baseImageNode.id,
+        targetId: klingVideoNode.id,
+        kind: 'lineage',
+      },
+    ],
     multiframes: [],
     bridges: [],
     timelineClips: [],
@@ -1208,6 +1293,11 @@ export function buildStudioPresetGraph(preset: StudioPresetId): {
   timelineClips: TimelineClip[];
 } {
   switch (preset) {
+    case 'cross-platform-blueprint':
+      return {
+        title: 'Workflow Blueprint · Higgsfield → Kling 4.0 → ElevenLabs',
+        ...buildCrossPlatformBlueprintGraph(),
+      };
     case 'kyoto-joinery':
       return {
         title: 'Kyoto Joinery — Craft Study',

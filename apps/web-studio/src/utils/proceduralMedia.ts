@@ -11,7 +11,12 @@ export function getDimensionsForAspect(
       return { width: 250, height: Math.round((250 * 16) / 9) };
     case '21:9':
       return { width: 420, height: Math.round((420 * 9) / 21) };
+    case '4:3':
+      return { width: 340, height: Math.round((340 * 3) / 4) };
+    case '3:4':
+      return { width: 270, height: Math.round((270 * 4) / 3) };
     case '1:1':
+    default:
       return { width: 300, height: 300 };
   }
 }

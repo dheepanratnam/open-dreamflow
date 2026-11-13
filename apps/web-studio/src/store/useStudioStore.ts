@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type {
   AspectRatio,
   BridgeIncomingEvent,
+  BrowserPlatformTarget,
   BYOKCredentials,
   CameraTransitionCurve,
   CanvasEdge,
@@ -13,6 +14,7 @@ import type {
   DreaminaSkill,
   DreaminaToolId,
   ElementVault,
+  ExternalMcpServerRecord,
   FrameLayer,
   FrameLayerType,
   KeyframeBridgeCurve,
@@ -21,6 +23,8 @@ import type {
   McpBackendHealth,
   MultiframeBridge,
   MultiframeCard,
+  PlatformDefinition,
+  PlatformId,
   ProviderId,
   ProviderVerificationResult,
   ResolutionTier,
@@ -29,6 +33,13 @@ import type {
   StyleDNAPayload,
   TimelineClip,
 } from '../types/studio';
+import {
+  PLATFORM_CATALOG,
+  getModelsForPlatformAndModality,
+  getPlatformBadgeLabel,
+  nodeKindToModality,
+  resolveByokCredentialsForPlatform,
+} from '../presets/platformCatalog';
 import {
   BUILTIN_SKILLS,
   buildBlankStudioGraph,
@@ -56,12 +67,15 @@ import {
   LOCAL_MCP_HTTP_URL,
   compileTimelineViaBackend,
   deleteDiskProject,
+  deleteExternalMcpServer,
   discoverMcpTools,
   enqueueLiveBridgeJobViaBackend,
   executeStudioGeneration,
   exportDiskProjectBundle,
   extractLastFrameViaBackend,
+  fetchPlatformCatalogViaBackend,
   generateAudioViaBackend,
+  generateNodeViaBackend,
   getActiveApiKeyForProvider,
   getDefaultDiscoveredMcpTools,
   getDiskProject,
@@ -71,11 +85,14 @@ import {
   isCloudOrBridgeProvider,
   keyframeBridgeViaBackend,
   listDiskProjects,
+  listExternalMcpServers,
   normalizeBackendMediaUrl,
   outpaintViaBackend,
   pingChromeBridge,
   probeLiveMcpBackend,
   pushBridgeEventViaBackend,
+  refreshExternalMcpServer,
+  registerExternalMcpServer,
   removeBgViaBackend,
   renderVideoViaBackend,
   saveDiskProject,
@@ -228,6 +245,13 @@ function defaultByok(): BYOKCredentials {
     replicateApiKey: '',
     openaiApiKey: '',
     comfyUiUrl: 'http://127.0.0.1:8188',
+    higgsfieldApiKey: '',
+    klingAccessKey: '',
+    klingSecretKey: '',
+    klingApiKey: '',
+    openartApiKey: '',
+    imagineartApiKey: '',
+    elevenlabsApiKey: '',
   };
 }
 
@@ -283,11 +307,26 @@ export interface StudioState {
 
   providerModalOpen: boolean;
   providerModalTab: 'byok' | 'mcp' | 'bridge';
-  providerFocusField: null | 'gemini' | 'fal' | 'replicate' | 'seedance' | 'comfyui';
+  providerFocusField:
+    | null
+    | 'gemini'
+    | 'fal'
+    | 'replicate'
+    | 'seedance'
+    | 'comfyui'
+    | PlatformId;
   providerVerifyStatus: Record<string, ProviderVerificationResult>;
   verifyingProvider: Record<string, boolean>;
-  liveBridgeTestRunning: null | 'dreamina' | 'google-flow';
+  liveBridgeTestRunning: null | BrowserPlatformTarget;
   liveBridgeStatusText: string | null;
+  platformsCatalog: PlatformDefinition[];
+  externalMcpServers: ExternalMcpServerRecord[];
+  lastImagePlatformId: PlatformId;
+  lastVideoPlatformId: PlatformId;
+  lastAudioPlatformId: PlatformId;
+  lastFailedPlatformId: PlatformId | null;
+  workflowRunning: boolean;
+  workflowProgressText: string | null;
   directorModalOpen: boolean;
   directorRunning: boolean;
   directorStepLog: string[];
@@ -442,13 +481,50 @@ export interface StudioState {
   ingestBridgeWsEvent: (ev: BridgeIncomingEvent) => boolean;
   handleBridgeJobWsEvent: (payload: Record<string, unknown>) => void;
   verifyProviderConnection: (
-    provider: 'gemini' | 'fal' | 'replicate' | 'seedance' | 'comfyui'
+    provider:
+      | 'gemini'
+      | 'fal'
+      | 'replicate'
+      | 'seedance'
+      | 'comfyui'
+      | 'kling'
+      | 'elevenlabs'
+      | 'openai'
+      | 'higgsfield'
+      | 'openart'
+      | 'imagineart'
   ) => Promise<void>;
   runLiveBridgeTestGeneration: (
-    target: 'dreamina' | 'google-flow',
-    mode?: 'image' | 'video'
+    target: BrowserPlatformTarget,
+    mode?: 'image' | 'video' | 'audio'
   ) => Promise<void>;
-  triggerTestBridgeCapture: (source?: 'dreamina' | 'flow') => Promise<void>;
+  triggerTestBridgeCapture: (source?: BrowserPlatformTarget | 'flow') => Promise<void>;
+
+  setNodePlatformAndModel: (
+    nodeId: string,
+    platformId: PlatformId,
+    modelId?: string
+  ) => void;
+  setNodeAspectRatio: (nodeId: string, aspectRatio: AspectRatio) => void;
+  uploadReferenceToNode: (nodeId: string, file: File) => Promise<void>;
+  attachReferenceToNode: (nodeId: string, file: File) => Promise<void>;
+  removeReferenceUrlFromNode: (nodeId: string, url: string) => void;
+  saveNodeAsElementReference: (nodeId: string, customHandle?: string) => void;
+  generateSingleNode: (nodeId: string) => Promise<boolean>;
+  runWorkflowPipeline: (startFromNodeId?: string) => Promise<void>;
+  refreshPlatformsAndExternalMcp: () => Promise<void>;
+  addExternalMcpServer: (payload: {
+    name: string;
+    platformId: string;
+    transport: 'stdio' | 'http';
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    url?: string;
+    headers?: Record<string, string>;
+  }) => Promise<boolean>;
+  refreshExternalMcpById: (id: string) => Promise<void>;
+  removeExternalMcpById: (id: string) => Promise<void>;
   runChatQuickAction: (
     action: 'sequence-3' | 'remix-branch' | 'slice-sheet' | 'compile-master'
   ) => Promise<void>;
@@ -473,7 +549,7 @@ export interface StudioState {
     nodeId: string,
     opts?: {
       prompt?: string;
-      mode?: 'ambient' | 'voiceover' | 'sfx';
+      mode?: 'tts' | 'ambient' | 'voiceover' | 'sfx';
       durationSec?: number;
     }
   ) => Promise<void>;
@@ -579,6 +655,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   verifyingProvider: {},
   liveBridgeTestRunning: null,
   liveBridgeStatusText: null,
+  platformsCatalog: PLATFORM_CATALOG,
+  externalMcpServers: [],
+  lastImagePlatformId: 'higgsfield',
+  lastVideoPlatformId: 'kling',
+  lastAudioPlatformId: 'elevenlabs',
+  lastFailedPlatformId: null,
+  workflowRunning: false,
+  workflowProgressText: null,
   directorModalOpen: false,
   directorRunning: false,
   directorStepLog: [],
@@ -599,9 +683,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   past: [],
   future: [],
 
-  promptText:
-    'Measured 35mm dolly-in across sunlit limestone courtyard toward @Clara_Vidal holding @Leica_M6, Kodak Vision3 250D',
-  promptMode: 'video',
+  promptText: '',
+  promptMode: 'image',
   promptSubMode: 'omni-ref',
   promptAspect: '16:9',
   promptDurationSec: 6,
@@ -637,6 +720,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     extensionDetected: false,
     flowTabConnected: false,
     dreaminaTabConnected: false,
+    connectedPlatforms: {},
     injectElementRefs: true,
     autoStreamMutationObserver: true,
     jobs: [],
@@ -820,27 +904,51 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       set({
         activeProjectId: `canvas_${Date.now().toString(36)}`,
         projectTitle: 'Untitled Canvas',
-        nodes: built.nodes,
-        edges: built.edges,
-        multiframes: built.multiframes,
-        bridges: built.bridges,
-        timelineClips: built.timelineClips,
+        nodes: [],
+        edges: [],
+        elements: [],
+        multiframes: [],
+        bridges: [],
+        timelineClips: [],
         selectedNodeIds: [],
+        promptText: '',
+        masterRenderUrl: null,
         panX: 120,
         panY: 80,
-        zoom: 0.78,
+        zoom: 0.85,
       });
       get().showToast('Created New Blank Canvas');
+    } else if (preset === 'cross-platform-blueprint') {
+      set({
+        activeProjectId: `blueprint_${Date.now().toString(36)}`,
+        projectTitle: built.title,
+        nodes: built.nodes,
+        edges: built.edges,
+        elements: [],
+        multiframes: [],
+        bridges: [],
+        timelineClips: [],
+        selectedNodeIds: [built.nodes[0]?.id].filter(Boolean) as string[],
+        promptText: built.nodes[0]?.prompt || '',
+        masterRenderUrl: null,
+        panX: 84,
+        panY: 54,
+        zoom: 0.82,
+      });
+      get().showToast('Loaded Workflow Blueprint · Ready for your credits');
     } else {
       set({
         activeProjectId: preset,
         projectTitle: built.title,
         nodes: built.nodes,
         edges: built.edges,
+        elements: buildInitialElements(),
         multiframes: built.multiframes,
         bridges: built.bridges,
         timelineClips: built.timelineClips,
         selectedNodeIds: [],
+        promptText: built.nodes.find((n) => n.kind === 'video')?.prompt || '',
+        masterRenderUrl: '/media/real_salt_terracotta_master.mp4',
         panX: 84,
         panY: 54,
         zoom: 0.68,
@@ -924,19 +1032,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           : n.kind === 'style-dna'
           ? { width: 300, height: 210 }
           : n.kind === 'audio'
-          ? { width: 360, height: 150 }
+          ? { width: 340, height: 128 }
           : n.kind === 'video'
-          ? { width: 568, height: 320 }
-          : getDimensionsForAspect(n.aspectRatio, 340);
-      const imageUrl =
-        n.kind === 'style-dna' ||
-        n.kind === 'mcp-tool' ||
-        n.kind === 'timeline' ||
-        n.kind === 'audio'
-          ? undefined
-          : n.kind === 'contact-sheet'
-          ? '/media/real_contact_9grid.jpg'
-          : '/media/real_courtyard_sun.jpg';
+          ? getDimensionsForAspect(n.aspectRatio, 480)
+          : getDimensionsForAspect(n.aspectRatio, 384);
+      const restoredStatus: CanvasNode['status'] =
+        n.status === 'ready' &&
+        (n.kind === 'text' || n.kind === 'sticky' || n.kind === 'style-dna')
+          ? 'ready'
+          : 'idle';
+      const badge = getPlatformBadgeLabel(n.platformId, n.modelId);
       return {
         id: n.id,
         kind: n.kind,
@@ -947,33 +1052,44 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         width: dims.width,
         height: dims.height,
         aspectRatio: n.aspectRatio,
-        status: 'ready',
-        imageUrl,
-        videoUrl: n.kind === 'video' ? '/media/real_shot01_courtyard.mp4' : undefined,
-        audioUrl: n.kind === 'audio' ? '/media/real_coastal_foley.mp3' : undefined,
+        status: restoredStatus,
+        platformId: n.platformId,
+        connectionMode: n.connectionMode || 'auto',
+        modelId: n.modelId,
+        batchCount: n.batchCount,
+        negativePrompt: n.negativePrompt,
+        audioEnabled: n.audioEnabled,
+        audioMode: n.audioMode,
+        voiceId: n.voiceId,
+        imageUrl: undefined,
+        videoUrl: undefined,
+        audioUrl: undefined,
         waveform: n.kind === 'audio' ? createDefaultWaveform(n.seed || 305, 64) : undefined,
         seed: n.seed,
         resolution: n.resolution,
         durationSec: n.durationSec,
         interactionId: n.interactionId,
         previousInteractionId: n.previousInteractionId,
-        elementHandles: n.elementHandles,
+        elementHandles: n.elementHandles || [],
         styleDna: n.styleDna,
         gridSpec:
           n.kind === 'contact-sheet' ? { rows: 3, cols: 3, labels: NINE_GRID_LABELS } : undefined,
-        layers: createDefaultLayers(imageUrl),
-        providerUsed: 'Restored via ?recipe= URL',
+        layers: [],
+        providerUsed: badge || 'Shared Workflow Recipe',
         createdAt: Date.now(),
       };
     });
 
     set({
-      projectTitle: decoded.title || 'Shared Recipe',
+      projectTitle: decoded.title || 'Shared Workflow Recipe',
       nodes: restoredNodes,
       edges: decoded.edges || [],
+      elements: [],
+      promptText: '',
+      masterRenderUrl: null,
       selectedNodeIds: [],
     });
-    get().showToast(`Loaded "${decoded.title}"`);
+    get().showToast(`Loaded workflow "${decoded.title}"`);
   },
 
   copyShareableRecipeUrl: () => {
@@ -989,6 +1105,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         x: Math.round(n.x),
         y: Math.round(n.y),
         aspectRatio: n.aspectRatio,
+        status: n.status === 'generating' ? 'idle' : n.status,
+        platformId: n.platformId,
+        connectionMode: n.connectionMode,
+        modelId: n.modelId,
+        batchCount: n.batchCount,
+        negativePrompt: n.negativePrompt,
+        audioEnabled: n.audioEnabled,
+        audioMode: n.audioMode,
+        voiceId: n.voiceId,
         seed: n.seed,
         resolution: n.resolution,
         durationSec: n.durationSec,
@@ -1012,7 +1137,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const fullUrl = url.toString();
     window.history.replaceState({}, '', fullUrl);
     navigator.clipboard?.writeText(fullUrl).catch(() => undefined);
-    get().showToast('Copied shareable ?recipe= link');
+    get().showToast('Copied credential-free ?recipe= workflow link');
     return fullUrl;
   },
 
@@ -1090,39 +1215,6 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         nextNodes = nextNodes.map((n) =>
           n.id === targetId ? { ...n, styleDnaId: sourceId } : n
         );
-      }
-
-      // Stage 5: When 2 Image/Element nodes are wired into a Video node, auto-arm First→Last Keyframe Bridge
-      if (
-        targetNode?.kind === 'video' &&
-        sourceNode &&
-        (sourceNode.kind === 'image' || sourceNode.kind === 'element')
-      ) {
-        const upstreamImageNodes = nextEdges
-          .filter((e) => e.targetId === targetId)
-          .map((e) => nextNodes.find((nn) => nn.id === e.sourceId))
-          .filter(
-            (nn): nn is CanvasNode =>
-              Boolean(nn && (nn.kind === 'image' || nn.kind === 'element') && nn.imageUrl)
-          );
-
-        if (upstreamImageNodes.length >= 2) {
-          const firstImg = upstreamImageNodes[0];
-          const lastImg = upstreamImageNodes[upstreamImageNodes.length - 1];
-          nextNodes = nextNodes.map((n) =>
-            n.id === targetId
-              ? {
-                  ...n,
-                  bridgeMode: true,
-                  startNodeId: firstImg.id,
-                  endNodeId: lastImg.id,
-                  startImageUrl: firstImg.imageUrl,
-                  endImageUrl: lastImg.imageUrl,
-                  motionCurve: n.motionCurve || 'ease-in-out',
-                }
-              : n
-          );
-        }
       }
 
       return {
@@ -1254,23 +1346,23 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const a = opts.asset;
       const isVid = a.kind === 'video';
       const isAud = a.kind === 'audio';
-      const w = isVid ? 568 : a.kind === 'contact-sheet' ? 480 : isAud ? 360 : 320;
-      const h = isVid ? 320 : a.kind === 'contact-sheet' ? 270 : isAud ? 150 : 320;
+      const w = isVid ? 480 : a.kind === 'contact-sheet' ? 480 : isAud ? 340 : 384;
+      const h = isVid ? 270 : a.kind === 'contact-sheet' ? 270 : isAud ? 128 : 216;
       newNode = {
         id,
         kind: a.kind,
         title: a.title,
-        prompt: `${a.title} · @Clara_Vidal @Leica_M6`,
+        prompt: a.title,
         x,
         y,
         width: w,
         height: h,
-        aspectRatio: isVid || a.kind === 'contact-sheet' || isAud ? '16:9' : '1:1',
+        aspectRatio: isVid || a.kind === 'contact-sheet' || isAud ? '16:9' : '16:9',
         status: 'ready',
         imageUrl: isAud
           ? undefined
           : isVid
-          ? a.posterUrl || '/media/real_courtyard_sun.jpg'
+          ? a.posterUrl
           : a.url,
         videoUrl: isVid ? a.url : undefined,
         audioUrl: isAud ? a.url : undefined,
@@ -1279,7 +1371,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         durationSec: a.durationSec,
         seed: Math.floor(Math.random() * 9000) + 100,
         resolution: '1080p',
-        elementHandles: isAud ? [] : ['@Clara_Vidal', '@Leica_M6'],
+        elementHandles: [],
         gridSpec:
           a.kind === 'contact-sheet'
             ? { rows: 3, cols: 3, labels: NINE_GRID_LABELS }
@@ -1289,6 +1381,59 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         createdAt: Date.now(),
       };
     } else {
+      const {
+        lastImagePlatformId,
+        lastVideoPlatformId,
+        lastAudioPlatformId,
+        platformsCatalog,
+        externalMcpServers,
+      } = get();
+
+      const imgModels = getModelsForPlatformAndModality(
+        lastImagePlatformId,
+        'image',
+        platformsCatalog,
+        externalMcpServers
+      );
+      const defaultImageModelId = imgModels[0]?.id || 'chatgpt-image-2.6';
+      const defaultImageBadge =
+        getPlatformBadgeLabel(
+          lastImagePlatformId,
+          defaultImageModelId,
+          platformsCatalog,
+          externalMcpServers
+        ) || 'Higgsfield · ChatGPT Image 2.6';
+
+      const vidModels = getModelsForPlatformAndModality(
+        lastVideoPlatformId,
+        'video',
+        platformsCatalog,
+        externalMcpServers
+      );
+      const defaultVideoModelId = vidModels[0]?.id || 'kling-4.0';
+      const defaultVideoBadge =
+        getPlatformBadgeLabel(
+          lastVideoPlatformId,
+          defaultVideoModelId,
+          platformsCatalog,
+          externalMcpServers
+        ) || 'Kling AI · Kling 4.0';
+
+      const audModels = getModelsForPlatformAndModality(
+        lastAudioPlatformId,
+        'audio',
+        platformsCatalog,
+        externalMcpServers
+      );
+      const defaultAudioModelId = audModels[0]?.id || 'eleven_multilingual_v2';
+      const defaultAudioBadge =
+        getPlatformBadgeLabel(
+          lastAudioPlatformId,
+          defaultAudioModelId,
+          platformsCatalog,
+          externalMcpServers
+        ) || 'ElevenLabs · Multilingual v2';
+
       switch (tool) {
         case 'text': {
           const n = countOfKind('text');
@@ -1296,46 +1441,45 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             id,
             kind: 'text',
             title: `Texts ${n}`,
-            prompt:
-              upstream?.prompt ||
-              'Write a natural daylight scene note, field voiceover, or 35mm camera direction for @Clara_Vidal...',
+            prompt: '',
             x,
             y,
             width: 320,
-            height: 200,
+            height: 190,
             aspectRatio: '16:9',
             status: 'ready',
             seed: 110 + n,
             resolution: '1080p',
-            elementHandles: ['@Clara_Vidal'],
+            elementHandles: [],
             layers: [],
-            providerUsed: 'Dreamina Text Node',
+            providerUsed: 'Script / Prompt Node',
             createdAt: Date.now(),
           };
           break;
         }
         case 'image': {
           const n = countOfKind('image');
-          const img = upstream?.imageUrl || '/media/real_courtyard_sun.jpg';
           newNode = {
             id,
             kind: 'image',
             title: `Images ${n}`,
-            prompt:
-              upstream?.prompt ||
-              '@Clara_Vidal in sunlit Mediterranean limestone courtyard holding @Leica_M6, 35mm Kodak 250D',
+            prompt: '',
             x,
             y,
-            width: 320,
-            height: 320,
-            aspectRatio: '1:1',
-            status: 'ready',
-            imageUrl: img,
+            width: 384,
+            height: 216,
+            aspectRatio: '16:9',
+            status: 'idle',
+            platformId: lastImagePlatformId,
+            connectionMode: 'auto',
+            modelId: defaultImageModelId,
+            batchCount: 1,
+            imageUrl: undefined,
             seed: 200 + n * 37,
             resolution: '2K',
-            elementHandles: ['@Clara_Vidal', '@Leica_M6'],
-            layers: createDefaultLayers(img),
-            providerUsed: 'Dreamina Image Node',
+            elementHandles: [],
+            layers: [],
+            providerUsed: defaultImageBadge,
             createdAt: Date.now(),
           };
           break;
@@ -1343,44 +1487,30 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         case 'video':
         case 'blend': {
           const n = countOfKind('video');
-          const isBlend = tool === 'blend';
-          const img = isBlend
-            ? '/media/real_coastal_cliffs.jpg'
-            : upstream?.imageUrl || '/media/real_courtyard_sun.jpg';
-          const vid = isBlend
-            ? '/media/real_shot02_bridge.mp4'
-            : '/media/real_shot01_courtyard.mp4';
           newNode = {
             id,
             kind: 'video',
-            title: isBlend ? `Videos ${n} · Keyframe Bridge` : `Videos ${n}`,
-            prompt: isBlend
-              ? 'First-Frame → Last-Frame optical glide from limestone courtyard out over Atlantic headland cliffs'
-              : upstream?.prompt ||
-                'Measured 35mm tracking shot of @Clara_Vidal walking across sunlit limestone colonnade with @Leica_M6',
+            title: `Videos ${n}`,
+            prompt: '',
             x,
             y,
-            width: 568,
-            height: 320,
+            width: 480,
+            height: 270,
             aspectRatio: '16:9',
-            status: 'ready',
-            imageUrl: img,
-            videoUrl: vid,
-            bridgeMode: isBlend ? true : undefined,
-            startImageUrl: isBlend
-              ? upstream?.imageUrl || '/media/real_courtyard_sun.jpg'
-              : undefined,
-            endImageUrl: isBlend ? '/media/real_coastal_cliffs.jpg' : undefined,
-            motionCurve: isBlend ? 'ease-in-out' : undefined,
-            durationSec: 6,
-            cameraMotion: isBlend ? 'Ease In-Out Bridge' : 'Dolly In',
-            interactionId: `int_omni_${Date.now().toString(36)}`,
+            status: 'idle',
+            platformId: lastVideoPlatformId,
+            connectionMode: 'auto',
+            modelId: defaultVideoModelId,
+            audioEnabled: true,
+            imageUrl: undefined,
+            videoUrl: undefined,
+            durationSec: 5,
             previousInteractionId: upstream?.interactionId,
             seed: 500 + n * 41,
             resolution: '1080p',
-            elementHandles: ['@Clara_Vidal', '@Leica_M6'],
-            layers: createDefaultLayers(img),
-            providerUsed: 'Local FFmpeg 8.0 · $0.00',
+            elementHandles: [],
+            layers: [],
+            providerUsed: defaultVideoBadge,
             createdAt: Date.now(),
           };
           break;
@@ -1391,24 +1521,27 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           newNode = {
             id,
             kind: 'audio',
-            title: `Audio ${n} · Coastal Foley`,
-            prompt:
-              'Natural Atlantic breeze through olive leaves, distant limestone surf wash, warm open-air room tone',
+            title: `Audio ${n}`,
+            prompt: '',
             x,
             y,
-            width: 360,
-            height: 150,
+            width: 340,
+            height: 128,
             aspectRatio: '16:9',
-            status: 'ready',
-            audioUrl: '/media/real_coastal_foley.mp3',
-            audioMode: 'ambient',
+            status: 'idle',
+            platformId: lastAudioPlatformId,
+            connectionMode: 'auto',
+            modelId: defaultAudioModelId,
+            audioUrl: undefined,
+            audioMode: 'tts',
+            voiceId: 'JBFqnCBsd6RMkjVDRZzb',
             waveform: createDefaultWaveform(seed, 64),
-            durationSec: 12,
+            durationSec: 8,
             seed,
             resolution: '1080p',
             elementHandles: [],
             layers: [],
-            providerUsed: 'Acoustic Foley + 64-Bar Waveform',
+            providerUsed: defaultAudioBadge,
             createdAt: Date.now(),
           };
           break;
@@ -1426,50 +1559,48 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             height: 196,
             aspectRatio: '16:9',
             status: 'ready',
-            videoUrl: '/media/real_salt_terracotta_master.mp4',
+            videoUrl: undefined,
             durationSec: 18,
             seed: 900 + n,
             resolution: '1080p',
             elementHandles: [],
             layers: [],
-            providerUsed: 'Dreamina Spatial Timeline',
+            providerUsed: 'Spatial Timeline',
             createdAt: Date.now(),
           };
           break;
         }
         case 'element': {
           const n = countOfKind('element');
-          const isCraft = n % 2 === 0;
-          const img = isCraft
-            ? '/media/real_leica_craft.jpg'
-            : '/media/real_portrait_clara.jpg';
-          const handle = isCraft ? '@Leica_M6' : '@Clara_Vidal';
+          const handle = `@Ref_${n}`;
           newNode = {
             id,
             kind: 'element',
-            title: `Elements ${n} · ${handle}`,
-            prompt: `${handle} 6-reference 35mm photographic continuity anchor`,
+            title: `Reference ${n}`,
+            prompt: '',
             x,
             y,
-            width: 280,
-            height: 280,
+            width: 300,
+            height: 300,
             aspectRatio: '1:1',
-            status: 'ready',
-            imageUrl: img,
+            status: 'idle',
+            platformId: lastImagePlatformId,
+            connectionMode: 'auto',
+            modelId: defaultImageModelId,
+            batchCount: 1,
+            imageUrl: undefined,
             seed: 300 + n,
             resolution: '2K',
             elementHandles: [handle],
-            layers: createDefaultLayers(img),
-            providerUsed: 'Element Continuity Vault',
+            layers: [],
+            providerUsed: defaultImageBadge,
             createdAt: Date.now(),
           };
           break;
         }
         case 'cinema-kit': {
           const n = countOfKind('style-dna');
-          const dna = extractStyleDnaFromPrompt(
-            'Mediterranean Limestone Daylight 35mm Kodak 250D @Limestone_Villa'
-          );
+          const dna = extractStyleDnaFromPrompt('Natural 35mm Daylight Studio');
           newNode = {
             id,
             kind: 'style-dna',
@@ -1483,7 +1614,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             status: 'ready',
             seed: 410 + n,
             resolution: '4K',
-            elementHandles: ['@Limestone_Villa'],
+            elementHandles: [],
             styleDna: dna,
             layers: [],
             providerUsed: 'Cinema Kit Optical Lock',
@@ -1496,22 +1627,25 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           newNode = {
             id,
             kind: 'contact-sheet',
-            title: `Images ${n} · 35mm Location Sheet`,
-            prompt:
-              '/9-Grid Storyboard @Clara_Vidal & @Leica_M6 natural daylight coverage across 9 prime lenses',
+            title: `Contact Sheet ${n}`,
+            prompt: '',
             x,
             y,
             width: 480,
             height: 270,
             aspectRatio: '16:9',
-            status: 'ready',
-            imageUrl: '/media/real_contact_9grid.jpg',
+            status: 'idle',
+            platformId: lastImagePlatformId,
+            connectionMode: 'auto',
+            modelId: defaultImageModelId,
+            batchCount: 1,
+            imageUrl: undefined,
             seed: 512 + n,
             resolution: '4K',
-            elementHandles: ['@Clara_Vidal', '@Leica_M6'],
+            elementHandles: [],
             gridSpec: { rows: 3, cols: 3, labels: NINE_GRID_LABELS },
-            layers: createDefaultLayers('/media/real_contact_9grid.jpg'),
-            providerUsed: '9-Grid Slicer',
+            layers: [],
+            providerUsed: defaultImageBadge,
             createdAt: Date.now(),
           };
           break;
@@ -1523,8 +1657,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             id,
             kind: 'sticky',
             title: `Notes ${n}`,
-            prompt:
-              'Director Note:\n• Keep Cooke 35mm T2.0 natural daylight warm\n• Match cut courtyard arch to Atlantic cliff horizon at 00:06',
+            prompt: '',
             x,
             y,
             width: 260,
@@ -3336,7 +3469,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         category: 'MCP Tool' as const,
         badge: 'MCP',
         description: t.description,
-        promptTemplate: `Execute MCP ${t.name}: @Clara_Vidal & @Leica_M6 natural 35mm daylight`,
+        promptTemplate: `Execute MCP ${t.name}: natural 35mm daylight composition`,
         recommendedMode: t.name.includes('video') ? ('video' as const) : ('image' as const),
         mcpToolName: t.name,
       }));
@@ -3344,9 +3477,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const masterFile = health.mediaFiles.find(
         (f) => f === 'real_salt_terracotta_master.mp4' || f.startsWith('master_cut_')
       );
-      const nextMaster = masterFile
-        ? normalizeBackendMediaUrl(`/media/${masterFile}`, true) || s.masterRenderUrl
-        : s.masterRenderUrl;
+      const nextMaster =
+        s.masterRenderUrl === null
+          ? null
+          : masterFile
+          ? normalizeBackendMediaUrl(`/media/${masterFile}`, true) || s.masterRenderUrl
+          : s.masterRenderUrl;
 
       return {
         mcpHealth: health,
@@ -3358,6 +3494,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         ],
       };
     });
+
+    if (health.online) {
+      await get().refreshPlatformsAndExternalMcp();
+    }
   },
 
   setActiveProvider: (rawProvider) => {
@@ -4220,21 +4360,22 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       if (loaded.ok && loaded.project && st && Array.isArray(st.nodes)) {
         set({
           activeProjectId: loaded.project.id,
-          projectTitle: loaded.project.name || 'Salt & Terracotta — Coastal Short',
+          projectTitle: loaded.project.name || 'Untitled Canvas',
           nodes: st.nodes,
           edges: Array.isArray(st.edges) ? st.edges : [],
-          elements: Array.isArray(st.elements) ? st.elements : get().elements,
+          elements: Array.isArray(st.elements) ? st.elements : [],
           multiframes: Array.isArray(st.multiframes)
             ? st.multiframes
-            : get().multiframes,
-          bridges: Array.isArray(st.bridges) ? st.bridges : get().bridges,
+            : [],
+          bridges: Array.isArray(st.bridges) ? st.bridges : [],
           timelineClips: Array.isArray(st.timelineClips)
             ? st.timelineClips
-            : get().timelineClips,
+            : [],
           projectSnapshots: Array.isArray(loaded.project.snapshots)
             ? loaded.project.snapshots
             : [],
           selectedNodeIds: [],
+          promptText: '',
           saveStatus: 'saved',
         });
         return;
@@ -4338,16 +4479,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       projectTitle: loaded.project.name,
       nodes: Array.isArray(st.nodes) ? st.nodes : [],
       edges: Array.isArray(st.edges) ? st.edges : [],
-      elements: Array.isArray(st.elements) ? st.elements : get().elements,
-      multiframes: Array.isArray(st.multiframes)
-        ? st.multiframes
-        : get().multiframes,
-      bridges: Array.isArray(st.bridges) ? st.bridges : get().bridges,
+      elements: Array.isArray(st.elements) ? st.elements : [],
+      multiframes: Array.isArray(st.multiframes) ? st.multiframes : [],
+      bridges: Array.isArray(st.bridges) ? st.bridges : [],
       timelineClips: Array.isArray(st.timelineClips) ? st.timelineClips : [],
       projectSnapshots: Array.isArray(loaded.project.snapshots)
         ? loaded.project.snapshots
         : [],
       selectedNodeIds: [],
+      promptText: '',
       past: [],
       future: [],
       saveStatus: 'saved',
@@ -4368,11 +4508,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       projectTitle: name,
       nodes: blank.nodes,
       edges: blank.edges,
+      elements: [],
       multiframes: blank.multiframes,
       bridges: blank.bridges,
       timelineClips: blank.timelineClips,
       projectSnapshots: [],
       selectedNodeIds: [],
+      promptText: '',
+      masterRenderUrl: null,
       past: [],
       future: [],
       panX: 120,
@@ -4537,14 +4680,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         projectTitle: proj.name || 'Imported Canvas',
         nodes: Array.isArray(st.nodes) ? st.nodes : [],
         edges: Array.isArray(st.edges) ? st.edges : [],
-        elements: Array.isArray(st.elements) ? st.elements : get().elements,
-        multiframes: Array.isArray(st.multiframes)
-          ? st.multiframes
-          : get().multiframes,
-        bridges: Array.isArray(st.bridges) ? st.bridges : get().bridges,
+        elements: Array.isArray(st.elements) ? st.elements : [],
+        multiframes: Array.isArray(st.multiframes) ? st.multiframes : [],
+        bridges: Array.isArray(st.bridges) ? st.bridges : [],
         timelineClips: Array.isArray(st.timelineClips) ? st.timelineClips : [],
         projectSnapshots: Array.isArray(proj.snapshots) ? proj.snapshots : [],
         selectedNodeIds: [],
+        promptText: '',
         saveStatus: 'saved',
       });
 
@@ -4567,16 +4709,23 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   },
 
   ingestBridgeWsEvent: (ev) => {
+    const normalizedSrc =
+      ev?.source === 'flow' ? 'google-flow' : String(ev?.source || '');
+
     if (!ev || (ev.type !== 'bridge_asset' && ev.type !== 'bridge_prompt')) {
-      if (ev?.type === 'bridge_session') {
+      if (ev?.type === 'bridge_session' && normalizedSrc) {
         set((s) => ({
           chromeBridge: {
             ...s.chromeBridge,
             extensionDetected: true,
             dreaminaTabConnected:
-              ev.source === 'dreamina' ? true : s.chromeBridge.dreaminaTabConnected,
+              normalizedSrc === 'dreamina' ? true : s.chromeBridge.dreaminaTabConnected,
             flowTabConnected:
-              ev.source === 'flow' ? true : s.chromeBridge.flowTabConnected,
+              normalizedSrc === 'google-flow' ? true : s.chromeBridge.flowTabConnected,
+            connectedPlatforms: {
+              ...s.chromeBridge.connectedPlatforms,
+              [normalizedSrc]: true,
+            },
           },
         }));
       }
@@ -4599,36 +4748,42 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       ? normalizeBackendMediaUrl(ev.mediaUrl, false)
       : undefined;
     const isVideo = Boolean(mediaUrl && /\.(mp4|webm|mov)(\?|$)/i.test(mediaUrl));
+    const isAudio = Boolean(mediaUrl && /\.(mp3|wav|m4a|ogg)(\?|$)/i.test(mediaUrl));
     const isTextOnly = ev.type === 'bridge_prompt' && !mediaUrl;
 
-    const sourceLabel =
-      ev.source === 'flow' ? 'Google Flow' : ev.source === 'dreamina' ? 'Dreamina' : 'Bridge';
+    const platformMap: Record<string, string> = {
+      'google-flow': 'Google Flow',
+      flow: 'Google Flow',
+      dreamina: 'Dreamina',
+      higgsfield: 'Higgsfield',
+      kling: 'Kling AI',
+      openart: 'OpenArt',
+      imagineart: 'ImagineArt',
+      elevenlabs: 'ElevenLabs',
+    };
+    const sourceLabel = platformMap[normalizedSrc] || 'Browser Bridge';
 
     const nodeId = `node_bridge_${Date.now()}`;
     const newNode: CanvasNode = {
       id: nodeId,
-      kind: isTextOnly ? 'text' : isVideo ? 'video' : 'image',
+      kind: isTextOnly ? 'text' : isVideo ? 'video' : isAudio ? 'audio' : 'image',
       title: ev.title || `Bridge · ${sourceLabel}`,
       prompt: ev.prompt || `Captured from ${sourceLabel}`,
       x: maxRight + 96,
       y: 160,
-      width: isVideo ? 568 : isTextOnly ? 320 : 380,
-      height: isVideo ? 320 : isTextOnly ? 210 : 240,
+      width: isVideo ? 480 : isTextOnly ? 320 : isAudio ? 340 : 384,
+      height: isVideo ? 270 : isTextOnly ? 190 : isAudio ? 128 : 216,
       aspectRatio: '16:9',
-      status: 'ready',
-      imageUrl:
-        !isTextOnly && !isVideo
-          ? mediaUrl || '/media/real_alpine_road.jpg'
-          : '/media/real_alpine_road.jpg',
+      status: mediaUrl || isTextOnly ? 'ready' : 'idle',
+      platformId: (normalizedSrc as PlatformId) || undefined,
+      imageUrl: !isTextOnly && !isVideo && !isAudio ? mediaUrl : undefined,
       videoUrl: isVideo ? mediaUrl : undefined,
-      durationSec: isVideo ? 6 : undefined,
+      audioUrl: isAudio ? mediaUrl : undefined,
+      durationSec: isVideo ? 5 : isAudio ? 8 : undefined,
       seed: Math.floor(Math.random() * 9000),
       resolution: '1080p',
       elementHandles: extractHandles(ev.prompt || ''),
-      layers:
-        !isTextOnly && !isVideo
-          ? createDefaultLayers(mediaUrl || '/media/real_alpine_road.jpg')
-          : [],
+      layers: !isTextOnly && !isVideo && !isAudio && mediaUrl ? createDefaultLayers(mediaUrl) : [],
       providerUsed: `Bridge · ${sourceLabel}`,
       createdAt: Date.now(),
     };
@@ -4640,9 +4795,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         ...s.chromeBridge,
         extensionDetected: true,
         dreaminaTabConnected:
-          ev.source === 'dreamina' ? true : s.chromeBridge.dreaminaTabConnected,
+          normalizedSrc === 'dreamina' ? true : s.chromeBridge.dreaminaTabConnected,
         flowTabConnected:
-          ev.source === 'flow' ? true : s.chromeBridge.flowTabConnected,
+          normalizedSrc === 'google-flow' ? true : s.chromeBridge.flowTabConnected,
+        connectedPlatforms: normalizedSrc
+          ? { ...s.chromeBridge.connectedPlatforms, [normalizedSrc]: true }
+          : s.chromeBridge.connectedPlatforms,
       },
     }));
 
@@ -4659,7 +4817,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         ? (payload.job as Record<string, unknown>)
         : payload;
     const jobId = String(job.jobId || payload.jobId || '');
-    const target = String(job.target || payload.target || '');
+    const rawTarget = String(job.target || payload.target || '');
+    const target = rawTarget === 'flow' ? 'google-flow' : rawTarget;
     const status = String(job.status || payload.status || 'succeeded');
     const errorMsg =
       typeof (job.error || payload.error) === 'string'
@@ -4678,14 +4837,23 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       (typeof job.videoUrl === 'string' && job.videoUrl) ||
       (typeof payload.videoUrl === 'string' && payload.videoUrl) ||
       undefined;
+    const rawAud =
+      (typeof job.localAudioUrl === 'string' && job.localAudioUrl) ||
+      (typeof payload.localAudioUrl === 'string' && payload.localAudioUrl) ||
+      (typeof job.audioUrl === 'string' && job.audioUrl) ||
+      (typeof payload.audioUrl === 'string' && payload.audioUrl) ||
+      undefined;
 
     const normImg = rawImg ? normalizeBackendMediaUrl(rawImg, false) || rawImg : undefined;
     const normVid = rawVid ? normalizeBackendMediaUrl(rawVid, true) || rawVid : undefined;
+    const normAud = rawAud ? normalizeBackendMediaUrl(rawAud, false) || rawAud : undefined;
 
-    const isDreamina = target === 'dreamina' || Boolean(normImg?.includes('dreamina_')) || Boolean(normVid?.includes('dreamina_'));
+    const isDreamina =
+      target === 'dreamina' ||
+      Boolean(normImg?.includes('dreamina_')) ||
+      Boolean(normVid?.includes('dreamina_'));
     const isFlow =
       target === 'google-flow' ||
-      target === 'flow' ||
       Boolean(normImg?.includes('flow_')) ||
       Boolean(normVid?.includes('flow_'));
 
@@ -4695,6 +4863,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         extensionDetected: true,
         dreaminaTabConnected: isDreamina ? true : s.chromeBridge.dreaminaTabConnected,
         flowTabConnected: isFlow ? true : s.chromeBridge.flowTabConnected,
+        connectedPlatforms: target
+          ? { ...s.chromeBridge.connectedPlatforms, [target]: true }
+          : s.chromeBridge.connectedPlatforms,
       },
     }));
 
@@ -4707,10 +4878,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       set((s) => ({
         nodes: s.nodes.map((n) =>
           (jobId && n.interactionId === jobId) ||
-          (n.status === 'generating' &&
-            ((isDreamina && n.editBadge?.includes('Dreamina')) ||
-              (isFlow && n.editBadge?.includes('Google Flow'))))
-            ? { ...n, status: 'ready' as const, editBadge: undefined }
+          (n.status === 'generating' && target && n.platformId === target)
+            ? {
+                ...n,
+                status: n.imageUrl || n.videoUrl || n.audioUrl ? ('ready' as const) : ('idle' as const),
+                editBadge: undefined,
+              }
             : n
         ),
       }));
@@ -4718,7 +4891,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       return;
     }
 
-    if (!normImg && !normVid) return;
+    if (!normImg && !normVid && !normAud) return;
 
     const { nodes } = get();
     const matchedNode =
@@ -4726,17 +4899,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       nodes.find(
         (n) =>
           n.status === 'generating' &&
-          ((isDreamina && n.editBadge?.includes('Dreamina')) ||
+          ((target && n.platformId === target) ||
+            (isDreamina && n.editBadge?.includes('Dreamina')) ||
             (isFlow && n.editBadge?.includes('Google Flow')))
       );
 
     if (matchedNode) {
       if (jobId) completedBridgeJobIds.add(jobId);
-      const label = isDreamina
-        ? 'Dreamina · Live Browser'
-        : isFlow
-        ? 'Google Flow · Live Browser'
-        : 'Browser Credit Bridge';
+      const label = `${target || 'Browser'} · Live Credits`;
       set((s) => ({
         nodes: s.nodes.map((n) => {
           if (n.id !== matchedNode.id) return n;
@@ -4748,6 +4918,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             editBadge: undefined,
             imageUrl: nextImg,
             videoUrl: normVid || (n.kind === 'video' ? n.videoUrl : undefined),
+            audioUrl: normAud || (n.kind === 'audio' ? n.audioUrl : undefined),
             interactionId: jobId || n.interactionId,
             layers: nextImg ? createDefaultLayers(nextImg) : n.layers,
             providerUsed: label,
@@ -4760,15 +4931,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   verifyProviderConnection: async (provider) => {
     const { byok } = get();
-    const apiKeyMap: Record<
-      'gemini' | 'fal' | 'replicate' | 'seedance' | 'comfyui',
-      string | undefined
-    > = {
+    const apiKeyMap: Record<string, string | undefined> = {
       gemini: byok.geminiApiKey?.trim() || undefined,
       fal: byok.falApiKey?.trim() || undefined,
       replicate: byok.replicateApiKey?.trim() || undefined,
       seedance: byok.seedanceApiKey?.trim() || undefined,
       comfyui: undefined,
+      kling: byok.klingApiKey?.trim() || undefined,
+      elevenlabs: byok.elevenlabsApiKey?.trim() || undefined,
+      openai: byok.openaiApiKey?.trim() || undefined,
+      higgsfield: byok.higgsfieldApiKey?.trim() || undefined,
+      openart: byok.openartApiKey?.trim() || undefined,
+      imagineart: byok.imagineartApiKey?.trim() || undefined,
     };
 
     set((s) => ({
@@ -4778,6 +4952,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const result = await verifyProviderViaBackend({
       provider,
       apiKey: apiKeyMap[provider],
+      accessKey: provider === 'kling' ? byok.klingAccessKey?.trim() || undefined : undefined,
+      secretKey: provider === 'kling' ? byok.klingSecretKey?.trim() || undefined : undefined,
       baseUrl:
         provider === 'comfyui'
           ? byok.comfyUiUrl?.trim() || 'http://127.0.0.1:8188'
@@ -4801,6 +4977,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           ? `Verified ${provider.toUpperCase()} · Unlocked ${unlocked.join(', ')}`
           : `Verified ${provider.toUpperCase()} connection`
       );
+      await get().refreshPlatformsAndExternalMcp();
     } else {
       get().showToast(
         result.error || `Failed to verify ${provider.toUpperCase()} credentials`,
@@ -4813,52 +4990,58 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (get().liveBridgeTestRunning) return;
     get().pushHistory();
 
-    const isDreamina = target === 'dreamina';
-    const providerId: ProviderId = isDreamina ? 'dreamina-bridge' : 'flow-bridge';
-    get().setActiveProvider(providerId);
+    const labelMap: Record<BrowserPlatformTarget, string> = {
+      higgsfield: 'Higgsfield',
+      kling: 'Kling AI',
+      dreamina: 'Dreamina',
+      'google-flow': 'Google Flow',
+      openart: 'OpenArt',
+      imagineart: 'ImagineArt',
+      elevenlabs: 'ElevenLabs',
+    };
+    const targetName = labelMap[target] || target;
+    const resolvedMode: 'image' | 'video' | 'audio' =
+      target === 'elevenlabs' ? 'audio' : mode;
 
-    const testPrompt = isDreamina
-      ? '35mm Leica M6 daylight portrait in a sunlit Mediterranean limestone courtyard, warm natural window shadow, Kodak Portra 400 fine film grain'
-      : '35mm Cooke S4/i architectural coastal cliffside walk in clear golden afternoon sun, natural ocean wind, Kodak Vision3 250D';
+    const testPrompt =
+      resolvedMode === 'audio'
+        ? 'Every vessel carries the quiet memory of salt, water, and afternoon sun.'
+        : '35mm natural daylight architectural courtyard study, warm travertine window shadow, Kodak Vision3 250D';
 
     const maxRight = get()
       .nodes.filter((n) => n.kind !== 'timeline')
       .reduce((acc, n) => Math.max(acc, n.x + n.width), 360);
 
     const nodeId = `node_live_bridge_${Date.now()}`;
-    const liveBadge = isDreamina
-      ? 'Generating on Dreamina Canvas…'
-      : 'Generating on Google Flow…';
+    const liveBadge = `Generating on ${targetName}…`;
 
     const testNode: CanvasNode = {
       id: nodeId,
-      kind: mode === 'video' ? 'video' : 'image',
-      title: isDreamina
-        ? `Images · Dreamina Live Browser`
-        : `Images · Google Flow Live Browser`,
+      kind: resolvedMode,
+      title: `${resolvedMode === 'video' ? 'Videos' : resolvedMode === 'audio' ? 'Audio' : 'Images'} · ${targetName}`,
       prompt: testPrompt,
       x: maxRight + 96,
       y: 160,
-      width: mode === 'video' ? 568 : 384,
-      height: mode === 'video' ? 320 : 216,
+      width: resolvedMode === 'video' ? 480 : resolvedMode === 'audio' ? 340 : 384,
+      height: resolvedMode === 'video' ? 270 : resolvedMode === 'audio' ? 128 : 216,
       aspectRatio: '16:9',
       status: 'generating',
+      platformId: target as PlatformId,
+      connectionMode: 'browser-bridge',
       progress: 35,
       editBadge: liveBadge,
       seed: Math.floor(Math.random() * 9000) + 100,
-      resolution: '1080p',
-      durationSec: mode === 'video' ? 6 : undefined,
+      resolution: resolvedMode === 'video' ? '1080p' : '2K',
+      durationSec: resolvedMode === 'video' ? 5 : resolvedMode === 'audio' ? 8 : undefined,
       elementHandles: [],
       layers: [],
-      providerUsed: getProviderDisplayLabel(providerId),
+      providerUsed: `${targetName} · Browser Credits`,
       createdAt: Date.now(),
     };
 
     set((s) => ({
       liveBridgeTestRunning: target,
-      liveBridgeStatusText: `Dispatched live ${mode} prompt to ${
-        isDreamina ? 'dreamina.capcut.com' : 'labs.google/fx/tools/flow'
-      } — waiting for browser session…`,
+      liveBridgeStatusText: `Dispatched live ${resolvedMode} prompt to ${targetName} — waiting for browser session…`,
       nodes: [...s.nodes, testNode],
       selectedNodeIds: [nodeId],
       activeView: 'canvas',
@@ -4866,10 +5049,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     const res = await enqueueLiveBridgeJobViaBackend({
       target,
-      mode,
+      mode: resolvedMode,
       prompt: testPrompt,
       aspectRatio: '16:9',
-      durationSec: 6,
+      durationSec: 5,
       waitForResult: true,
     });
 
@@ -4878,35 +5061,36 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         liveBridgeTestRunning: null,
         liveBridgeStatusText:
           res.error ||
-          `No live ${
-            isDreamina ? 'Dreamina' : 'Google Flow'
-          } browser tab answered. Open the tab & load Chrome Bridge or paste the 1-line script.`,
+          `No live ${targetName} browser tab answered. Open ${targetName} with the Chrome Bridge extension loaded.`,
         nodes: s.nodes.filter((n) => n.id !== nodeId),
         selectedNodeIds: [],
       }));
       get().showToast(
-        res.error ||
-          `No live ${isDreamina ? 'Dreamina' : 'Google Flow'} browser session answered.`,
+        res.error || `No live ${targetName} browser session answered.`,
         'error'
       );
       return;
     }
 
     if (res.jobId) completedBridgeJobIds.add(res.jobId);
-    const resolvedImg = res.imageUrl || (mode === 'image' ? res.fullUrl : undefined);
-    const resolvedVid = res.videoUrl || (mode === 'video' ? res.fullUrl : undefined);
+    const resolvedImg = res.imageUrl || (resolvedMode === 'image' ? res.fullUrl : undefined);
+    const resolvedVid = res.videoUrl || (resolvedMode === 'video' ? res.fullUrl : undefined);
 
     set((s) => ({
       liveBridgeTestRunning: null,
-      liveBridgeStatusText: `✓ Live ${
-        isDreamina ? 'Dreamina' : 'Google Flow'
-      } generation succeeded (${resolvedVid || resolvedImg})`,
+      liveBridgeStatusText: `✓ Live ${targetName} generation succeeded (${resolvedVid || resolvedImg})`,
       providerModalOpen: false,
       chromeBridge: {
         ...s.chromeBridge,
         extensionDetected: true,
-        dreaminaTabConnected: isDreamina ? true : s.chromeBridge.dreaminaTabConnected,
-        flowTabConnected: !isDreamina ? true : s.chromeBridge.flowTabConnected,
+        dreaminaTabConnected:
+          target === 'dreamina' ? true : s.chromeBridge.dreaminaTabConnected,
+        flowTabConnected:
+          target === 'google-flow' ? true : s.chromeBridge.flowTabConnected,
+        connectedPlatforms: {
+          ...s.chromeBridge.connectedPlatforms,
+          [target]: true,
+        },
       },
       nodes: s.nodes.map((n) =>
         n.id === nodeId
@@ -4919,15 +5103,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               videoUrl: resolvedVid || n.videoUrl,
               interactionId: res.jobId || n.interactionId,
               layers: resolvedImg ? createDefaultLayers(resolvedImg) : n.layers,
-              providerUsed: getProviderDisplayLabel(providerId),
+              providerUsed: `${targetName} · Browser Credits`,
             }
           : n
       ),
     }));
 
-    get().showToast(
-      `Live ${isDreamina ? 'Dreamina' : 'Google Flow'} generation landed on canvas`
-    );
+    get().showToast(`Live ${targetName} generation landed on canvas`);
   },
 
   triggerTestBridgeCapture: async (source = 'dreamina') => {
@@ -4936,27 +5118,721 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       timestamp: Date.now(),
       type: 'bridge_asset',
       source,
-      title:
-        source === 'flow'
-          ? 'Bridge · Flow Coastal Sequence'
-          : 'Bridge · 35mm Alpine Location Frame',
+      title: `Bridge · ${source === 'flow' || source === 'google-flow' ? 'Google Flow' : source} Frame`,
       mediaUrl:
-        source === 'flow'
+        source === 'flow' || source === 'google-flow'
           ? '/media/real_shot02_bridge.mp4'
           : '/media/real_alpine_road.jpg',
-      prompt:
-        source === 'flow'
-          ? 'Natural daylight optical glide from limestone courtyard out over Atlantic cliffs'
-          : 'Morning mist clearing over timber mountain pass, natural 35mm daylight',
+      prompt: 'Natural daylight architectural composition captured via Browser Credit Bridge',
     };
 
     const pushed = await pushBridgeEventViaBackend(testEvent);
-    // If WebSocket broadcast hasn't ingested it within 350ms (e.g. offline), ingest locally
     setTimeout(() => {
       if (!seenBridgeEventIds.has(testEvent.eventId!)) {
         get().ingestBridgeWsEvent(testEvent);
       }
     }, pushed.ok ? 350 : 20);
+  },
+
+  setNodePlatformAndModel: (nodeId, platformId, explicitModelId) => {
+    const { nodes, platformsCatalog, externalMcpServers } = get();
+    const target = nodes.find((n) => n.id === nodeId);
+    if (!target) return;
+    const modality = nodeKindToModality(target.kind) || 'image';
+    const models = getModelsForPlatformAndModality(
+      platformId,
+      modality,
+      platformsCatalog,
+      externalMcpServers
+    );
+    const chosenModel =
+      (explicitModelId ? models.find((m) => m.id === explicitModelId) : undefined) ||
+      models[0];
+    const resolvedModelId = explicitModelId || chosenModel?.id || '';
+
+    let mcpServerId: string | undefined;
+    let mcpToolName: string | undefined;
+    if (platformId === 'custom-mcp' && resolvedModelId.includes('::')) {
+      const [sId, tName] = resolvedModelId.split('::');
+      mcpServerId = sId;
+      mcpToolName = tName;
+    } else if (resolvedModelId.startsWith('mcp:')) {
+      const [, sId, tName] = resolvedModelId.split(':');
+      mcpServerId = sId;
+      mcpToolName = tName;
+    }
+
+    const badge =
+      getPlatformBadgeLabel(
+        platformId,
+        resolvedModelId,
+        platformsCatalog,
+        externalMcpServers
+      ) || platformId;
+
+    set((s) => ({
+      lastImagePlatformId: modality === 'image' ? platformId : s.lastImagePlatformId,
+      lastVideoPlatformId: modality === 'video' ? platformId : s.lastVideoPlatformId,
+      lastAudioPlatformId: modality === 'audio' ? platformId : s.lastAudioPlatformId,
+      nodes: s.nodes.map((n) =>
+        n.id === nodeId
+          ? {
+              ...n,
+              platformId,
+              modelId: resolvedModelId,
+              mcpServerId,
+              mcpToolName,
+              audioMode:
+                modality === 'audio' && resolvedModelId.includes('sound')
+                  ? 'sfx'
+                  : modality === 'audio' && n.audioMode === 'sfx' && !resolvedModelId.includes('sound')
+                  ? 'tts'
+                  : n.audioMode,
+              providerUsed: badge,
+            }
+          : n
+      ),
+    }));
+  },
+
+  setNodeAspectRatio: (nodeId, aspectRatio) => {
+    const target = get().nodes.find((n) => n.id === nodeId);
+    if (!target) return;
+    const baseW =
+      target.kind === 'video' || target.kind === 'contact-sheet'
+        ? 480
+        : target.kind === 'element'
+        ? 320
+        : 384;
+    const dims = getDimensionsForAspect(aspectRatio, baseW);
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === nodeId
+          ? {
+              ...n,
+              aspectRatio,
+              width: dims.width,
+              height: dims.height,
+            }
+          : n
+      ),
+    }));
+  },
+
+  uploadReferenceToNode: async (nodeId, file) => {
+    const target = get().nodes.find((n) => n.id === nodeId);
+    if (!target) return;
+    get().pushHistory();
+
+    const dataUrl = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(file);
+    });
+    if (!dataUrl) return;
+
+    const commaIdx = dataUrl.indexOf(',');
+    const b64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+    const uploaded = await uploadMediaViaBackend({
+      filename: file.name || `ref_${Date.now()}.png`,
+      mimeType: file.type || 'image/png',
+      dataBase64: b64,
+    });
+    const finalUrl = uploaded.ok && uploaded.mediaUrl ? uploaded.mediaUrl : dataUrl;
+
+    set((s) => {
+      let nextElements = s.elements;
+      if (target.kind === 'element') {
+        const handle = target.elementHandles[0] || '@Ref_1';
+        const existingVault = s.elements.find(
+          (el) => el.handle.toLowerCase() === handle.toLowerCase()
+        );
+        const refItem = {
+          id: `ref_${Date.now()}`,
+          label: file.name.slice(0, 24) || handle,
+          dataUrl: finalUrl,
+        };
+        if (existingVault) {
+          nextElements = s.elements.map((el) =>
+            el.id === existingVault.id
+              ? { ...el, references: [refItem, ...el.references.slice(0, 5)] }
+              : el
+          );
+        } else {
+          nextElements = [
+            ...s.elements,
+            {
+              id: `vault_${Date.now()}`,
+              handle,
+              name: target.title || handle.replace(/^@/, ''),
+              category: 'character',
+              description: target.prompt || 'Canvas reference anchor',
+              accentColor: '#20D5EC',
+              references: [refItem],
+            },
+          ];
+        }
+      }
+
+      return {
+        elements: nextElements,
+        nodes: s.nodes.map((n) =>
+          n.id === nodeId
+            ? {
+                ...n,
+                status: 'ready' as const,
+                imageUrl: finalUrl,
+                layers: createDefaultLayers(finalUrl),
+                providerUsed: 'Uploaded Reference',
+              }
+            : n
+        ),
+      };
+    });
+
+    get().showToast(`Loaded "${file.name}" onto ${target.title}`);
+  },
+
+  attachReferenceToNode: async (nodeId, file) => {
+    const target = get().nodes.find((n) => n.id === nodeId);
+    if (!target) return;
+    const dataUrl = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(file);
+    });
+    if (!dataUrl) return;
+    const commaIdx = dataUrl.indexOf(',');
+    const b64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+    const uploaded = await uploadMediaViaBackend({
+      filename: file.name || `ref_${Date.now()}.png`,
+      mimeType: file.type || 'image/png',
+      dataBase64: b64,
+    });
+    const finalUrl = uploaded.ok && uploaded.mediaUrl ? uploaded.mediaUrl : dataUrl;
+
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === nodeId
+          ? {
+              ...n,
+              referenceUrls: Array.from(new Set([...(n.referenceUrls || []), finalUrl])),
+            }
+          : n
+      ),
+    }));
+    get().showToast(`Attached reference to "${target.title}"`);
+  },
+
+  removeReferenceUrlFromNode: (nodeId, url) => {
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === nodeId
+          ? {
+              ...n,
+              referenceUrls: (n.referenceUrls || []).filter((u) => u !== url),
+            }
+          : n
+      ),
+    }));
+  },
+
+  saveNodeAsElementReference: (nodeId, customHandle) => {
+    const node = get().nodes.find((n) => n.id === nodeId);
+    if (!node || !node.imageUrl) {
+      get().showToast('Generate or upload an image on this node first', 'error');
+      return;
+    }
+    const idx = get().elements.length + 1;
+    const rawHandle =
+      customHandle?.trim() ||
+      node.elementHandles[0] ||
+      `@Ref_${idx}`;
+    const handle = rawHandle.startsWith('@')
+      ? rawHandle.replace(/[^@A-Za-z0-9_]/g, '')
+      : `@${rawHandle.replace(/[^A-Za-z0-9_]/g, '')}`;
+
+    set((s) => {
+      const existing = s.elements.find(
+        (el) => el.handle.toLowerCase() === handle.toLowerCase()
+      );
+      const refEntry = {
+        id: `ref_${Date.now()}`,
+        label: node.title,
+        dataUrl: node.imageUrl!,
+      };
+      const nextElements = existing
+        ? s.elements.map((el) =>
+            el.id === existing.id
+              ? { ...el, references: [refEntry, ...el.references.slice(0, 5)] }
+              : el
+          )
+        : [
+            ...s.elements,
+            {
+              id: `vault_${Date.now()}`,
+              handle,
+              name: node.title,
+              category: 'character' as const,
+              description: node.prompt || 'Saved from canvas generation',
+              accentColor: '#20D5EC',
+              references: [refEntry],
+            },
+          ];
+
+      return {
+        elements: nextElements,
+        nodes: s.nodes.map((n) =>
+          n.id === nodeId
+            ? {
+                ...n,
+                elementHandles: Array.from(new Set([handle, ...n.elementHandles])),
+              }
+            : n
+        ),
+      };
+    });
+
+    get().showToast(`Saved "${node.title}" as ${handle} reference`);
+  },
+
+  generateSingleNode: async (nodeId) => {
+    const state = get();
+    const node = state.nodes.find((n) => n.id === nodeId);
+    if (!node) return false;
+
+    const modality = nodeKindToModality(node.kind);
+    if (!modality) {
+      if (node.kind === 'mcp-tool') {
+        await get().executeMcpToolNode(node.id);
+        return true;
+      }
+      return false;
+    }
+
+    const platformId: PlatformId =
+      node.platformId ||
+      (modality === 'video'
+        ? state.lastVideoPlatformId
+        : modality === 'audio'
+        ? state.lastAudioPlatformId
+        : state.lastImagePlatformId);
+
+    const models = getModelsForPlatformAndModality(
+      platformId,
+      modality,
+      state.platformsCatalog,
+      state.externalMcpServers
+    );
+    const modelId = node.modelId || models[0]?.id || '';
+
+    // Gather wired upstream nodes (both reference images AND upstream text prompt nodes)
+    const incomingEdges = state.edges.filter((e) => e.targetId === node.id);
+    const upstreamNodes = incomingEdges
+      .map((e) => state.nodes.find((nn) => nn.id === e.sourceId))
+      .filter((nn): nn is CanvasNode => Boolean(nn));
+
+    const upstreamTextPrompt = upstreamNodes
+      .filter((nn) => nn.kind === 'text' && nn.prompt.trim())
+      .map((nn) => nn.prompt.trim())
+      .join('\n');
+
+    const effectivePrompt = (node.prompt.trim() || upstreamTextPrompt).trim();
+    if (!effectivePrompt) {
+      get().selectNodes([node.id]);
+      get().showToast(`Enter a prompt on "${node.title}" before generating`, 'error');
+      return false;
+    }
+
+    // Collect reference images in deterministic priority:
+    // 1. Wired upstream image / element / contact-sheet nodes
+    // 2. Node's explicit referenceUrls[]
+    // 3. @Element handles referenced in prompt
+    const refSet = new Set<string>();
+    for (const up of upstreamNodes) {
+      if (
+        (up.kind === 'image' || up.kind === 'element' || up.kind === 'contact-sheet') &&
+        up.imageUrl
+      ) {
+        refSet.add(up.imageUrl);
+      }
+    }
+    for (const url of node.referenceUrls || []) {
+      if (url) refSet.add(url);
+    }
+    const promptHandles = [
+      ...extractHandles(effectivePrompt),
+      ...(node.elementHandles || []),
+    ];
+    for (const h of promptHandles) {
+      const vault = state.elements.find(
+        (el) => el.handle.toLowerCase() === h.toLowerCase()
+      );
+      if (vault?.references?.[0]?.dataUrl) {
+        refSet.add(vault.references[0].dataUrl);
+      }
+    }
+
+    let mcpServerId = node.mcpServerId;
+    let mcpToolName = node.mcpToolName;
+    if (platformId === 'custom-mcp' && modelId.includes('::')) {
+      const [sId, tName] = modelId.split('::');
+      mcpServerId = sId;
+      mcpToolName = tName;
+    } else if (modelId.startsWith('mcp:')) {
+      const [, sId, tName] = modelId.split(':');
+      mcpServerId = sId;
+      mcpToolName = tName;
+    }
+
+    const badge =
+      getPlatformBadgeLabel(
+        platformId,
+        modelId,
+        state.platformsCatalog,
+        state.externalMcpServers
+      ) || `${platformId} · ${modelId}`;
+
+    const credentials = resolveByokCredentialsForPlatform(platformId, state.byok);
+
+    set((s) => ({
+      lastFailedPlatformId: null,
+      nodes: s.nodes.map((n) =>
+        n.id === nodeId
+          ? {
+              ...n,
+              platformId,
+              modelId,
+              status: 'generating' as const,
+              progress: 30,
+              editBadge: `Generating on ${badge}…`,
+            }
+          : n
+      ),
+    }));
+
+    const res = await generateNodeViaBackend({
+      nodeId: node.id,
+      kind: modality,
+      platformId,
+      connectionMode: node.connectionMode || 'auto',
+      modelId,
+      prompt: effectivePrompt,
+      negativePrompt: node.negativePrompt,
+      settings: {
+        aspectRatio: node.aspectRatio,
+        resolution: node.resolution,
+        batchCount: node.batchCount || 1,
+        durationSec: node.durationSec || (modality === 'video' ? 5 : modality === 'audio' ? 8 : undefined),
+        audioEnabled: node.audioEnabled ?? true,
+        audioMode: node.audioMode || (modality === 'audio' ? 'tts' : undefined),
+        voiceId: node.voiceId || (modality === 'audio' ? 'JBFqnCBsd6RMkjVDRZzb' : undefined),
+        seed: node.seed,
+      },
+      referenceImages: Array.from(refSet),
+      mcpServerId,
+      mcpToolName,
+      credentials,
+    });
+
+    if (!res.ok) {
+      set((s) => ({
+        lastFailedPlatformId: platformId,
+        nodes: s.nodes.map((n) => {
+          if (n.id !== nodeId) return n;
+          const hadMedia = Boolean(n.imageUrl || n.videoUrl || n.audioUrl);
+          return {
+            ...n,
+            status: hadMedia ? ('ready' as const) : ('idle' as const),
+            progress: undefined,
+            editBadge: undefined,
+          };
+        }),
+      }));
+      get().showToast(
+        res.error ||
+          `Connect your ${badge} credits (MCP, Browser Session, or API Key) in Connections · Credits.`,
+        'error'
+      );
+      return false;
+    }
+
+    const primaryImg =
+      res.imageUrl ||
+      (modality === 'image' ? res.mediaUrl || res.outputs?.[0] : undefined);
+    const primaryVid =
+      res.videoUrl ||
+      (modality === 'video' ? res.mediaUrl || res.outputs?.[0] : undefined);
+    const primaryAud =
+      res.audioUrl ||
+      (modality === 'audio' ? res.mediaUrl || res.outputs?.[0] : undefined);
+
+    set((s) => {
+      let nextElements = s.elements;
+      if (node.kind === 'element' && primaryImg) {
+        const handle = node.elementHandles[0] || '@Ref_1';
+        const existing = s.elements.find(
+          (el) => el.handle.toLowerCase() === handle.toLowerCase()
+        );
+        const refEntry = {
+          id: `ref_${Date.now()}`,
+          label: node.title,
+          dataUrl: primaryImg,
+        };
+        nextElements = existing
+          ? s.elements.map((el) =>
+              el.id === existing.id
+                ? { ...el, references: [refEntry, ...el.references.slice(0, 5)] }
+                : el
+            )
+          : [
+              ...s.elements,
+              {
+                id: `vault_${Date.now()}`,
+                handle,
+                name: node.title,
+                category: 'character' as const,
+                description: effectivePrompt,
+                accentColor: '#20D5EC',
+                references: [refEntry],
+              },
+            ];
+      }
+
+      return {
+        elements: nextElements,
+        nodes: s.nodes.map((n) => {
+          if (n.id !== nodeId) return n;
+          const resolvedImageForCard =
+            primaryImg ||
+            (modality === 'video' && !n.imageUrl
+              ? Array.from(refSet)[0]
+              : n.imageUrl);
+          return {
+            ...n,
+            prompt: n.prompt.trim() ? n.prompt : effectivePrompt,
+            status: 'ready' as const,
+            progress: 100,
+            editBadge: undefined,
+            imageUrl: resolvedImageForCard,
+            videoUrl: primaryVid || n.videoUrl,
+            audioUrl: primaryAud || n.audioUrl,
+            waveform:
+              res.waveform && res.waveform.length > 0 ? res.waveform : n.waveform,
+            generatedOutputs:
+              res.outputs && res.outputs.length > 0
+                ? res.outputs
+                : n.generatedOutputs,
+            interactionId: res.jobId || n.interactionId,
+            layers: resolvedImageForCard
+              ? createDefaultLayers(resolvedImageForCard)
+              : n.layers,
+            providerUsed: res.providerUsed || badge,
+          };
+        }),
+      };
+    });
+
+    void get().persistActiveProjectToDisk();
+    get().showToast(`Generated "${node.title}" via ${res.providerUsed || badge}`);
+    return true;
+  },
+
+  runWorkflowPipeline: async (startFromNodeId) => {
+    if (get().workflowRunning) return;
+    const { nodes, edges } = get();
+
+    const isGeneratable = (n: CanvasNode) => Boolean(nodeKindToModality(n.kind));
+
+    let candidateIds: Set<string>;
+    if (startFromNodeId) {
+      // BFS reachable downstream from startFromNodeId
+      candidateIds = new Set<string>();
+      const q = [startFromNodeId];
+      while (q.length > 0) {
+        const cur = q.shift()!;
+        if (candidateIds.has(cur)) continue;
+        candidateIds.add(cur);
+        for (const e of edges) {
+          if (e.sourceId === cur && !candidateIds.has(e.targetId)) {
+            q.push(e.targetId);
+          }
+        }
+      }
+    } else {
+      const edgeParticipantIds = new Set<string>();
+      for (const e of edges) {
+        edgeParticipantIds.add(e.sourceId);
+        edgeParticipantIds.add(e.targetId);
+      }
+      const idleNodes = nodes.filter((n) => isGeneratable(n) && n.status === 'idle');
+      if (idleNodes.length > 0 || edgeParticipantIds.size > 0) {
+        candidateIds = new Set<string>();
+        for (const n of nodes) {
+          if (isGeneratable(n) && (n.status === 'idle' || edgeParticipantIds.has(n.id))) {
+            candidateIds.add(n.id);
+          }
+        }
+      } else {
+        candidateIds = new Set(nodes.filter(isGeneratable).map((n) => n.id));
+      }
+    }
+
+    // Topological sort (Kahn's algorithm) over candidate generatable nodes
+    const genNodes = nodes.filter((n) => candidateIds.has(n.id) && isGeneratable(n));
+    if (genNodes.length === 0) {
+      get().showToast('Add an Image, Video, or Audio node to run the workflow', 'error');
+      return;
+    }
+
+    const inDegree = new Map<string, number>();
+    const adj = new Map<string, string[]>();
+    for (const n of genNodes) {
+      inDegree.set(n.id, 0);
+      adj.set(n.id, []);
+    }
+    for (const e of edges) {
+      if (inDegree.has(e.sourceId) && inDegree.has(e.targetId)) {
+        adj.get(e.sourceId)!.push(e.targetId);
+        inDegree.set(e.targetId, (inDegree.get(e.targetId) || 0) + 1);
+      }
+    }
+
+    const queue = genNodes
+      .filter((n) => (inDegree.get(n.id) || 0) === 0)
+      .sort((a, b) => a.x - b.x || a.y - b.y)
+      .map((n) => n.id);
+
+    const orderedIds: string[] = [];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      orderedIds.push(id);
+      for (const nxt of adj.get(id) || []) {
+        const deg = (inDegree.get(nxt) || 1) - 1;
+        inDegree.set(nxt, deg);
+        if (deg === 0) queue.push(nxt);
+      }
+    }
+    // Append any remaining cycle nodes deterministically
+    for (const n of genNodes) {
+      if (!orderedIds.includes(n.id)) orderedIds.push(n.id);
+    }
+
+    // When running whole workflow without explicit startFromNodeId, skip upstream nodes that already have media ready unless all nodes are already ready
+    const anyIdle = orderedIds.some((id) => {
+      const nn = get().nodes.find((x) => x.id === id);
+      return nn && nn.status === 'idle';
+    });
+    const executionPlan =
+      !startFromNodeId && anyIdle
+        ? orderedIds.filter((id) => {
+            const nn = get().nodes.find((x) => x.id === id);
+            return nn && nn.status === 'idle';
+          })
+        : orderedIds;
+
+    set({
+      workflowRunning: true,
+      workflowProgressText: `Running 1/${executionPlan.length}…`,
+    });
+
+    let completedCount = 0;
+    for (let i = 0; i < executionPlan.length; i++) {
+      const targetId = executionPlan[i];
+      const curNode = get().nodes.find((n) => n.id === targetId);
+      set({
+        workflowProgressText: `Stage ${i + 1}/${executionPlan.length} · ${
+          curNode?.title || 'Node'
+        }`,
+      });
+      const ok = await get().generateSingleNode(targetId);
+      if (!ok) {
+        set({ workflowRunning: false, workflowProgressText: null });
+        return;
+      }
+      completedCount++;
+    }
+
+    set({ workflowRunning: false, workflowProgressText: null });
+    if (completedCount > 1) {
+      get().showToast(`Completed ${completedCount}-stage canvas workflow`);
+    }
+  },
+
+  refreshPlatformsAndExternalMcp: async () => {
+    const [platRes, mcpRes] = await Promise.all([
+      fetchPlatformCatalogViaBackend(),
+      listExternalMcpServers(),
+    ]);
+
+    set((s) => {
+      let mergedCatalog = PLATFORM_CATALOG;
+      if (platRes.ok && platRes.platforms.length > 0) {
+        const backendMap = new Map(platRes.platforms.map((p) => [p.id, p]));
+        mergedCatalog = PLATFORM_CATALOG.map((localPlat) => {
+          const remote = backendMap.get(localPlat.id);
+          if (!remote) return localPlat;
+          const mergedModels = [...localPlat.models];
+          for (const rm of remote.models || []) {
+            if (!mergedModels.some((lm) => lm.id === rm.id)) {
+              mergedModels.push(rm);
+            }
+          }
+          return {
+            ...localPlat,
+            connected: remote.connected ?? localPlat.connected,
+            activeTransports: remote.activeTransports ?? localPlat.activeTransports,
+            models: mergedModels,
+          };
+        });
+        for (const remote of platRes.platforms) {
+          if (!mergedCatalog.some((lp) => lp.id === remote.id)) {
+            mergedCatalog.push(remote);
+          }
+        }
+      }
+
+      return {
+        platformsCatalog: mergedCatalog,
+        externalMcpServers: mcpRes.ok ? mcpRes.servers : s.externalMcpServers,
+      };
+    });
+  },
+
+  addExternalMcpServer: async (payload) => {
+    const res = await registerExternalMcpServer(payload);
+    if (!res.ok) {
+      get().showToast(res.error || 'Could not connect MCP server', 'error');
+      return false;
+    }
+    await get().refreshPlatformsAndExternalMcp();
+    get().showToast(
+      `Connected MCP "${payload.name}" (${res.server?.tools?.length || 0} tools)`
+    );
+    return true;
+  },
+
+  refreshExternalMcpById: async (id) => {
+    const res = await refreshExternalMcpServer(id);
+    if (!res.ok) {
+      get().showToast(res.error || 'Could not refresh MCP server', 'error');
+      return;
+    }
+    await get().refreshPlatformsAndExternalMcp();
+    get().showToast(
+      `Refreshed "${res.server?.name || id}" (${res.server?.tools?.length || 0} tools)`
+    );
+  },
+
+  removeExternalMcpById: async (id) => {
+    await deleteExternalMcpServer(id);
+    set((s) => ({
+      externalMcpServers: s.externalMcpServers.filter((srv) => srv.id !== id),
+    }));
+    await get().refreshPlatformsAndExternalMcp();
+    get().showToast('Removed external MCP server');
   },
 
   runAutonomousDirectorAgent: async (creativeBrief) => {

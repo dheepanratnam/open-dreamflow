@@ -19,9 +19,14 @@ export const App: React.FC = () => {
   const activeView = useStudioStore((s) => s.activeView);
   const toastMessage = useStudioStore((s) => s.toastMessage);
   const toastKind = useStudioStore((s) => s.toastKind);
+  const lastFailedPlatformId = useStudioStore((s) => s.lastFailedPlatformId);
+  const openProviderModal = useStudioStore((s) => s.openProviderModal);
   const hydrateFromUrlRecipe = useStudioStore((s) => s.hydrateFromUrlRecipe);
   const autoConnectLocalMcpBackend = useStudioStore(
     (s) => s.autoConnectLocalMcpBackend
+  );
+  const refreshPlatformsAndExternalMcp = useStudioStore(
+    (s) => s.refreshPlatformsAndExternalMcp
   );
   const bootDiskPersistence = useStudioStore((s) => s.bootDiskPersistence);
   const pingBridge = useStudioStore((s) => s.pingBridge);
@@ -39,6 +44,7 @@ export const App: React.FC = () => {
 
     hydrateFromUrlRecipe();
     void autoConnectLocalMcpBackend();
+    void refreshPlatformsAndExternalMcp();
     if (!hasUrlRecipe) {
       void bootDiskPersistence();
     }
@@ -56,6 +62,7 @@ export const App: React.FC = () => {
   }, [
     hydrateFromUrlRecipe,
     autoConnectLocalMcpBackend,
+    refreshPlatformsAndExternalMcp,
     bootDiskPersistence,
     pingBridge,
     handleIncomingBridgeEvent,
@@ -202,10 +209,10 @@ export const App: React.FC = () => {
       {/* Subtle Matte Toast Notification */}
       {toastMessage && (
         <div
-          className={`fixed top-[58px] left-1/2 -translate-x-1/2 z-50 min-h-[34px] max-w-[720px] px-3.5 py-1.5 rounded-full dreamina-levitation text-[12px] flex items-center gap-2 pointer-events-none ${
+          className={`fixed top-[58px] left-1/2 -translate-x-1/2 z-50 min-h-[34px] max-w-[780px] px-3.5 py-1.5 rounded-full dreamina-levitation text-[12px] flex items-center gap-2.5 ${
             toastKind === 'error'
-              ? 'border border-amber-400/40 text-amber-100'
-              : 'text-white/90'
+              ? 'border border-amber-400/40 text-amber-100 pointer-events-auto'
+              : 'text-white/90 pointer-events-none'
           }`}
         >
           {toastKind === 'error' ? (
@@ -220,6 +227,15 @@ export const App: React.FC = () => {
             />
           )}
           <span className="truncate">{toastMessage}</span>
+          {toastKind === 'error' && lastFailedPlatformId && (
+            <button
+              type="button"
+              onClick={() => openProviderModal('byok', lastFailedPlatformId)}
+              className="h-6 px-2.5 rounded-full bg-white hover:bg-[#e6e6e6] text-[#0e0e0e] text-[11px] font-semibold shrink-0 transition-colors"
+            >
+              Connect Credits
+            </button>
+          )}
         </div>
       )}
     </div>

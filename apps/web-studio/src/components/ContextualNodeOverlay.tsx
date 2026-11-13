@@ -1,168 +1,66 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Aperture,
-  ArrowRight,
   ArrowUp,
   AtSign,
   AudioLines,
   Check,
   ChevronDown,
   Clapperboard,
-  Clock,
-  Compass,
+  Copy,
+  Eraser,
   Film,
   GitBranch,
-  Grid3X3,
   Image as ImageIcon,
-  Layers,
+  Link2,
   Loader2,
-  Maximize,
   Maximize2,
-  Mic,
-  Minimize2,
-  Move3d,
   Paintbrush,
-  Palette,
   Play,
   Plus,
-  RefreshCw,
   Scissors,
   SlidersHorizontal,
   Sparkles,
-  Waves,
+  Trash2,
+  Upload,
+  UserSquare2,
+  Volume2,
+  VolumeX,
+  X,
 } from 'lucide-react';
 import type {
   AspectRatio,
-  KeyframeBridgeCurve,
-  ProviderId,
+  ConnectionTransport,
+  PlatformId,
   ResolutionTier,
 } from '../types/studio';
-import { useStudioStore, normalizeProviderId } from '../store/useStudioStore';
+import {
+  ELEVENLABS_VOICES,
+  getModelsForPlatformAndModality,
+  getPlatformConnectionStatus,
+  getPlatformsForModality,
+  nodeKindToModality,
+} from '../presets/platformCatalog';
+import { useStudioStore } from '../store/useStudioStore';
 import { SmartMediaImage } from './SmartMedia';
 
-const ENGINE_OPTIONS: Array<{
-  id: ProviderId;
+const IMAGE_ASPECTS: AspectRatio[] = ['16:9', '1:1', '9:16', '4:3', '3:4', '21:9'];
+const VIDEO_ASPECTS: AspectRatio[] = ['16:9', '9:16', '1:1', '21:9'];
+const IMAGE_RESOLUTIONS: ResolutionTier[] = ['1K', '2K', '4K'];
+const VIDEO_RESOLUTIONS: ResolutionTier[] = ['720p', '1080p', '4K'];
+const VIDEO_DURATIONS = [5, 8, 10, 15];
+const AUDIO_DURATIONS = [5, 8, 10, 15];
+const BATCH_COUNTS: Array<1 | 2 | 4> = [1, 2, 4];
+
+const TRANSPORT_OPTIONS: Array<{
+  id: ConnectionTransport;
   label: string;
-  shortLabel: string;
-  costLabel: string;
-  group: 'live-browser' | 'cloud-byok' | 'local';
+  hint: string;
 }> = [
-  {
-    id: 'dreamina-bridge',
-    label: 'Dreamina · Live Browser',
-    shortLabel: 'Dreamina · Live Browser',
-    costLabel: '$0.00',
-    group: 'live-browser',
-  },
-  {
-    id: 'flow-bridge',
-    label: 'Google Flow · Live Browser',
-    shortLabel: 'Google Flow · Live Browser',
-    costLabel: '$0.00',
-    group: 'live-browser',
-  },
-  {
-    id: 'gemini-api',
-    label: 'Google Gemini / Veo 3.1 API',
-    shortLabel: 'Gemini / Veo 3.1 API',
-    costLabel: '$0.04',
-    group: 'cloud-byok',
-  },
-  {
-    id: 'fal',
-    label: 'Fal.ai · Flux / Wan Pro',
-    shortLabel: 'Fal.ai · Wan Pro',
-    costLabel: '$0.05',
-    group: 'cloud-byok',
-  },
-  {
-    id: 'replicate',
-    label: 'Replicate · Flux / Video',
-    shortLabel: 'Replicate · Flux',
-    costLabel: '$0.05',
-    group: 'cloud-byok',
-  },
-  {
-    id: 'seedance',
-    label: 'BytePlus · Seedream / Seedance',
-    shortLabel: 'Seedream / Seedance',
-    costLabel: '$0.05',
-    group: 'cloud-byok',
-  },
-  {
-    id: 'comfyui',
-    label: 'ComfyUI · Local GPU (:8188)',
-    shortLabel: 'ComfyUI · Local GPU',
-    costLabel: '$0.00',
-    group: 'local',
-  },
-  {
-    id: 'ffmpeg-local',
-    label: 'FFmpeg 8.0 · Local Camera',
-    shortLabel: 'FFmpeg 8.0 · Local Camera',
-    costLabel: '$0.00',
-    group: 'local',
-  },
+  { id: 'auto', label: 'Auto (Best Available)', hint: 'MCP → Browser Credits → API Key' },
+  { id: 'mcp', label: 'MCP Server Credits', hint: 'Route via connected MCP server' },
+  { id: 'browser-bridge', label: 'Browser Session Credits', hint: 'Logged-in web tab via Chrome Bridge' },
+  { id: 'api-key', label: 'Direct API Key ($0 Markup)', hint: 'Raw BYOK provider call' },
 ];
-
-const ASPECT_OPTIONS: AspectRatio[] = ['16:9', '9:16', '21:9', '1:1'];
-const RES_OPTIONS: ResolutionTier[] = ['720p', '1080p', '2K', '4K'];
-const DURATION_OPTIONS = [4, 6, 10, 15];
-const AUDIO_DURATION_OPTIONS = [6, 12];
-
-const BRIDGE_CURVE_OPTIONS: Array<{
-  id: KeyframeBridgeCurve;
-  label: string;
-  svgPath: string;
-}> = [
-  {
-    id: 'ease-in-out',
-    label: 'Ease In-Out',
-    svgPath: 'M 2 12 C 7 12, 9 2, 14 2',
-  },
-  {
-    id: 'linear',
-    label: 'Linear',
-    svgPath: 'M 2 12 L 14 2',
-  },
-  {
-    id: 'match-dissolve',
-    label: 'Match Dissolve',
-    svgPath: 'M 2 10 Q 8 7, 14 4',
-  },
-  {
-    id: 'whip-pan',
-    label: 'Whip Pan',
-    svgPath: 'M 2 12 C 11 12, 12 2, 14 2',
-  },
-];
-
-const LENS_STOCK_PRESETS = [
-  '35mm Cooke S4/i · Kodak Vision3 250D',
-  '50mm Leica Summilux · Portra 400 Daylight',
-  '24mm Zeiss Master Prime · Alpine Crisp',
-  '65mm ARRI Prime · Architectural Natural',
-];
-
-const MOTION_PRESETS = [
-  { label: 'Dolly In', tag: 'measured 35mm dolly-in push toward subject' },
-  { label: 'Orbit 180°', tag: '180-degree natural parallax camera orbit' },
-  { label: 'Crane Up', tag: 'smooth vertical architectural crane reveal upward' },
-  { label: 'Aerial Glide', tag: 'measured coastal aerial tracking glide' },
-  { label: 'Whip Pan', tag: 'kinetic lateral whip-pan transition' },
-  { label: 'Golden Hour Multi-Turn', tag: 'multi-turn shift to warm late-afternoon amber dusk' },
-];
-
-const CurveMiniIcon: React.FC<{ path: string }> = ({ path }) => (
-  <svg width="16" height="14" viewBox="0 0 16 14" fill="none" className="shrink-0">
-    <path
-      d={path}
-      stroke="#20D5EC"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-    />
-  </svg>
-);
 
 export const ContextualNodeOverlay: React.FC = () => {
   const nodes = useStudioStore((s) => s.nodes);
@@ -172,1354 +70,1245 @@ export const ContextualNodeOverlay: React.FC = () => {
   const panY = useStudioStore((s) => s.panY);
   const zoom = useStudioStore((s) => s.zoom);
 
-  const promptText = useStudioStore((s) => s.promptText);
-  const promptMode = useStudioStore((s) => s.promptMode);
-  const promptSubMode = useStudioStore((s) => s.promptSubMode);
-  const promptAspect = useStudioStore((s) => s.promptAspect);
-  const promptDurationSec = useStudioStore((s) => s.promptDurationSec);
-  const promptResolution = useStudioStore((s) => s.promptResolution);
-  const activeProvider = useStudioStore((s) => s.activeProvider);
+  const elements = useStudioStore((s) => s.elements);
   const byok = useStudioStore((s) => s.byok);
   const chromeBridge = useStudioStore((s) => s.chromeBridge);
-  const bridgeWsConnected = useStudioStore((s) => s.bridgeWsConnected);
-  const mcpHealth = useStudioStore((s) => s.mcpHealth);
-  const elements = useStudioStore((s) => s.elements);
-  const skills = useStudioStore((s) => s.skills);
+  const platformsCatalog = useStudioStore((s) => s.platformsCatalog);
+  const externalMcpServers = useStudioStore((s) => s.externalMcpServers);
+  const lastImagePlatformId = useStudioStore((s) => s.lastImagePlatformId);
+  const lastVideoPlatformId = useStudioStore((s) => s.lastVideoPlatformId);
+  const lastAudioPlatformId = useStudioStore((s) => s.lastAudioPlatformId);
+  const lastFailedPlatformId = useStudioStore((s) => s.lastFailedPlatformId);
+  const workflowRunning = useStudioStore((s) => s.workflowRunning);
 
-  const setPromptText = useStudioStore((s) => s.setPromptText);
-  const setPromptMode = useStudioStore((s) => s.setPromptMode);
-  const setPromptSubMode = useStudioStore((s) => s.setPromptSubMode);
-  const setPromptAspect = useStudioStore((s) => s.setPromptAspect);
-  const setPromptDurationSec = useStudioStore((s) => s.setPromptDurationSec);
-  const setPromptResolution = useStudioStore((s) => s.setPromptResolution);
-  const setActiveProvider = useStudioStore((s) => s.setActiveProvider);
-  const submitPromptGeneration = useStudioStore((s) => s.submitPromptGeneration);
-  const applySkillPreset = useStudioStore((s) => s.applySkillPreset);
   const updateNodeFields = useStudioStore((s) => s.updateNodeFields);
-
+  const setNodePlatformAndModel = useStudioStore((s) => s.setNodePlatformAndModel);
+  const setNodeAspectRatio = useStudioStore((s) => s.setNodeAspectRatio);
+  const uploadReferenceToNode = useStudioStore((s) => s.uploadReferenceToNode);
+  const attachReferenceToNode = useStudioStore((s) => s.attachReferenceToNode);
+  const removeReferenceUrlFromNode = useStudioStore((s) => s.removeReferenceUrlFromNode);
+  const saveNodeAsElementReference = useStudioStore((s) => s.saveNodeAsElementReference);
+  const generateSingleNode = useStudioStore((s) => s.generateSingleNode);
+  const runWorkflowPipeline = useStudioStore((s) => s.runWorkflowPipeline);
+  const spawnDreaminaNodeAt = useStudioStore((s) => s.spawnDreaminaNodeAt);
+  const connectNodes = useStudioStore((s) => s.connectNodes);
+  const duplicateNodes = useStudioStore((s) => s.duplicateNodes);
+  const deleteSelectedNodes = useStudioStore((s) => s.deleteSelectedNodes);
   const openInlineEditor = useStudioStore((s) => s.openInlineEditor);
   const removeBgAndDecomposeLayers = useStudioStore((s) => s.removeBgAndDecomposeLayers);
   const upscaleNodeHd = useStudioStore((s) => s.upscaleNodeHd);
-  const retakeNode = useStudioStore((s) => s.retakeNode);
-  const sliceContactSheetNode = useStudioStore((s) => s.sliceContactSheetNode);
   const extractLastFrameToNextShot = useStudioStore((s) => s.extractLastFrameToNextShot);
-  const convertImageToOmniVideo = useStudioStore((s) => s.convertImageToOmniVideo);
-  const branchVideoMultiTurn = useStudioStore((s) => s.branchVideoMultiTurn);
-  const generateKeyframeBridgeForNode = useStudioStore(
-    (s) => s.generateKeyframeBridgeForNode
-  );
-  const generateAudioForNode = useStudioStore((s) => s.generateAudioForNode);
   const sendNodeToTimeline = useStudioStore((s) => s.sendNodeToTimeline);
-  const executeMcpToolNode = useStudioStore((s) => s.executeMcpToolNode);
-  const spawnStyleDnaNode = useStudioStore((s) => s.spawnStyleDnaNode);
-  const setCameraDirectorOpen = useStudioStore((s) => s.setCameraDirectorOpen);
-  const injectCameraPromptToSelection = useStudioStore((s) => s.injectCameraPromptToSelection);
   const openProviderModal = useStudioStore((s) => s.openProviderModal);
 
-  const [viewport, setViewport] = useState({
-    w: typeof window !== 'undefined' ? window.innerWidth : 1440,
-    h: typeof window !== 'undefined' ? window.innerHeight : 900,
-  });
-  const [expandedPrompt, setExpandedPrompt] = useState(false);
   const [openMenu, setOpenMenu] = useState<
     | null
-    | 'expand'
-    | 'layers'
-    | 'engine'
+    | 'platform'
+    | 'model'
     | 'aspect'
-    | 'submode'
+    | 'resolution'
     | 'duration'
-    | 'elements'
-    | 'skills'
-    | 'palette'
-    | 'style'
-    | 'motion'
-    | 'frame-a'
-    | 'frame-b'
-    | 'bridge-curve'
+    | 'batch'
+    | 'voice'
+    | 'advanced'
+    | 'add-ref'
   >(null);
+  const [atAutocompleteOpen, setAtAutocompleteOpen] = useState(false);
 
-  const lastSyncedNodeId = useRef<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-
-  useEffect(() => {
-    const onResize = () =>
-      setViewport({ w: window.innerWidth, h: window.innerHeight });
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
+  const refUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const directCardUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedNode = useMemo(() => {
     if (selectedNodeIds.length !== 1) return null;
     return nodes.find((n) => n.id === selectedNodeIds[0]) || null;
   }, [nodes, selectedNodeIds]);
 
-  const canvasImageNodes = useMemo(
-    () =>
-      nodes.filter(
-        (n) =>
-          (n.kind === 'image' || n.kind === 'element' || n.kind === 'contact-sheet') &&
-          Boolean(n.imageUrl)
-      ),
-    [nodes]
-  );
-
-  const upstreamImageNodes = useMemo(() => {
-    if (!selectedNode) return [];
-    return edges
-      .filter((e) => e.targetId === selectedNode.id)
-      .map((e) => nodes.find((n) => n.id === e.sourceId))
-      .filter(
-        (n): n is NonNullable<typeof n> =>
-          Boolean(n && (n.kind === 'image' || n.kind === 'element') && n.imageUrl)
-      );
-  }, [edges, nodes, selectedNode]);
-
-  // Sync prompt bar cleanly when user selects a different node
   useEffect(() => {
-    if (!selectedNode) {
-      lastSyncedNodeId.current = null;
-      setOpenMenu(null);
-      return;
-    }
-    if (lastSyncedNodeId.current !== selectedNode.id) {
-      lastSyncedNodeId.current = selectedNode.id;
-      setPromptText(selectedNode.prompt || '');
-      setPromptAspect(selectedNode.aspectRatio || '16:9');
-      if (selectedNode.durationSec) {
-        setPromptDurationSec(selectedNode.durationSec);
-      }
-      if (selectedNode.kind === 'video') {
-        setPromptMode('video');
-        if (selectedNode.bridgeMode || upstreamImageNodes.length >= 2) {
-          setPromptSubMode('keyframe-bridge');
-        } else {
-          setPromptSubMode('omni-ref');
-        }
-      } else if (selectedNode.kind === 'contact-sheet') {
-        setPromptMode('9-grid');
-      } else {
-        setPromptMode('image');
-      }
-      setOpenMenu(null);
-    }
-  }, [
-    selectedNode,
-    upstreamImageNodes.length,
-    setPromptText,
-    setPromptAspect,
-    setPromptDurationSec,
-    setPromptMode,
-    setPromptSubMode,
-  ]);
-
-  if (!selectedNode || selectedNode.kind === 'timeline') {
-    return null;
-  }
-
-  const isAudioNode = selectedNode.kind === 'audio';
-  const isBridgeVideoActive =
-    selectedNode.kind === 'video' &&
-    (promptSubMode === 'keyframe-bridge' ||
-      Boolean(selectedNode.bridgeMode) ||
-      upstreamImageNodes.length >= 2);
-
-  const activeStartImg =
-    selectedNode.startImageUrl ||
-    upstreamImageNodes[0]?.imageUrl ||
-    canvasImageNodes[0]?.imageUrl ||
-    '/media/real_courtyard_sun.jpg';
-
-  const activeEndImg =
-    selectedNode.endImageUrl ||
-    upstreamImageNodes[1]?.imageUrl ||
-    canvasImageNodes[1]?.imageUrl ||
-    '/media/real_coastal_cliffs.jpg';
-
-  const activeStartTitle =
-    nodes.find((n) => n.id === selectedNode.startNodeId)?.title ||
-    upstreamImageNodes[0]?.title ||
-    canvasImageNodes.find((n) => n.imageUrl === activeStartImg)?.title ||
-    'Frame A (Start)';
-
-  const activeEndTitle =
-    nodes.find((n) => n.id === selectedNode.endNodeId)?.title ||
-    upstreamImageNodes[1]?.title ||
-    canvasImageNodes.find((n) => n.imageUrl === activeEndImg)?.title ||
-    'Frame B (End)';
-
-  const activeBridgeCurve =
-    BRIDGE_CURVE_OPTIONS.find((c) => c.id === (selectedNode.motionCurve || 'ease-in-out')) ||
-    BRIDGE_CURVE_OPTIONS[0];
-
-  const activeAudioMode = selectedNode.audioMode || 'ambient';
-
-  const nodeLeft = panX + selectedNode.x * zoom;
-  const nodeTop = panY + selectedNode.y * zoom;
-  const nodeW = selectedNode.width * zoom;
-  const nodeH = selectedNode.height * zoom;
-  const nodeCenterX = nodeLeft + nodeW / 2;
-  const nodeBottom = nodeTop + nodeH;
-
-  const cardWidth = Math.min(648, Math.max(360, viewport.w - 96));
-  const halfCard = cardWidth / 2;
-  const clampedCenterX = Math.max(
-    72 + halfCard,
-    Math.min(viewport.w - 24 - halfCard, nodeCenterX)
-  );
-
-  // Top toolbar sits above the -24px node title header
-  const topToolbarTop = Math.max(58, Math.min(viewport.h - 280, nodeTop - 64));
-
-  // Bottom prompt stack sits 14px below node bottom, clamped cleanly inside viewport
-  const extraHeight = isBridgeVideoActive || isAudioNode ? 54 : 0;
-  const maxStackTop = Math.max(
-    110,
-    viewport.h - (expandedPrompt ? 260 + extraHeight : 204 + extraHeight)
-  );
-  const bottomStackTop = Math.max(104, Math.min(maxStackTop, nodeBottom + 14));
-
-  const normalizedActiveProvider = normalizeProviderId(activeProvider);
-  const activeEngine =
-    ENGINE_OPTIONS.find((e) => e.id === normalizedActiveProvider) ||
-    ENGINE_OPTIONS[ENGINE_OPTIONS.length - 1];
-
-  const isEngineReady = (id: ProviderId): boolean => {
-    switch (id) {
-      case 'dreamina-bridge':
-        return chromeBridge.dreaminaTabConnected || bridgeWsConnected;
-      case 'flow-bridge':
-        return chromeBridge.flowTabConnected || bridgeWsConnected;
-      case 'gemini-api':
-        return Boolean(byok.geminiApiKey?.trim());
-      case 'fal':
-        return Boolean(byok.falApiKey?.trim());
-      case 'replicate':
-        return Boolean(byok.replicateApiKey?.trim());
-      case 'seedance':
-        return Boolean(byok.seedanceApiKey?.trim());
-      case 'comfyui':
-        return Boolean(byok.comfyUiUrl?.trim());
-      case 'ffmpeg-local':
-      default:
-        return mcpHealth.online || true;
-    }
-  };
-
-  const handleInsertHandle = (handle: string) => {
-    const base = promptText.trim();
-    const next = base.includes(handle) ? base : `${base ? `${base} ` : ''}${handle} `;
-    setPromptText(next);
-    updateNodeFields(selectedNode.id, { prompt: next });
     setOpenMenu(null);
-    textareaRef.current?.focus();
-  };
+    setAtAutocompleteOpen(false);
+  }, [selectedNode?.id]);
+
+  if (!selectedNode) return null;
+
+  const modality = nodeKindToModality(selectedNode.kind);
+  const hasMedia = Boolean(
+    selectedNode.imageUrl || selectedNode.videoUrl || selectedNode.audioUrl
+  );
+
+  // Screen-space anchor coordinates of the selected node
+  const nodeLeftScreen = panX + selectedNode.x * zoom;
+  const nodeTopScreen = panY + selectedNode.y * zoom;
+  const nodeWidthScreen = selectedNode.width * zoom;
+  const nodeBottomScreen = nodeTopScreen + selectedNode.height * zoom;
+  const centerScreenX = nodeLeftScreen + nodeWidthScreen / 2;
+
+  const quickBarLeft = Math.max(
+    220,
+    Math.min(window.innerWidth - 220, centerScreenX)
+  );
+  const quickBarTop = Math.max(58, nodeTopScreen - 56);
+
+  const popoverWidth = Math.min(688, window.innerWidth - 96);
+  const popoverLeft = Math.max(
+    72,
+    Math.min(window.innerWidth - popoverWidth - 20, centerScreenX - popoverWidth / 2)
+  );
+  const popoverTop = Math.min(
+    window.innerHeight - 238,
+    Math.max(96, nodeBottomScreen + 18)
+  );
+
+  // Wired upstream & downstream inspection
+  const upstreamNodes = edges
+    .filter((e) => e.targetId === selectedNode.id)
+    .map((e) => nodes.find((n) => n.id === e.sourceId))
+    .filter((n): n is NonNullable<typeof n> => Boolean(n));
+
+  const upstreamRefNodes = upstreamNodes.filter(
+    (n) => n.kind === 'image' || n.kind === 'element' || n.kind === 'contact-sheet'
+  );
+
+  const hasDownstreamEdges = edges.some((e) => e.sourceId === selectedNode.id);
+
+  // Linkable canvas image/element nodes not yet wired into selectedNode
+  const linkableCanvasImageNodes = nodes.filter(
+    (n) =>
+      n.id !== selectedNode.id &&
+      (n.kind === 'image' || n.kind === 'element' || n.kind === 'contact-sheet') &&
+      !edges.some((e) => e.sourceId === n.id && e.targetId === selectedNode.id)
+  );
+
+  // Resolve active platform & model for generatable nodes
+  const effectivePlatformId: PlatformId =
+    selectedNode.platformId ||
+    (modality === 'video'
+      ? lastVideoPlatformId
+      : modality === 'audio'
+      ? lastAudioPlatformId
+      : lastImagePlatformId);
+
+  const availablePlatforms = modality
+    ? getPlatformsForModality(modality, platformsCatalog)
+    : [];
+
+  const activePlatformDef =
+    availablePlatforms.find((p) => p.id === effectivePlatformId) ||
+    availablePlatforms[0];
+
+  const availableModels = modality
+    ? getModelsForPlatformAndModality(
+        activePlatformDef?.id || effectivePlatformId,
+        modality,
+        platformsCatalog,
+        externalMcpServers
+      )
+    : [];
+
+  const activeModelDef =
+    availableModels.find((m) => m.id === selectedNode.modelId) ||
+    availableModels[0];
+
+  const activeConnStatus = activePlatformDef
+    ? getPlatformConnectionStatus(
+        activePlatformDef.id,
+        byok,
+        chromeBridge,
+        externalMcpServers,
+        activePlatformDef
+      )
+    : { connected: false, transports: [], summary: 'Connect Credits' };
+
+  const activeVoice =
+    ELEVENLABS_VOICES.find((v) => v.id === (selectedNode.voiceId || 'JBFqnCBsd6RMkjVDRZzb')) ||
+    ELEVENLABS_VOICES[0];
+
+  const isGenerating = selectedNode.status === 'generating';
 
   const handlePromptChange = (val: string) => {
-    setPromptText(val);
     updateNodeFields(selectedNode.id, { prompt: val });
-    if (val.endsWith('@')) {
-      setOpenMenu('elements');
-    } else if (val.endsWith('/')) {
-      setOpenMenu('skills');
-    } else if (openMenu === 'elements' || openMenu === 'skills') {
-      const lastWord = val.split(/\s+/).pop() || '';
-      if (!lastWord.startsWith('@') && !lastWord.startsWith('/')) {
-        setOpenMenu(null);
-      }
+    if (val.endsWith('@') && elements.length > 0) {
+      setAtAutocompleteOpen(true);
+    } else if (!val.includes('@') || val.endsWith(' ')) {
+      setAtAutocompleteOpen(false);
     }
   };
-
-  const handleGenerate = () => {
-    if (selectedNode.kind === 'mcp-tool') {
-      void executeMcpToolNode(selectedNode.id);
-      return;
-    }
-    if (isAudioNode) {
-      void generateAudioForNode(selectedNode.id, {
-        prompt: promptText,
-        mode: activeAudioMode,
-        durationSec: promptDurationSec,
-      });
-      return;
-    }
-    if (isBridgeVideoActive) {
-      void generateKeyframeBridgeForNode(selectedNode.id, {
-        startImageUrl: activeStartImg,
-        endImageUrl: activeEndImg,
-        startNodeId: selectedNode.startNodeId || upstreamImageNodes[0]?.id,
-        endNodeId: selectedNode.endNodeId || upstreamImageNodes[1]?.id,
-        motionCurve: activeBridgeCurve.id,
-        durationSec: promptDurationSec,
-        prompt: promptText,
-      });
-      return;
-    }
-    void submitPromptGeneration(selectedNode.id);
-  };
-
-  const isGenerating =
-    selectedNode.status === 'generating' || Boolean(selectedNode.editBadge);
 
   return (
     <>
-      {/* 1. Floating Quick-Action Toolbar Above Selected Node */}
-      <div
-        style={{
-          left: `${clampedCenterX}px`,
-          top: `${topToolbarTop}px`,
-          transform: 'translateX(-50%)',
+      {/* Hidden file inputs */}
+      <input
+        ref={refUploadInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) {
+            void attachReferenceToNode(selectedNode.id, f);
+            e.target.value = '';
+          }
+          setOpenMenu(null);
         }}
-        onPointerDown={(e) => e.stopPropagation()}
-        className="fixed z-30 h-[36px] px-1.5 rounded-[10px] dreamina-levitation flex items-center gap-0.5 select-none"
-      >
-        {isAudioNode ? (
-          <>
-            <button
-              type="button"
-              onClick={() => sendNodeToTimeline(selectedNode.id)}
-              className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/85 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-            >
-              <Film className="w-3.5 h-3.5" strokeWidth={1.5} />
-              <span>Send to Timeline (A1)</span>
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                void generateAudioForNode(selectedNode.id, {
-                  prompt: promptText,
-                  mode: 'voiceover',
-                  durationSec: 6,
-                })
-              }
-              className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-            >
-              <Mic className="w-3.5 h-3.5" strokeWidth={1.5} />
-              <span>Synthesize TTS</span>
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                void generateAudioForNode(selectedNode.id, {
-                  prompt: promptText,
-                  mode: 'ambient',
-                  durationSec: 12,
-                })
-              }
-              className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-            >
-              <Waves className="w-3.5 h-3.5" strokeWidth={1.5} />
-              <span>Ambient Foley</span>
-            </button>
-          </>
-        ) : (
-          <>
-            {(selectedNode.kind === 'image' ||
-              selectedNode.kind === 'contact-sheet' ||
-              selectedNode.kind === 'element' ||
-              selectedNode.kind === 'video') && (
+      />
+      <input
+        ref={directCardUploadInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) {
+            void uploadReferenceToNode(selectedNode.id, f);
+            e.target.value = '';
+          }
+        }}
+      />
+
+      {/* 1. Floating Top Quick-Action Pill Bar */}
+      {selectedNode.kind !== 'timeline' && (
+        <div
+          style={{
+            left: `${quickBarLeft}px`,
+            top: `${quickBarTop}px`,
+            transform: 'translateX(-50%)',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="fixed z-40 h-9 px-1.5 rounded-[10px] dreamina-levitation flex items-center gap-1 text-[11.5px] select-none"
+        >
+          {(selectedNode.kind === 'image' ||
+            selectedNode.kind === 'element' ||
+            selectedNode.kind === 'contact-sheet') &&
+            hasMedia && (
               <>
                 <button
                   type="button"
-                  onClick={() => openInlineEditor('inpaint', selectedNode.id)}
-                  className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
+                  onClick={() => saveNodeAsElementReference(selectedNode.id)}
+                  className="h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-white/90 flex items-center gap-1.5"
+                  title="Register this image as a reusable @Element reference tag"
                 >
-                  <Paintbrush className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <UserSquare2 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                  <span>Save @Ref</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    spawnDreaminaNodeAt(
+                      'video',
+                      selectedNode.x + selectedNode.width + 130,
+                      selectedNode.y - 20,
+                      {
+                        wireFromNodeId: selectedNode.id,
+                        wireDirection: 'right',
+                      }
+                    );
+                  }}
+                  className="h-7 px-2.5 rounded-[7px] bg-white/[0.08] hover:bg-white/[0.15] text-white font-medium flex items-center gap-1.5"
+                  title="Spawn a connected Video node using this image as Reference"
+                >
+                  <Clapperboard className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                  <span>→ Create Video</span>
+                </button>
+
+                <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
+
+                <button
+                  type="button"
+                  onClick={() => openInlineEditor('inpaint', selectedNode.id)}
+                  className="h-7 px-2 rounded-[7px] hover:bg-white/[0.08] text-white/80 flex items-center gap-1"
+                >
+                  <Paintbrush className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
                   <span>Inpaint</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => openInlineEditor('outpaint', selectedNode.id)}
-                  className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
+                  className="h-7 px-2 rounded-[7px] hover:bg-white/[0.08] text-white/80 flex items-center gap-1"
                 >
-                  <Maximize className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <Maximize2 className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
                   <span>Expand</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => void removeBgAndDecomposeLayers(selectedNode.id)}
-                  className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
+                  className="h-7 px-2 rounded-[7px] hover:bg-white/[0.08] text-white/80 flex items-center gap-1"
                 >
-                  <Scissors className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  <span>Remove BG</span>
+                  <Eraser className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                  <span>Cutout</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => void upscaleNodeHd(selectedNode.id, '4K')}
-                  className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
+                  className="h-7 px-2 rounded-[7px] hover:bg-white/[0.08] text-white/80 flex items-center gap-1"
                 >
-                  <Sparkles className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  <span>Upscale 4K</span>
+                  <Sparkles className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                  <span>4K</span>
                 </button>
+
+                <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
               </>
             )}
 
-            <button
-              type="button"
-              onClick={() => void sliceContactSheetNode(selectedNode.id, 3, 3)}
-              className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-            >
-              <Grid3X3 className="w-3.5 h-3.5" strokeWidth={1.5} />
-              <span>9-Grid Slice</span>
-            </button>
-
-            {selectedNode.kind === 'video' ? (
+          {(selectedNode.kind === 'image' || selectedNode.kind === 'element') &&
+            !hasMedia && (
               <>
                 <button
                   type="button"
-                  onClick={() => {
-                    updateNodeFields(selectedNode.id, { bridgeMode: true });
-                    setPromptSubMode('keyframe-bridge');
-                  }}
-                  className={`h-7 px-2.5 rounded-[7px] text-[12px] font-medium flex items-center gap-1.5 transition-colors ${
-                    isBridgeVideoActive
-                      ? 'bg-[#252525] text-[#20D5EC]'
-                      : 'text-white/80 hover:text-white hover:bg-[#252525]'
-                  }`}
+                  onClick={() => directCardUploadInputRef.current?.click()}
+                  className="h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-white/85 flex items-center gap-1.5"
                 >
-                  <GitBranch className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  <span>A → B Bridge</span>
+                  <Upload className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
+                  <span>Upload Image</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void extractLastFrameToNextShot(selectedNode.id)}
-                  className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-                >
-                  <Layers className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  <span>Extract Frame</span>
-                </button>
-              </>
-            ) : selectedNode.kind === 'mcp-tool' ? (
-              <button
-                type="button"
-                onClick={() => void executeMcpToolNode(selectedNode.id)}
-                className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium bg-white text-[#0e0e0e] hover:bg-[#e5e5e5] flex items-center gap-1.5 transition-colors"
-              >
-                <Play className="w-3.5 h-3.5" strokeWidth={1.75} />
-                <span>Run MCP</span>
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void convertImageToOmniVideo(selectedNode.id, promptDurationSec)
-                  }
-                  className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-                >
-                  <Film className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  <span>Image → Video</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void generateKeyframeBridgeForNode(selectedNode.id, {
-                      startImageUrl: selectedNode.imageUrl,
-                      startNodeId: selectedNode.id,
-                      motionCurve: 'ease-in-out',
-                      durationSec: 6,
-                    })
-                  }
-                  className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-                >
-                  <GitBranch className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  <span>A → B Bridge</span>
-                </button>
+                <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
               </>
             )}
 
-            <button
-              type="button"
-              onClick={() => void retakeNode(selectedNode.id)}
-              className="h-7 px-2.5 rounded-[7px] text-[12px] font-medium text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-            >
-              <RefreshCw
-                className={`w-3.5 h-3.5 ${isGenerating ? 'animate-spin' : ''}`}
-                strokeWidth={1.5}
-              />
-              <span>Retake</span>
-            </button>
-          </>
-        )}
-      </div>
-
-      {/* 2. Contextual Cinema Kit Pill + 648px Dreamina Prompt Popover Below Selected Node */}
-      <div
-        style={{
-          left: `${clampedCenterX}px`,
-          top: `${bottomStackTop}px`,
-          width: `${cardWidth}px`,
-          transform: 'translateX(-50%)',
-        }}
-        onPointerDown={(e) => e.stopPropagation()}
-        className="fixed z-30 flex flex-col items-center gap-2 select-none"
-      >
-        {/* Cinema Kit Sub-Toolbar Pill (32px) — hidden on Audio nodes to keep acoustic mode crisp */}
-        {!isAudioNode && (
-          <div className="h-[32px] px-2 rounded-full dreamina-levitation flex items-center gap-1 relative">
-            <button
-              type="button"
-              onClick={() => setCameraDirectorOpen(true)}
-              className="h-6 px-2.5 rounded-full text-[11.5px] text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-            >
-              <Compass className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
-              <span>Camera</span>
-            </button>
-
-            <div className="w-px h-3 bg-white/[0.08]" />
-
-            <div className="relative">
+          {selectedNode.kind === 'video' && hasMedia && (
+            <>
               <button
                 type="button"
-                onClick={() =>
-                  setOpenMenu(openMenu === 'palette' ? null : 'palette')
-                }
-                className="h-6 px-2.5 rounded-full text-[11.5px] text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
+                onClick={() => void extractLastFrameToNextShot(selectedNode.id)}
+                className="h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-white/85 flex items-center gap-1.5"
               >
-                <Palette className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
-                <span>Color</span>
+                <Scissors className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
+                <span>Last Frame → Next Shot</span>
               </button>
-              {openMenu === 'palette' && (
-                <div className="absolute left-0 bottom-[36px] w-[224px] p-2.5 rounded-[12px] dreamina-menu z-40 space-y-2">
-                  <div className="text-[11px] text-white/50 font-medium">
-                    Style DNA Color Grade
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {['#2b343b', '#6b7f8c', '#c87d55', '#e2c49f', '#f5efe6'].map(
-                      (hex) => (
-                        <div
-                          key={hex}
-                          style={{ backgroundColor: hex }}
-                          className="w-6 h-6 rounded-[6px] border border-white/20"
-                        />
-                      )
+              <button
+                type="button"
+                onClick={() => sendNodeToTimeline(selectedNode.id)}
+                className="h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-white/85 flex items-center gap-1.5"
+              >
+                <Film className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
+                <span>To Timeline</span>
+              </button>
+              <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
+            </>
+          )}
+
+          {selectedNode.kind === 'audio' && hasMedia && (
+            <>
+              <button
+                type="button"
+                onClick={() => sendNodeToTimeline(selectedNode.id)}
+                className="h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-white/85 flex items-center gap-1.5"
+              >
+                <Film className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
+                <span>Send to Timeline (A1)</span>
+              </button>
+              <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => duplicateNodes(selectedNode.id)}
+            className="h-7 px-2 rounded-[7px] hover:bg-white/[0.08] text-white/75 flex items-center gap-1"
+            title="Duplicate node (⌘D)"
+          >
+            <Copy className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => deleteSelectedNodes(selectedNode.id)}
+            className="h-7 px-2 rounded-[7px] hover:bg-red-500/15 text-red-400 flex items-center gap-1"
+            title="Delete node"
+          >
+            <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </button>
+        </div>
+      )}
+
+      {/* 2. Modality-Locked Creation Bar ([Where] + [Model] + [Settings] + [References] + [Generate]) */}
+      {modality && (
+        <div
+          style={{
+            left: `${popoverLeft}px`,
+            top: `${popoverTop}px`,
+            width: `${popoverWidth}px`,
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="fixed z-40 rounded-[16px] dreamina-levitation p-3 space-y-2.5 select-none"
+        >
+          {/* Top Strip: Modality Header + Live Wired / Uploaded References */}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="px-2 py-0.5 rounded-[6px] bg-[#252525] border border-white/[0.07] text-[11px] font-medium text-white/85 flex items-center gap-1.5">
+                {modality === 'video' ? (
+                  <Clapperboard className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
+                ) : modality === 'audio' ? (
+                  <AudioLines className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
+                ) : selectedNode.kind === 'element' ? (
+                  <UserSquare2 className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
+                ) : (
+                  <ImageIcon className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
+                )}
+                <span>
+                  {selectedNode.kind === 'element'
+                    ? `Create Reference (${selectedNode.elementHandles[0] || '@Ref_1'})`
+                    : modality === 'video'
+                    ? 'Create Video'
+                    : modality === 'audio'
+                    ? 'Create Voice / SFX'
+                    : 'Create Image'}
+                </span>
+              </span>
+
+              {/* Wired Upstream Reference Chips */}
+              {modality !== 'audio' &&
+                upstreamRefNodes.map((up) => (
+                  <div
+                    key={up.id}
+                    className="h-6 pl-1 pr-2 rounded-[6px] bg-[#252525] border border-[#20D5EC]/35 flex items-center gap-1.5 text-[11px] text-white/90"
+                    title={
+                      up.imageUrl
+                        ? `Wired reference from ${up.title}`
+                        : `Waiting for ${up.title} to generate`
+                    }
+                  >
+                    {up.imageUrl ? (
+                      <SmartMediaImage
+                        src={up.imageUrl}
+                        alt={up.title}
+                        className="w-4 h-4 rounded-[3px] object-cover"
+                      />
+                    ) : (
+                      <span className="w-2 h-2 rounded-full bg-[#20D5EC]/70 ml-1" />
+                    )}
+                    <span className="truncate max-w-[110px]">{up.title}</span>
+                    {!up.imageUrl && (
+                      <span className="text-[10px] text-[#20D5EC]">Pending</span>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      spawnStyleDnaNode(selectedNode.id);
-                      setOpenMenu(null);
-                    }}
-                    className="w-full h-7 rounded-[7px] bg-[#252525] hover:bg-[#303030] text-[11.5px] text-white/90 font-medium"
+                ))}
+
+              {/* Attached Custom Reference Image Chips */}
+              {modality !== 'audio' &&
+                (selectedNode.referenceUrls || []).map((refUrl, idx) => (
+                  <div
+                    key={`${refUrl}_${idx}`}
+                    className="h-6 pl-1 pr-1.5 rounded-[6px] bg-[#252525] border border-white/[0.12] flex items-center gap-1 text-[11px] text-white/85"
                   >
-                    Extract Style DNA Node
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div className="w-px h-3 bg-white/[0.08]" />
-
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setOpenMenu(openMenu === 'style' ? null : 'style')}
-                className="h-6 px-2.5 rounded-full text-[11.5px] text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-              >
-                <Aperture className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
-                <span>Style</span>
-              </button>
-              {openMenu === 'style' && (
-                <div className="absolute left-0 bottom-[36px] w-[256px] p-1 rounded-[12px] dreamina-menu z-40">
-                  {LENS_STOCK_PRESETS.map((preset) => (
-                    <button
-                      key={preset}
-                      type="button"
-                      onClick={() => {
-                        injectCameraPromptToSelection(preset);
-                        setOpenMenu(null);
-                      }}
-                      className="w-full h-7 px-2.5 rounded-[7px] text-left text-[12px] text-white/85 hover:bg-white/[0.08] truncate"
-                    >
-                      {preset}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="w-px h-3 bg-white/[0.08]" />
-
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() =>
-                  setOpenMenu(openMenu === 'motion' ? null : 'motion')
-                }
-                className="h-6 px-2.5 rounded-full text-[11.5px] text-white/80 hover:text-white hover:bg-[#252525] flex items-center gap-1.5 transition-colors"
-              >
-                <Move3d className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
-                <span>Motion +</span>
-              </button>
-              {openMenu === 'motion' && (
-                <div className="absolute right-0 bottom-[36px] w-[216px] p-1 rounded-[12px] dreamina-menu z-40">
-                  {MOTION_PRESETS.map((m) => (
-                    <button
-                      key={m.label}
-                      type="button"
-                      onClick={() => {
-                        if (
-                          m.label === 'Golden Hour Multi-Turn' &&
-                          selectedNode.kind === 'video'
-                        ) {
-                          void branchVideoMultiTurn(
-                            selectedNode.id,
-                            'Shift midday courtyard sun to warm late-afternoon amber dusk'
-                          );
-                        } else {
-                          injectCameraPromptToSelection(m.tag);
-                        }
-                        setOpenMenu(null);
-                      }}
-                      className="w-full h-7 px-2.5 rounded-[7px] text-left text-[12px] text-white/85 hover:bg-white/[0.08]"
-                    >
-                      {m.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Main 648px Dreamina Contextual Prompt Popover Card */}
-        <div className="w-full rounded-[16px] bg-[#191919]/95 backdrop-blur-xl border border-white/[0.1] shadow-[0_24px_64px_rgba(0,0,0,0.75)] p-3 flex flex-col gap-2.5 relative">
-          {/* Stage 5 Feature A: First-Frame → Last-Frame Keyframe Bridge Strip */}
-          {isBridgeVideoActive && (
-            <div className="px-2.5 py-2 rounded-[10px] bg-[#141414] border border-white/[0.08] flex items-center justify-between gap-2 relative">
-              {/* Frame A (Start) Picker */}
-              <div className="relative flex-1 min-w-0">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setOpenMenu(openMenu === 'frame-a' ? null : 'frame-a')
-                  }
-                  className="w-full h-9 px-2 rounded-[8px] bg-[#222222] hover:bg-[#2a2a2a] border border-white/[0.08] flex items-center gap-2 text-left transition-colors"
-                >
-                  <div className="w-6 h-6 rounded-[5px] overflow-hidden bg-[#191919] shrink-0 border border-white/[0.12]">
                     <SmartMediaImage
-                      src={activeStartImg}
-                      alt="Frame A"
-                      className="w-full h-full object-cover"
+                      src={refUrl}
+                      alt={`Ref ${idx + 1}`}
+                      className="w-4 h-4 rounded-[3px] object-cover"
                     />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[10px] font-mono text-white/45 leading-none">
-                      FRAME A · FIRST
-                    </div>
-                    <div className="text-[11.5px] font-medium text-white/90 truncate mt-0.5">
-                      {activeStartTitle}
-                    </div>
-                  </div>
-                  <ChevronDown
-                    className="w-3 h-3 text-white/45 shrink-0"
-                    strokeWidth={1.5}
-                  />
-                </button>
-
-                {openMenu === 'frame-a' && (
-                  <div className="absolute left-0 bottom-[42px] w-[240px] max-h-[220px] overflow-y-auto p-1 rounded-[12px] dreamina-menu z-50 space-y-0.5">
-                    <div className="px-2 py-1 text-[10.5px] text-white/45 font-medium">
-                      Select First Frame (A)
-                    </div>
-                    {canvasImageNodes.map((imgNode) => (
-                      <button
-                        key={imgNode.id}
-                        type="button"
-                        onClick={() => {
-                          updateNodeFields(selectedNode.id, {
-                            bridgeMode: true,
-                            startNodeId: imgNode.id,
-                            startImageUrl: imgNode.imageUrl,
-                          });
-                          setOpenMenu(null);
-                        }}
-                        className="w-full p-1.5 rounded-[8px] hover:bg-white/[0.08] flex items-center gap-2 text-left"
-                      >
-                        <div className="w-7 h-7 rounded-[5px] overflow-hidden bg-[#252525] shrink-0">
-                          <SmartMediaImage
-                            src={imgNode.imageUrl}
-                            alt={imgNode.title}
-                            className="w-full h-full object-cover"
-                          />
-                        </div>
-                        <span className="text-[11.5px] text-white/90 truncate">
-                          {imgNode.title}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <ArrowRight
-                className="w-3.5 h-3.5 text-white/35 shrink-0"
-                strokeWidth={1.5}
-              />
-
-              {/* Motion Curve Picker */}
-              <div className="relative shrink-0">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setOpenMenu(
-                      openMenu === 'bridge-curve' ? null : 'bridge-curve'
-                    )
-                  }
-                  className="h-9 px-2.5 rounded-[8px] bg-[#222222] hover:bg-[#2a2a2a] border border-white/[0.08] flex items-center gap-1.5 text-[11.5px] text-white/90 transition-colors"
-                >
-                  <CurveMiniIcon path={activeBridgeCurve.svgPath} />
-                  <span>{activeBridgeCurve.label}</span>
-                  <ChevronDown
-                    className="w-3 h-3 text-white/45"
-                    strokeWidth={1.5}
-                  />
-                </button>
-
-                {openMenu === 'bridge-curve' && (
-                  <div className="absolute left-1/2 -translate-x-1/2 bottom-[42px] w-[184px] p-1 rounded-[12px] dreamina-menu z-50 space-y-0.5">
-                    <div className="px-2 py-1 text-[10.5px] text-white/45 font-medium">
-                      Optical Motion Curve
-                    </div>
-                    {BRIDGE_CURVE_OPTIONS.map((curve) => (
-                      <button
-                        key={curve.id}
-                        type="button"
-                        onClick={() => {
-                          updateNodeFields(selectedNode.id, {
-                            bridgeMode: true,
-                            motionCurve: curve.id,
-                          });
-                          setOpenMenu(null);
-                        }}
-                        className="w-full h-7 px-2 rounded-[7px] hover:bg-white/[0.08] flex items-center justify-between text-[12px] text-white/90"
-                      >
-                        <span className="flex items-center gap-2">
-                          <CurveMiniIcon path={curve.svgPath} />
-                          <span>{curve.label}</span>
-                        </span>
-                        {activeBridgeCurve.id === curve.id && (
-                          <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <ArrowRight
-                className="w-3.5 h-3.5 text-white/35 shrink-0"
-                strokeWidth={1.5}
-              />
-
-              {/* Frame B (End) Picker */}
-              <div className="relative flex-1 min-w-0">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setOpenMenu(openMenu === 'frame-b' ? null : 'frame-b')
-                  }
-                  className="w-full h-9 px-2 rounded-[8px] bg-[#222222] hover:bg-[#2a2a2a] border border-white/[0.08] flex items-center gap-2 text-left transition-colors"
-                >
-                  <div className="w-6 h-6 rounded-[5px] overflow-hidden bg-[#191919] shrink-0 border border-white/[0.12]">
-                    <SmartMediaImage
-                      src={activeEndImg}
-                      alt="Frame B"
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[10px] font-mono text-white/45 leading-none">
-                      FRAME B · LAST
-                    </div>
-                    <div className="text-[11.5px] font-medium text-white/90 truncate mt-0.5">
-                      {activeEndTitle}
-                    </div>
-                  </div>
-                  <ChevronDown
-                    className="w-3 h-3 text-white/45 shrink-0"
-                    strokeWidth={1.5}
-                  />
-                </button>
-
-                {openMenu === 'frame-b' && (
-                  <div className="absolute right-0 bottom-[42px] w-[240px] max-h-[220px] overflow-y-auto p-1 rounded-[12px] dreamina-menu z-50 space-y-0.5">
-                    <div className="px-2 py-1 text-[10.5px] text-white/45 font-medium">
-                      Select Last Frame (B)
-                    </div>
-                    {canvasImageNodes.map((imgNode) => (
-                      <button
-                        key={imgNode.id}
-                        type="button"
-                        onClick={() => {
-                          updateNodeFields(selectedNode.id, {
-                            bridgeMode: true,
-                            endNodeId: imgNode.id,
-                            endImageUrl: imgNode.imageUrl,
-                          });
-                          setOpenMenu(null);
-                        }}
-                        className="w-full p-1.5 rounded-[8px] hover:bg-white/[0.08] flex items-center gap-2 text-left"
-                      >
-                        <div className="w-7 h-7 rounded-[5px] overflow-hidden bg-[#252525] shrink-0">
-                          <SmartMediaImage
-                            src={imgNode.imageUrl}
-                            alt={imgNode.title}
-                            className="w-full h-full object-cover"
-                          />
-                        </div>
-                        <span className="text-[11.5px] text-white/90 truncate">
-                          {imgNode.title}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Stage 5 Feature B: Audio / Voiceover Synthesis Mode Strip */}
-          {isAudioNode && (
-            <div className="px-2.5 py-1.5 rounded-[10px] bg-[#141414] border border-white/[0.08] flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1">
-                {(
-                  [
-                    { id: 'ambient', label: 'Ambient Soundscape', icon: Waves },
-                    { id: 'voiceover', label: 'Spoken Voiceover (TTS)', icon: Mic },
-                    { id: 'sfx', label: 'Foley SFX', icon: AudioLines },
-                  ] as const
-                ).map((m) => {
-                  const Icon = m.icon;
-                  const active = activeAudioMode === m.id;
-                  return (
+                    <span>Ref {idx + 1}</span>
                     <button
-                      key={m.id}
                       type="button"
                       onClick={() =>
-                        updateNodeFields(selectedNode.id, { audioMode: m.id })
+                        removeReferenceUrlFromNode(selectedNode.id, refUrl)
                       }
-                      className={`h-7 px-2.5 rounded-[7px] text-[11.5px] font-medium flex items-center gap-1.5 transition-colors ${
-                        active
-                          ? 'bg-white text-[#0e0e0e]'
-                          : 'text-white/70 hover:text-white hover:bg-[#252525]'
-                      }`}
+                      className="text-white/45 hover:text-white ml-0.5"
                     >
-                      <Icon className="w-3.5 h-3.5" strokeWidth={1.6} />
-                      <span>{m.label}</span>
+                      <X className="w-3 h-3" strokeWidth={1.75} />
                     </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex items-center gap-1">
-                {AUDIO_DURATION_OPTIONS.map((sec) => (
-                  <button
-                    key={sec}
-                    type="button"
-                    onClick={() => {
-                      setPromptDurationSec(sec);
-                      updateNodeFields(selectedNode.id, { durationSec: sec });
-                    }}
-                    className={`h-7 px-2 rounded-[7px] font-mono text-[11px] transition-colors ${
-                      (selectedNode.durationSec || promptDurationSec) === sec
-                        ? 'bg-[#252525] text-[#20D5EC] border border-[#20D5EC]/40'
-                        : 'bg-[#1e1e1e] text-white/60 hover:text-white'
-                    }`}
-                  >
-                    {sec}s
-                  </button>
+                  </div>
                 ))}
-              </div>
-            </div>
-          )}
 
-          {/* @Elements Autocomplete Popover */}
-          {openMenu === 'elements' && (
-            <div className="absolute left-3 bottom-[calc(100%+8px)] w-[320px] p-2 rounded-[12px] dreamina-menu z-50 space-y-1">
-              <div className="px-2 py-1 text-[11px] font-medium text-white/45 flex items-center justify-between">
-                <span>@Elements Subject & Style Vault</span>
-                <span>Lock Identity</span>
-              </div>
-              {elements.map((el) => (
-                <button
-                  key={el.id}
-                  type="button"
-                  onClick={() => handleInsertHandle(el.handle)}
-                  className="w-full p-1.5 rounded-[8px] hover:bg-white/[0.08] flex items-center gap-2.5 text-left transition-colors"
-                >
-                  <div className="w-9 h-9 rounded-[6px] overflow-hidden bg-[#252525] border border-white/[0.1] shrink-0">
-                    <SmartMediaImage
-                      src={el.references[0]?.dataUrl}
-                      alt={el.name}
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[12px] font-medium text-white/95 truncate">
-                      {el.handle}
-                    </div>
-                    <div className="text-[11px] text-white/45 truncate">
-                      {el.description}
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* /Skills Autocomplete Popover */}
-          {openMenu === 'skills' && (
-            <div className="absolute left-3 bottom-[calc(100%+8px)] w-[356px] max-h-[260px] overflow-y-auto p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
-              <div className="px-2 py-1 text-[11px] font-medium text-white/45">
-                Dreamina Camera & Storyboard Skills
-              </div>
-              {skills.map((sk) => (
-                <button
-                  key={sk.id}
-                  type="button"
-                  onClick={() => {
-                    applySkillPreset(sk);
-                    updateNodeFields(selectedNode.id, {
-                      prompt: sk.promptTemplate,
-                    });
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-[8px] hover:bg-white/[0.08] text-left flex items-center justify-between gap-2"
-                >
-                  <div className="min-w-0">
-                    <div className="text-[12px] font-medium text-white/90 truncate">
-                      {sk.slash} · {sk.title}
-                    </div>
-                    <div className="text-[11px] text-white/45 truncate">
-                      {sk.description}
-                    </div>
-                  </div>
-                  <span className="px-1.5 py-0.5 rounded-[5px] bg-[#252525] text-[10px] text-white/65 shrink-0">
-                    {sk.badge}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Top Row: [+] Reference Thumbnail + Borderless Textarea + [⤢] Expand */}
-          <div className="flex items-start gap-2.5">
-            <button
-              type="button"
-              onClick={() =>
-                setOpenMenu(openMenu === 'elements' ? null : 'elements')
-              }
-              title="Attach @Element or reference frame"
-              className="w-9 h-9 rounded-[10px] bg-[#252525] hover:bg-[#2e2e2e] border border-white/[0.08] flex items-center justify-center text-white/70 hover:text-white shrink-0 transition-colors overflow-hidden"
-            >
-              {isAudioNode ? (
-                <AudioLines className="w-4 h-4 text-[#20D5EC]" strokeWidth={1.5} />
-              ) : selectedNode.imageUrl ? (
-                <SmartMediaImage
-                  src={selectedNode.imageUrl}
-                  alt={selectedNode.title}
-                  className="w-full h-full object-cover opacity-85"
-                />
-              ) : (
-                <Plus className="w-4 h-4" strokeWidth={1.5} />
-              )}
-            </button>
-
-            <textarea
-              ref={textareaRef}
-              value={promptText}
-              onChange={(e) => handlePromptChange(e.target.value)}
-              onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                  e.preventDefault();
-                  handleGenerate();
-                }
-              }}
-              rows={expandedPrompt ? 5 : 2}
-              placeholder={
-                isAudioNode
-                  ? activeAudioMode === 'voiceover'
-                    ? 'Enter spoken narration script for macOS TTS voiceover synthesis...'
-                    : 'Describe natural acoustic foley, coastal wind, or room tone...'
-                  : 'Describe your shot in natural light, or use @ for elements, / for camera skills'
-              }
-              className="flex-1 bg-transparent border-0 outline-none resize-none text-[13.5px] leading-[1.45] text-[#f5f5f5] placeholder:text-white/35 py-0.5"
-            />
-
-            <button
-              type="button"
-              onClick={() => setExpandedPrompt(!expandedPrompt)}
-              title={expandedPrompt ? 'Collapse prompt' : 'Expand prompt'}
-              className="w-7 h-7 rounded-[7px] hover:bg-[#252525] flex items-center justify-center text-white/50 hover:text-white/85 shrink-0 transition-colors"
-            >
-              {expandedPrompt ? (
-                <Minimize2 className="w-3.5 h-3.5" strokeWidth={1.5} />
-              ) : (
-                <Maximize2 className="w-3.5 h-3.5" strokeWidth={1.5} />
-              )}
-            </button>
-          </div>
-
-          {/* Bottom Parameter Pill Bar */}
-          <div className="flex items-center justify-between gap-2 pt-0.5">
-            {isAudioNode ? (
-              <div className="flex items-center gap-1.5">
-                <span className="h-7 px-2.5 rounded-[8px] bg-[#252525] text-[12px] text-white/80 flex items-center gap-1.5">
-                  <AudioLines className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.5} />
-                  <span>
-                    {activeAudioMode === 'voiceover'
-                      ? 'macOS TTS + FFmpeg'
-                      : 'FFmpeg Stereo Acoustic'}
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => sendNodeToTimeline(selectedNode.id)}
-                  className="h-7 px-2.5 rounded-[8px] bg-[#252525] hover:bg-[#2e2e2e] text-[12px] text-white/85 flex items-center gap-1.5 transition-colors"
-                >
-                  <Plus className="w-3 h-3" strokeWidth={1.5} />
-                  <span>Attach to A1 Lane</span>
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {/* Engine Selector Pill */}
+              {/* + Add Reference Dropdown Button */}
+              {modality !== 'audio' && (
                 <div className="relative">
                   <button
                     type="button"
                     onClick={() =>
-                      setOpenMenu(openMenu === 'engine' ? null : 'engine')
+                      setOpenMenu(openMenu === 'add-ref' ? null : 'add-ref')
                     }
-                    className="h-7 px-2.5 rounded-[8px] bg-[#252525] hover:bg-[#2e2e2e] text-[12px] text-white/85 flex items-center gap-1.5 transition-colors"
+                    className="h-6 px-2 rounded-[6px] bg-[#252525] hover:bg-white/[0.1] border border-dashed border-white/[0.18] text-[11px] text-white/75 hover:text-white flex items-center gap-1 transition-colors"
                   >
-                    {promptMode === 'video' ? (
-                      <Clapperboard
-                        className="w-3.5 h-3.5 text-white/70"
-                        strokeWidth={1.5}
-                      />
-                    ) : (
-                      <ImageIcon
-                        className="w-3.5 h-3.5 text-white/70"
-                        strokeWidth={1.5}
-                      />
-                    )}
-                    <span>{activeEngine.shortLabel}</span>
-                    <ChevronDown
-                      className="w-3 h-3 text-white/45"
-                      strokeWidth={1.5}
-                    />
+                    <Plus className="w-3 h-3" strokeWidth={1.75} />
+                    <span>Reference</span>
                   </button>
-                  {openMenu === 'engine' && (
-                    <div className="absolute left-0 bottom-[34px] w-[288px] p-1.5 rounded-[12px] dreamina-menu z-50">
-                      <div className="px-2 py-1 text-[10.5px] text-white/40 font-medium flex items-center justify-between">
-                        <span>Output Mode</span>
-                        <span className="font-mono text-[10px] text-white/35">
-                          Zero-Fallback Execution
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-3 gap-1 p-1 mb-1.5 bg-[#141414] rounded-[8px]">
-                        {(
-                          [
-                            { id: 'video', label: 'Video' },
-                            { id: 'image', label: 'Image' },
-                            { id: '9-grid', label: '9-Grid' },
-                          ] as const
-                        ).map((m) => (
-                          <button
-                            key={m.id}
-                            type="button"
-                            onClick={() => setPromptMode(m.id)}
-                            className={`h-6 rounded-[6px] text-[11px] font-medium transition-colors ${
-                              promptMode === m.id
-                                ? 'bg-[#2e2e2e] text-white'
-                                : 'text-white/55 hover:text-white/85'
-                            }`}
-                          >
-                            {m.label}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="space-y-0.5">
-                        {ENGINE_OPTIONS.map((eng) => {
-                          const selected = normalizedActiveProvider === eng.id;
-                          const ready = isEngineReady(eng.id);
-                          return (
+
+                  {openMenu === 'add-ref' && (
+                    <div className="absolute bottom-full left-0 mb-1.5 w-[248px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5 text-[12px]">
+                      <button
+                        type="button"
+                        onClick={() => refUploadInputRef.current?.click()}
+                        className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2 text-left"
+                      >
+                        <Upload className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
+                        <span>Upload reference image…</span>
+                      </button>
+
+                      {linkableCanvasImageNodes.length > 0 && (
+                        <>
+                          <div className="my-1 h-px bg-white/[0.07]" />
+                          <div className="px-2.5 py-0.5 text-[10.5px] text-white/40 uppercase tracking-wider">
+                            Link Canvas Node
+                          </div>
+                          {linkableCanvasImageNodes.slice(0, 6).map((cn) => (
                             <button
-                              key={eng.id}
+                              key={cn.id}
                               type="button"
                               onClick={() => {
-                                setActiveProvider(eng.id);
+                                connectNodes(cn.id, selectedNode.id, 'lineage');
                                 setOpenMenu(null);
                               }}
-                              className={`w-full h-7 px-2 rounded-[7px] text-[12px] flex items-center justify-between gap-2 transition-colors ${
-                                selected
-                                  ? 'bg-white/[0.1] text-white font-medium'
-                                  : 'text-white/85 hover:bg-white/[0.07]'
-                              }`}
+                              className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center justify-between gap-2 text-left"
                             >
-                              <span className="flex items-center gap-2 truncate">
-                                <span
-                                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                    ready ? 'bg-[#10b981]' : 'bg-white/25'
-                                  }`}
+                              <span className="flex items-center gap-2 min-w-0">
+                                <Link2
+                                  className="w-3.5 h-3.5 text-[#20D5EC] shrink-0"
+                                  strokeWidth={1.5}
                                 />
-                                <span className="truncate">{eng.label}</span>
+                                <span className="truncate">{cn.title}</span>
                               </span>
-                              <span className="font-mono text-[10.5px] text-white/45 shrink-0 flex items-center gap-1">
-                                <span>{eng.costLabel}</span>
-                                {selected && (
-                                  <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
-                                )}
+                              <span className="text-[10px] text-white/40 shrink-0">
+                                {cn.imageUrl ? 'Ready' : 'Idle'}
                               </span>
                             </button>
-                          );
-                        })}
-                      </div>
-                      <div className="mt-1.5 pt-1.5 border-t border-white/[0.07]">
+                          ))}
+                        </>
+                      )}
+
+                      {elements.length > 0 && (
+                        <>
+                          <div className="my-1 h-px bg-white/[0.07]" />
+                          <div className="px-2.5 py-0.5 text-[10.5px] text-white/40 uppercase tracking-wider">
+                            Project @Elements
+                          </div>
+                          {elements.map((el) => (
+                            <button
+                              key={el.id}
+                              type="button"
+                              onClick={() => {
+                                const nextPrompt = selectedNode.prompt.includes(el.handle)
+                                  ? selectedNode.prompt
+                                  : `${selectedNode.prompt}${
+                                      selectedNode.prompt &&
+                                      !selectedNode.prompt.endsWith(' ')
+                                        ? ' '
+                                        : ''
+                                    }${el.handle} `;
+                                updateNodeFields(selectedNode.id, {
+                                  prompt: nextPrompt,
+                                  elementHandles: Array.from(
+                                    new Set([...selectedNode.elementHandles, el.handle])
+                                  ),
+                                });
+                                setOpenMenu(null);
+                              }}
+                              className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center justify-between gap-2 text-left"
+                            >
+                              <span className="flex items-center gap-2 min-w-0">
+                                <AtSign
+                                  className="w-3.5 h-3.5 text-[#20D5EC] shrink-0"
+                                  strokeWidth={1.5}
+                                />
+                                <span className="font-mono text-[11.5px] truncate">
+                                  {el.handle}
+                                </span>
+                              </span>
+                              <span className="text-[10px] text-white/45 shrink-0">
+                                {el.references.length} ref
+                              </span>
+                            </button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Active Connection Badge */}
+            <button
+              type="button"
+              onClick={() =>
+                openProviderModal(
+                  activeConnStatus.transports.includes('mcp')
+                    ? 'mcp'
+                    : activeConnStatus.transports.includes('browser-bridge')
+                    ? 'bridge'
+                    : 'byok',
+                  effectivePlatformId
+                )
+              }
+              className="h-6 px-2 rounded-[6px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.07] text-[10.5px] text-white/70 hover:text-white flex items-center gap-1.5 transition-colors"
+              title="Configure MCP, Browser Session Credits, or Zero-Markup API Keys"
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  activeConnStatus.connected ? 'bg-[#10b981]' : 'bg-amber-400/80'
+                }`}
+              />
+              <span>{activeConnStatus.summary}</span>
+            </button>
+          </div>
+
+          {/* Prompt Input Area */}
+          <div className="relative">
+            <textarea
+              rows={2}
+              value={selectedNode.prompt}
+              onChange={(e) => handlePromptChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  void generateSingleNode(selectedNode.id);
+                }
+              }}
+              placeholder={
+                selectedNode.kind === 'element'
+                  ? 'Describe the character, product, or visual reference to create…'
+                  : modality === 'video'
+                  ? upstreamRefNodes.length > 0
+                    ? `Describe how ${upstreamRefNodes[0].title} moves, camera motion & scene action…`
+                    : 'Describe camera motion, subject action & scene dynamics…'
+                  : modality === 'audio'
+                  ? selectedNode.audioMode === 'sfx'
+                    ? 'Describe the foley or ambient sound effect to generate…'
+                    : 'Write the voiceover script or character dialogue…'
+                  : 'Describe the image you want to create…'
+              }
+              className="w-full bg-[#141414] border border-white/[0.07] focus:border-white/[0.22] rounded-[10px] px-3 py-2 text-[13px] leading-relaxed text-white placeholder:text-white/32 resize-none outline-none select-text"
+            />
+
+            {/* Inline @Element Autocomplete (ONLY when active project actually has elements!) */}
+            {atAutocompleteOpen && elements.length > 0 && (
+              <div className="absolute bottom-full left-2 mb-1.5 w-[240px] p-1.5 rounded-[11px] dreamina-menu z-50 space-y-0.5">
+                {elements.map((el) => (
+                  <button
+                    key={el.id}
+                    type="button"
+                    onClick={() => {
+                      const nextPrompt = selectedNode.prompt.replace(
+                        /@$/,
+                        `${el.handle} `
+                      );
+                      updateNodeFields(selectedNode.id, {
+                        prompt: nextPrompt,
+                        elementHandles: Array.from(
+                          new Set([...selectedNode.elementHandles, el.handle])
+                        ),
+                      });
+                      setAtAutocompleteOpen(false);
+                    }}
+                    className="w-full h-8 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/90 flex items-center justify-between"
+                  >
+                    <span className="font-mono text-[#20D5EC]">{el.handle}</span>
+                    <span className="text-[11px] text-white/45 truncate ml-2">
+                      {el.name}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Actionable Banner if User Just Clicked Generate Without Connected Credits */}
+          {lastFailedPlatformId === effectivePlatformId && !activeConnStatus.connected && (
+            <div className="px-3 py-2 rounded-[9px] bg-amber-500/[0.09] border border-amber-400/25 flex items-center justify-between gap-2 text-[11.5px]">
+              <span className="text-amber-100/90 truncate">
+                Connect your {activePlatformDef?.name || effectivePlatformId} credits (MCP, Browser Tab, or API Key) to run this node.
+              </span>
+              <button
+                type="button"
+                onClick={() => openProviderModal('byok', effectivePlatformId)}
+                className="h-6 px-2.5 rounded-[6px] bg-white text-[#0e0e0e] font-semibold shrink-0 hover:bg-white/90"
+              >
+                Connect Credits →
+              </button>
+            </div>
+          )}
+
+          {/* Bottom Controls Row: [Where (Platform)] + [Model] + [Settings] + [Generate] */}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {/* 1. WHERE (Platform Selector) */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOpenMenu(openMenu === 'platform' ? null : 'platform')
+                  }
+                  className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.08] text-[12px] font-medium text-white/95 flex items-center gap-1.5 transition-colors"
+                  title="Where this node gets generated (Platform / Credits)"
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      activeConnStatus.connected ? 'bg-[#10b981]' : 'bg-white/35'
+                    }`}
+                  />
+                  <span>{activePlatformDef?.shortLabel || effectivePlatformId}</span>
+                  <ChevronDown className="w-3.5 h-3.5 text-white/45" strokeWidth={1.6} />
+                </button>
+
+                {openMenu === 'platform' && (
+                  <div className="absolute bottom-full left-0 mb-1.5 w-[256px] max-h-[320px] overflow-y-auto p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
+                    <div className="px-2.5 py-1 text-[10.5px] font-medium text-white/40 uppercase tracking-wider">
+                      Where to Generate
+                    </div>
+                    {availablePlatforms.map((plat) => {
+                      const st = getPlatformConnectionStatus(
+                        plat.id,
+                        byok,
+                        chromeBridge,
+                        externalMcpServers,
+                        plat
+                      );
+                      const active = plat.id === effectivePlatformId;
+                      return (
+                        <button
+                          key={plat.id}
+                          type="button"
+                          onClick={() => {
+                            setNodePlatformAndModel(selectedNode.id, plat.id);
+                            setOpenMenu(null);
+                          }}
+                          className={`w-full px-2.5 py-1.5 rounded-[8px] text-left flex items-center justify-between gap-2 transition-colors ${
+                            active ? 'bg-white/[0.1] text-white' : 'hover:bg-white/[0.06] text-white/85'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="text-[12px] font-medium flex items-center gap-1.5">
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                  st.connected ? 'bg-[#10b981]' : 'bg-white/25'
+                                }`}
+                              />
+                              <span className="truncate">{plat.name}</span>
+                            </div>
+                            <div className="text-[10.5px] text-white/40 pl-3 truncate">
+                              {st.connected ? st.summary : 'Click to select · Setup credits'}
+                            </div>
+                          </div>
+                          {active && (
+                            <Check className="w-3.5 h-3.5 text-[#20D5EC] shrink-0" strokeWidth={2} />
+                          )}
+                        </button>
+                      );
+                    })}
+                    <div className="my-1 h-px bg-white/[0.07]" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenMenu(null);
+                        openProviderModal('mcp');
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-[11.5px] text-[#20D5EC] flex items-center gap-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
+                      <span>Connect Platform / MCP Credits…</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* 2. MODEL Selector (strictly filtered by Modality + Platform) */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOpenMenu(openMenu === 'model' ? null : 'model')
+                  }
+                  className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.08] text-[12px] text-white/90 flex items-center gap-1.5 transition-colors max-w-[210px]"
+                  title="Model on selected platform"
+                >
+                  <span className="truncate">
+                    {activeModelDef?.label ||
+                      (effectivePlatformId === 'custom-mcp'
+                        ? 'Connect MCP Tool…'
+                        : selectedNode.modelId || 'Select Model')}
+                  </span>
+                  <ChevronDown className="w-3.5 h-3.5 text-white/45 shrink-0" strokeWidth={1.6} />
+                </button>
+
+                {openMenu === 'model' && (
+                  <div className="absolute bottom-full left-0 mb-1.5 w-[280px] max-h-[300px] overflow-y-auto p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
+                    <div className="px-2.5 py-1 text-[10.5px] font-medium text-white/40 uppercase tracking-wider">
+                      {activePlatformDef?.name || 'Platform'} ·{' '}
+                      {modality === 'video'
+                        ? 'Video Models'
+                        : modality === 'audio'
+                        ? 'Audio Models'
+                        : 'Image Models'}
+                    </div>
+                    {availableModels.length === 0 ? (
+                      <div className="px-2.5 py-2 text-[11.5px] text-white/55 space-y-2">
+                        <p>No MCP tools registered yet.</p>
                         <button
                           type="button"
                           onClick={() => {
                             setOpenMenu(null);
-                            openProviderModal(
-                              normalizedActiveProvider === 'dreamina-bridge' ||
-                                normalizedActiveProvider === 'flow-bridge'
-                                ? 'bridge'
-                                : 'byok',
-                              normalizedActiveProvider === 'gemini-api' ? 'gemini' : null
-                            );
+                            openProviderModal('mcp');
                           }}
-                          className="w-full h-7 px-2 rounded-[7px] bg-[#222222] hover:bg-[#2c2c2c] text-[11px] text-white/80 hover:text-white flex items-center justify-between transition-colors"
+                          className="h-7 px-2.5 rounded-[7px] bg-white text-[#0e0e0e] font-medium text-[11.5px]"
                         >
-                          <span>Configure API Keys & Browser Bridge…</span>
-                          <ArrowRight className="w-3 h-3 text-white/50" strokeWidth={1.5} />
+                          Add MCP Server →
                         </button>
                       </div>
-                    </div>
-                  )}
-                </div>
+                    ) : (
+                      availableModels.map((m) => {
+                        const active = m.id === (activeModelDef?.id || selectedNode.modelId);
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => {
+                              setNodePlatformAndModel(
+                                selectedNode.id,
+                                effectivePlatformId,
+                                m.id
+                              );
+                              setOpenMenu(null);
+                            }}
+                            className={`w-full px-2.5 py-1.5 rounded-[8px] text-left flex items-center justify-between gap-2 transition-colors ${
+                              active
+                                ? 'bg-white/[0.1] text-white'
+                                : 'hover:bg-white/[0.06] text-white/85'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="text-[12px] font-medium truncate">
+                                {m.label}
+                              </div>
+                              {m.description && (
+                                <div className="text-[10.5px] text-white/42 line-clamp-1">
+                                  {m.description}
+                                </div>
+                              )}
+                            </div>
+                            {active && (
+                              <Check className="w-3.5 h-3.5 text-[#20D5EC] shrink-0" strokeWidth={2} />
+                            )}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
 
-                {/* Aspect Ratio & Resolution Pill */}
+              {/* 3. MODEL SETTINGS (Modality-Specific) */}
+              {modality !== 'audio' && (
                 <div className="relative">
                   <button
                     type="button"
                     onClick={() =>
                       setOpenMenu(openMenu === 'aspect' ? null : 'aspect')
                     }
-                    className="h-7 px-2.5 rounded-[8px] bg-[#252525] hover:bg-[#2e2e2e] text-[12px] text-white/85 flex items-center gap-1.5 transition-colors"
+                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] font-mono text-[11.5px] text-white/85 flex items-center gap-1"
+                    title="Aspect Ratio"
                   >
-                    <span>
-                      {promptAspect} · {promptResolution}
-                    </span>
+                    <span>{selectedNode.aspectRatio}</span>
+                    <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
                   </button>
                   {openMenu === 'aspect' && (
-                    <div className="absolute left-0 bottom-[34px] w-[200px] p-2 rounded-[12px] dreamina-menu z-50 space-y-2">
-                      <div>
-                        <div className="text-[11px] text-white/45 mb-1">
-                          Aspect Ratio
-                        </div>
-                        <div className="grid grid-cols-4 gap-1">
-                          {ASPECT_OPTIONS.map((ar) => (
-                            <button
-                              key={ar}
-                              type="button"
-                              onClick={() => setPromptAspect(ar)}
-                              className={`h-6 rounded-[6px] text-[11px] ${
-                                promptAspect === ar
-                                  ? 'bg-white text-[#0e0e0e] font-semibold'
-                                  : 'bg-[#252525] text-white/75 hover:bg-[#303030]'
-                              }`}
-                            >
-                              {ar}
-                            </button>
-                          ))}
-                        </div>
+                    <div className="absolute bottom-full left-0 mb-1.5 w-[124px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                      {(modality === 'video' ? VIDEO_ASPECTS : IMAGE_ASPECTS).map((ar) => (
+                        <button
+                          key={ar}
+                          type="button"
+                          onClick={() => {
+                            setNodeAspectRatio(selectedNode.id, ar);
+                            setOpenMenu(null);
+                          }}
+                          className={`w-full h-7 px-2.5 rounded-[7px] font-mono text-[11.5px] flex items-center justify-between ${
+                            selectedNode.aspectRatio === ar
+                              ? 'bg-white/[0.1] text-white'
+                              : 'hover:bg-white/[0.06] text-white/80'
+                          }`}
+                        >
+                          <span>{ar}</span>
+                          {selectedNode.aspectRatio === ar && (
+                            <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {modality !== 'audio' && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenMenu(openMenu === 'resolution' ? null : 'resolution')
+                    }
+                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] font-mono text-[11.5px] text-white/85 flex items-center gap-1"
+                    title="Output Resolution"
+                  >
+                    <span>{selectedNode.resolution}</span>
+                    <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
+                  </button>
+                  {openMenu === 'resolution' && (
+                    <div className="absolute bottom-full left-0 mb-1.5 w-[112px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                      {(modality === 'video' ? VIDEO_RESOLUTIONS : IMAGE_RESOLUTIONS).map(
+                        (res) => (
+                          <button
+                            key={res}
+                            type="button"
+                            onClick={() => {
+                              updateNodeFields(selectedNode.id, { resolution: res });
+                              setOpenMenu(null);
+                            }}
+                            className={`w-full h-7 px-2.5 rounded-[7px] font-mono text-[11.5px] flex items-center justify-between ${
+                              selectedNode.resolution === res
+                                ? 'bg-white/[0.1] text-white'
+                                : 'hover:bg-white/[0.06] text-white/80'
+                            }`}
+                          >
+                            <span>{res}</span>
+                            {selectedNode.resolution === res && (
+                              <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
+                            )}
+                          </button>
+                        )
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Image Batch Count */}
+              {modality === 'image' && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenMenu(openMenu === 'batch' ? null : 'batch')
+                    }
+                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] font-mono text-[11.5px] text-white/85 flex items-center gap-1"
+                    title="Batch image count"
+                  >
+                    <span>{selectedNode.batchCount || 1}×</span>
+                    <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
+                  </button>
+                  {openMenu === 'batch' && (
+                    <div className="absolute bottom-full left-0 mb-1.5 w-[108px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                      {BATCH_COUNTS.map((cnt) => (
+                        <button
+                          key={cnt}
+                          type="button"
+                          onClick={() => {
+                            updateNodeFields(selectedNode.id, { batchCount: cnt });
+                            setOpenMenu(null);
+                          }}
+                          className={`w-full h-7 px-2.5 rounded-[7px] font-mono text-[11.5px] flex items-center justify-between ${
+                            (selectedNode.batchCount || 1) === cnt
+                              ? 'bg-white/[0.1] text-white'
+                              : 'hover:bg-white/[0.06] text-white/80'
+                          }`}
+                        >
+                          <span>{cnt} {cnt === 1 ? 'image' : 'images'}</span>
+                          {(selectedNode.batchCount || 1) === cnt && (
+                            <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Video Duration + Native Sound Toggle */}
+              {modality === 'video' && (
+                <>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setOpenMenu(openMenu === 'duration' ? null : 'duration')
+                      }
+                      className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] font-mono text-[11.5px] text-white/85 flex items-center gap-1"
+                      title="Clip Duration"
+                    >
+                      <span>{selectedNode.durationSec || 5}s</span>
+                      <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
+                    </button>
+                    {openMenu === 'duration' && (
+                      <div className="absolute bottom-full left-0 mb-1.5 w-[100px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                        {VIDEO_DURATIONS.map((sec) => (
+                          <button
+                            key={sec}
+                            type="button"
+                            onClick={() => {
+                              updateNodeFields(selectedNode.id, { durationSec: sec });
+                              setOpenMenu(null);
+                            }}
+                            className={`w-full h-7 px-2.5 rounded-[7px] font-mono text-[11.5px] flex items-center justify-between ${
+                              (selectedNode.durationSec || 5) === sec
+                                ? 'bg-white/[0.1] text-white'
+                                : 'hover:bg-white/[0.06] text-white/80'
+                            }`}
+                          >
+                            <span>{sec}s</span>
+                            {(selectedNode.durationSec || 5) === sec && (
+                              <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
+                            )}
+                          </button>
+                        ))}
                       </div>
-                      <div>
-                        <div className="text-[11px] text-white/45 mb-1">
-                          Resolution
-                        </div>
-                        <div className="grid grid-cols-4 gap-1">
-                          {RES_OPTIONS.map((res) => (
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateNodeFields(selectedNode.id, {
+                        audioEnabled: !(selectedNode.audioEnabled ?? true),
+                      })
+                    }
+                    className={`h-8 px-2 rounded-[8px] border text-[11.5px] flex items-center gap-1 transition-colors ${
+                      selectedNode.audioEnabled ?? true
+                        ? 'bg-[#252525] border-white/[0.1] text-white/90'
+                        : 'bg-[#191919] border-white/[0.06] text-white/40'
+                    }`}
+                    title="Toggle native video audio"
+                  >
+                    {selectedNode.audioEnabled ?? true ? (
+                      <Volume2 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                    ) : (
+                      <VolumeX className="w-3.5 h-3.5" strokeWidth={1.6} />
+                    )}
+                    <span>Audio</span>
+                  </button>
+                </>
+              )}
+
+              {/* Audio Mode + Voice + Duration */}
+              {modality === 'audio' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextMode = selectedNode.audioMode === 'sfx' ? 'tts' : 'sfx';
+                      const nextModel =
+                        nextMode === 'sfx'
+                          ? 'eleven_text_to_sound_v2'
+                          : 'eleven_multilingual_v2';
+                      updateNodeFields(selectedNode.id, {
+                        audioMode: nextMode,
+                        modelId:
+                          effectivePlatformId === 'elevenlabs'
+                            ? nextModel
+                            : selectedNode.modelId,
+                      });
+                    }}
+                    className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] text-[11.5px] text-white/90"
+                    title="Switch between Voice TTS and Sound Effects"
+                  >
+                    {selectedNode.audioMode === 'sfx' ? 'Mode: SFX' : 'Mode: Voice TTS'}
+                  </button>
+
+                  {selectedNode.audioMode !== 'sfx' && (
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOpenMenu(openMenu === 'voice' ? null : 'voice')
+                        }
+                        className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] text-[11.5px] text-white/90 flex items-center gap-1"
+                      >
+                        <span>Voice: {activeVoice.name}</span>
+                        <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
+                      </button>
+                      {openMenu === 'voice' && (
+                        <div className="absolute bottom-full left-0 mb-1.5 w-[220px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                          {ELEVENLABS_VOICES.map((v) => (
                             <button
-                              key={res}
+                              key={v.id}
                               type="button"
                               onClick={() => {
-                                setPromptResolution(res);
+                                updateNodeFields(selectedNode.id, { voiceId: v.id });
                                 setOpenMenu(null);
                               }}
-                              className={`h-6 rounded-[6px] text-[11px] ${
-                                promptResolution === res
-                                  ? 'bg-white text-[#0e0e0e] font-semibold'
-                                  : 'bg-[#252525] text-white/75 hover:bg-[#303030]'
+                              className={`w-full px-2.5 py-1.5 rounded-[7px] text-left flex items-center justify-between ${
+                                (selectedNode.voiceId || ELEVENLABS_VOICES[0].id) === v.id
+                                  ? 'bg-white/[0.1] text-white'
+                                  : 'hover:bg-white/[0.06] text-white/85'
                               }`}
                             >
-                              {res}
+                              <div>
+                                <div className="text-[12px] font-medium">{v.name}</div>
+                                <div className="text-[10.5px] text-white/40">{v.accent}</div>
+                              </div>
+                              {(selectedNode.voiceId || ELEVENLABS_VOICES[0].id) ===
+                                v.id && (
+                                <Check className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={2} />
+                              )}
                             </button>
                           ))}
                         </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setOpenMenu(openMenu === 'duration' ? null : 'duration')
+                      }
+                      className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] font-mono text-[11.5px] text-white/85 flex items-center gap-1"
+                    >
+                      <span>{selectedNode.durationSec || 8}s</span>
+                      <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
+                    </button>
+                    {openMenu === 'duration' && (
+                      <div className="absolute bottom-full left-0 mb-1.5 w-[100px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                        {AUDIO_DURATIONS.map((sec) => (
+                          <button
+                            key={sec}
+                            type="button"
+                            onClick={() => {
+                              updateNodeFields(selectedNode.id, { durationSec: sec });
+                              setOpenMenu(null);
+                            }}
+                            className="w-full h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] font-mono text-[11.5px] text-white/85 text-left"
+                          >
+                            {sec}s
+                          </button>
+                        ))}
                       </div>
-                    </div>
-                  )}
-                </div>
+                    )}
+                  </div>
+                </>
+              )}
 
-                {/* Sub-mode Pill: Omni reference / First-Last frame / Multi-turn */}
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setOpenMenu(openMenu === 'submode' ? null : 'submode')
-                    }
-                    className="h-7 px-2.5 rounded-[8px] bg-[#252525] hover:bg-[#2e2e2e] text-[12px] text-white/85 flex items-center gap-1.5 transition-colors"
-                  >
-                    <SlidersHorizontal
-                      className="w-3 h-3 text-white/60"
-                      strokeWidth={1.5}
-                    />
-                    <span>
-                      {isBridgeVideoActive || promptSubMode === 'keyframe-bridge'
-                        ? 'First/Last frame'
-                        : promptSubMode === 'omni-ref'
-                        ? 'Omni reference'
-                        : 'Multi-turn'}
-                    </span>
-                    <ChevronDown
-                      className="w-3 h-3 text-white/45"
-                      strokeWidth={1.5}
-                    />
-                  </button>
-                  {openMenu === 'submode' && (
-                    <div className="absolute left-0 bottom-[34px] w-[176px] p-1 rounded-[12px] dreamina-menu z-50">
-                      {(
-                        [
-                          { id: 'omni-ref', label: 'Omni reference' },
-                          { id: 'keyframe-bridge', label: 'First/Last frame' },
-                          { id: 'multi-turn', label: 'Multi-turn edit' },
-                        ] as const
-                      ).map((sm) => (
-                        <button
-                          key={sm.id}
-                          type="button"
-                          onClick={() => {
-                            setPromptSubMode(sm.id);
-                            if (selectedNode.kind === 'video') {
-                              updateNodeFields(selectedNode.id, {
-                                bridgeMode: sm.id === 'keyframe-bridge',
-                              });
-                            }
-                            if (sm.id === 'multi-turn') {
-                              setPromptMode('multi-turn');
-                            }
-                            setOpenMenu(null);
-                          }}
-                          className="w-full h-7 px-2.5 rounded-[7px] text-left text-[12px] text-white/85 hover:bg-white/[0.08] flex items-center justify-between"
-                        >
-                          <span>{sm.label}</span>
-                          {promptSubMode === sm.id && (
-                            <Check
-                              className="w-3 h-3 text-white/75"
-                              strokeWidth={1.75}
-                            />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Duration Pill */}
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setOpenMenu(openMenu === 'duration' ? null : 'duration')
-                    }
-                    className="h-7 px-2.5 rounded-[8px] bg-[#252525] hover:bg-[#2e2e2e] text-[12px] text-white/85 flex items-center gap-1 transition-colors"
-                  >
-                    <Clock className="w-3 h-3 text-white/60" strokeWidth={1.5} />
-                    <span>{promptDurationSec}s</span>
-                  </button>
-                  {openMenu === 'duration' && (
-                    <div className="absolute left-0 bottom-[34px] w-[104px] p-1 rounded-[10px] dreamina-menu z-50">
-                      {DURATION_OPTIONS.map((sec) => (
-                        <button
-                          key={sec}
-                          type="button"
-                          onClick={() => {
-                            setPromptDurationSec(sec);
-                            setOpenMenu(null);
-                          }}
-                          className="w-full h-7 px-2.5 rounded-[6px] text-left text-[12px] text-white/85 hover:bg-white/[0.08] flex items-center justify-between"
-                        >
-                          <span>{sec}s</span>
-                          {promptDurationSec === sec && (
-                            <Check
-                              className="w-3 h-3 text-white/75"
-                              strokeWidth={1.75}
-                            />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* @ Mention Quick Trigger */}
+              {/* Advanced Settings Popover (Connection Transport, Negative Prompt, Seed) */}
+              <div className="relative">
                 <button
                   type="button"
                   onClick={() =>
-                    setOpenMenu(openMenu === 'elements' ? null : 'elements')
+                    setOpenMenu(openMenu === 'advanced' ? null : 'advanced')
                   }
-                  title="Insert @Element reference"
-                  className="w-7 h-7 rounded-[8px] bg-[#252525] hover:bg-[#2e2e2e] text-white/75 hover:text-white flex items-center justify-center transition-colors"
+                  className={`w-8 h-8 rounded-[8px] border flex items-center justify-center transition-colors ${
+                    openMenu === 'advanced'
+                      ? 'bg-white text-[#0e0e0e] border-white'
+                      : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/75'
+                  }`}
+                  title="Connection Route, Negative Prompt & Seed"
                 >
-                  <AtSign className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <SlidersHorizontal className="w-3.5 h-3.5" strokeWidth={1.6} />
                 </button>
-              </div>
-            )}
 
-            {/* Right: Zero-Markup Pass-Through Badge + Circular White [↑] Generate CTA */}
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => openProviderModal('byok')}
-                title="Zero-Markup BYOK / Local FFmpeg Cost"
-                className="h-7 px-2 rounded-[8px] hover:bg-[#252525] text-[11.5px] font-mono text-white/65 hover:text-white/90 flex items-center gap-1 transition-colors"
-              >
-                <Sparkles
-                  className="w-3 h-3 text-[#face15]"
-                  strokeWidth={1.75}
-                />
-                <span>{isAudioNode ? '$0.00' : activeEngine.costLabel}</span>
-              </button>
+                {openMenu === 'advanced' && (
+                  <div className="absolute bottom-full right-0 mb-1.5 w-[290px] p-3 rounded-[12px] dreamina-menu z-50 space-y-3 text-[12px]">
+                    <div className="space-y-1">
+                      <label className="text-[10.5px] font-medium text-white/45 uppercase tracking-wider">
+                        Credit Connection Route
+                      </label>
+                      <div className="space-y-1">
+                        {TRANSPORT_OPTIONS.map((tr) => {
+                          const active = (selectedNode.connectionMode || 'auto') === tr.id;
+                          return (
+                            <button
+                              key={tr.id}
+                              type="button"
+                              onClick={() =>
+                                updateNodeFields(selectedNode.id, {
+                                  connectionMode: tr.id,
+                                })
+                              }
+                              className={`w-full px-2.5 py-1.5 rounded-[8px] text-left flex items-center justify-between ${
+                                active
+                                  ? 'bg-white/[0.1] text-white'
+                                  : 'hover:bg-white/[0.06] text-white/80'
+                              }`}
+                            >
+                              <div>
+                                <div className="text-[11.5px] font-medium">{tr.label}</div>
+                                <div className="text-[10px] text-white/40">{tr.hint}</div>
+                              </div>
+                              {active && (
+                                <Check className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={2} />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {modality !== 'audio' && (
+                      <div className="space-y-1">
+                        <label className="text-[10.5px] font-medium text-white/45 uppercase tracking-wider">
+                          Negative Prompt
+                        </label>
+                        <input
+                          value={selectedNode.negativePrompt || ''}
+                          onChange={(e) =>
+                            updateNodeFields(selectedNode.id, {
+                              negativePrompt: e.target.value,
+                            })
+                          }
+                          placeholder="blur, watermark, distortion…"
+                          className="w-full h-7 px-2.5 rounded-[7px] bg-[#141414] border border-white/[0.08] text-[11.5px] text-white outline-none select-text"
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[10.5px] font-medium text-white/45 uppercase tracking-wider">
+                        Seed
+                      </label>
+                      <input
+                        type="number"
+                        value={selectedNode.seed}
+                        onChange={(e) =>
+                          updateNodeFields(selectedNode.id, {
+                            seed: Number(e.target.value) || 100,
+                          })
+                        }
+                        className="w-28 h-7 px-2 rounded-[7px] bg-[#141414] border border-white/[0.08] font-mono text-[11.5px] text-white outline-none select-text"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Execution CTAs */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {hasDownstreamEdges && (
+                <button
+                  type="button"
+                  disabled={isGenerating || workflowRunning}
+                  onClick={() => void runWorkflowPipeline(selectedNode.id)}
+                  className="h-8 px-2.5 rounded-[9px] bg-[#252525] hover:bg-white/[0.12] disabled:opacity-45 border border-[#20D5EC]/35 text-[11.5px] font-medium text-[#20D5EC] flex items-center gap-1.5 transition-colors"
+                  title="Generate this node, then pass its output automatically into wired downstream nodes"
+                >
+                  <GitBranch className="w-3.5 h-3.5" strokeWidth={1.7} />
+                  <span>Run Chain</span>
+                </button>
+              )}
 
               <button
                 type="button"
                 disabled={isGenerating}
-                onClick={handleGenerate}
-                title={
-                  isAudioNode
-                    ? 'Synthesize Audio (⌘ + Enter)'
-                    : isBridgeVideoActive
-                    ? 'Render A → B Keyframe Bridge (⌘ + Enter)'
-                    : 'Generate (⌘ + Enter)'
-                }
-                className="w-8 h-8 rounded-full bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] flex items-center justify-center shadow-[0_4px_14px_rgba(255,255,255,0.2)] transition-all disabled:opacity-60"
+                onClick={() => void generateSingleNode(selectedNode.id)}
+                title={`Generate on ${activePlatformDef?.name || effectivePlatformId} · ${
+                  activeModelDef?.label || ''
+                } (⌘Enter)`}
+                className="h-8 px-3 rounded-full bg-white hover:bg-[#e5e5e5] disabled:opacity-50 text-[#0e0e0e] text-[12px] font-semibold flex items-center gap-1.5 transition-colors"
               >
                 {isGenerating ? (
-                  <Loader2 className="w-4 h-4 animate-spin" strokeWidth={2} />
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+                    <span>Generating</span>
+                  </>
                 ) : (
-                  <ArrowUp className="w-4 h-4" strokeWidth={2} />
+                  <>
+                    <Play className="w-3 h-3 fill-current" strokeWidth={2} />
+                    <span>Generate</span>
+                    <ArrowUp className="w-3.5 h-3.5" strokeWidth={2.2} />
+                  </>
                 )}
               </button>
             </div>
           </div>
         </div>
-      </div>
+      )}
     </>
   );
 };
