@@ -4,6 +4,24 @@
  * External MCP Servers, Official BYOK REST APIs, and Local GPUs.
  */
 
+import {
+  HIGGSFIELD_CANONICAL_MODELS,
+  convertRawHiggsfieldCatalog,
+  convertRawHiggsfieldModelToPlatformModel,
+  type RawHiggsfieldModelSpec,
+  type RawHiggsfieldParamSpec,
+  type RawHiggsfieldMediaSpec,
+} from './higgsfield-catalog.js';
+
+export {
+  HIGGSFIELD_CANONICAL_MODELS,
+  convertRawHiggsfieldCatalog,
+  convertRawHiggsfieldModelToPlatformModel,
+  type RawHiggsfieldModelSpec,
+  type RawHiggsfieldParamSpec,
+  type RawHiggsfieldMediaSpec,
+};
+
 export type PlatformId =
   | 'higgsfield'
   | 'sume'
@@ -23,22 +41,40 @@ export type ModelModality = 'image' | 'video' | 'audio';
 
 export type ConnectionTransport = 'auto' | 'mcp' | 'browser-bridge' | 'api-key';
 
+export interface ModelParameterSpec {
+  name: string;
+  label?: string;
+  type: 'enum' | 'boolean' | 'number' | 'string';
+  options?: Array<string | number>;
+  default?: string | number | boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  required?: boolean;
+  description?: string;
+  inlinePill?: boolean;
+}
+
 export interface PlatformModelDefinition {
   id: string;
   label: string;
   modality: ModelModality;
   platformId: PlatformId;
   description?: string;
+  providerFamily?: string;
+  supportsUnlim?: boolean;
   supportsReferences?: boolean;
   maxReferences?: number;
   supportsStartEndFrames?: boolean;
   supportsNativeAudio?: boolean;
+  mediaRoles?: string[];
   aspectRatios?: string[];
   resolutions?: string[];
   durationsSec?: number[];
   defaultAspectRatio?: string;
   defaultResolution?: string;
   defaultDurationSec?: number;
+  parameters?: ModelParameterSpec[];
 }
 
 export interface PlatformAuthField {
@@ -104,7 +140,7 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
     apiKeysUrl: 'https://cloud.higgsfield.ai',
     description:
       'Use your Higgsfield creator credits via Chrome Credit Bridge, MCP server, or Higgsfield Cloud API.',
-    modalities: ['image', 'video'],
+    modalities: ['image', 'video', 'audio'],
     supportedTransports: ['browser-bridge', 'mcp', 'api-key'],
     preferredTransport: 'browser-bridge',
     browserBridgeSupported: true,
@@ -123,104 +159,7 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
         secret: true,
       },
     ],
-    models: [
-      {
-        id: 'chatgpt-image-2.6',
-        label: 'ChatGPT Image 2.6',
-        modality: 'image',
-        platformId: 'higgsfield',
-        supportsReferences: true,
-        maxReferences: 6,
-        aspectRatios: COMMON_IMAGE_RATIOS,
-        resolutions: COMMON_IMAGE_RESOLUTIONS,
-        defaultAspectRatio: '16:9',
-        defaultResolution: '2K',
-      },
-      {
-        id: 'higgsfield-soul',
-        label: 'Higgsfield Soul',
-        modality: 'image',
-        platformId: 'higgsfield',
-        supportsReferences: true,
-        maxReferences: 4,
-        aspectRatios: COMMON_IMAGE_RATIOS,
-        resolutions: COMMON_IMAGE_RESOLUTIONS,
-        defaultAspectRatio: '16:9',
-        defaultResolution: '2K',
-      },
-      {
-        id: 'flux-1-pro',
-        label: 'Flux.1 Pro',
-        modality: 'image',
-        platformId: 'higgsfield',
-        supportsReferences: true,
-        maxReferences: 4,
-        aspectRatios: COMMON_IMAGE_RATIOS,
-        resolutions: COMMON_IMAGE_RESOLUTIONS,
-        defaultAspectRatio: '16:9',
-        defaultResolution: '2K',
-      },
-      {
-        id: 'seedream-5.0',
-        label: 'Seedream 5.0',
-        modality: 'image',
-        platformId: 'higgsfield',
-        supportsReferences: true,
-        maxReferences: 6,
-        aspectRatios: COMMON_IMAGE_RATIOS,
-        resolutions: COMMON_IMAGE_RESOLUTIONS,
-        defaultAspectRatio: '16:9',
-        defaultResolution: '2K',
-      },
-      {
-        id: 'higgsfield-dop-i2v',
-        label: 'DoP Cinema I2V-01',
-        modality: 'video',
-        platformId: 'higgsfield',
-        supportsReferences: true,
-        maxReferences: 2,
-        supportsStartEndFrames: true,
-        supportsNativeAudio: true,
-        aspectRatios: COMMON_VIDEO_RATIOS,
-        resolutions: COMMON_VIDEO_RESOLUTIONS,
-        durationsSec: COMMON_VIDEO_DURATIONS,
-        defaultAspectRatio: '16:9',
-        defaultResolution: '1080p',
-        defaultDurationSec: 5,
-      },
-      {
-        id: 'wan-2.6',
-        label: 'Wan 2.6',
-        modality: 'video',
-        platformId: 'higgsfield',
-        supportsReferences: true,
-        maxReferences: 2,
-        supportsStartEndFrames: true,
-        supportsNativeAudio: true,
-        aspectRatios: COMMON_VIDEO_RATIOS,
-        resolutions: COMMON_VIDEO_RESOLUTIONS,
-        durationsSec: COMMON_VIDEO_DURATIONS,
-        defaultAspectRatio: '16:9',
-        defaultResolution: '1080p',
-        defaultDurationSec: 5,
-      },
-      {
-        id: 'kling-4.0-hf',
-        label: 'Kling 4.0',
-        modality: 'video',
-        platformId: 'higgsfield',
-        supportsReferences: true,
-        maxReferences: 4,
-        supportsStartEndFrames: true,
-        supportsNativeAudio: true,
-        aspectRatios: COMMON_VIDEO_RATIOS,
-        resolutions: COMMON_VIDEO_RESOLUTIONS,
-        durationsSec: COMMON_VIDEO_DURATIONS,
-        defaultAspectRatio: '16:9',
-        defaultResolution: '1080p',
-        defaultDurationSec: 5,
-      },
-    ],
+    models: HIGGSFIELD_CANONICAL_MODELS,
   },
   {
     id: 'sume',
@@ -858,22 +797,168 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
     ],
     models: [
       {
-        id: 'gpt-image-1',
-        label: 'GPT-Image-1 / ChatGPT Image',
+        id: 'gpt-image-1.5',
+        label: 'GPT Image 1.5',
         modality: 'image',
         platformId: 'openai',
+        providerFamily: 'OpenAI',
         supportsReferences: true,
         maxReferences: 4,
         aspectRatios: ['1:1', '16:9', '9:16', '4:3', '3:4'],
         resolutions: ['1K', '2K'],
         defaultAspectRatio: '16:9',
         defaultResolution: '2K',
+        parameters: [
+          {
+            name: 'quality',
+            label: 'Quality',
+            type: 'enum',
+            options: ['auto', 'low', 'medium', 'high'],
+            default: 'high',
+            inlinePill: true,
+          },
+          {
+            name: 'background',
+            label: 'Background',
+            type: 'enum',
+            options: ['auto', 'opaque', 'transparent'],
+            default: 'auto',
+            inlinePill: true,
+          },
+          {
+            name: 'output_format',
+            label: 'Output Format',
+            type: 'enum',
+            options: ['png', 'jpeg', 'webp'],
+            default: 'png',
+            inlinePill: true,
+          },
+        ],
+      },
+      {
+        id: 'gpt-image-1',
+        label: 'GPT Image 1',
+        modality: 'image',
+        platformId: 'openai',
+        providerFamily: 'OpenAI',
+        supportsReferences: true,
+        maxReferences: 4,
+        aspectRatios: ['1:1', '16:9', '9:16', '4:3', '3:4'],
+        resolutions: ['1K', '2K'],
+        defaultAspectRatio: '16:9',
+        defaultResolution: '2K',
+        parameters: [
+          {
+            name: 'quality',
+            label: 'Quality',
+            type: 'enum',
+            options: ['auto', 'low', 'medium', 'high'],
+            default: 'high',
+            inlinePill: true,
+          },
+          {
+            name: 'background',
+            label: 'Background',
+            type: 'enum',
+            options: ['auto', 'opaque', 'transparent'],
+            default: 'auto',
+            inlinePill: true,
+          },
+          {
+            name: 'output_format',
+            label: 'Output Format',
+            type: 'enum',
+            options: ['png', 'jpeg', 'webp'],
+            default: 'png',
+            inlinePill: true,
+          },
+        ],
+      },
+      {
+        id: 'gpt-image-1-mini',
+        label: 'GPT Image 1 Mini',
+        modality: 'image',
+        platformId: 'openai',
+        providerFamily: 'OpenAI',
+        supportsReferences: true,
+        maxReferences: 4,
+        aspectRatios: ['1:1', '16:9', '9:16', '4:3', '3:4'],
+        resolutions: ['1K', '2K'],
+        defaultAspectRatio: '16:9',
+        defaultResolution: '1K',
+        parameters: [
+          {
+            name: 'quality',
+            label: 'Quality',
+            type: 'enum',
+            options: ['auto', 'low', 'medium', 'high'],
+            default: 'high',
+            inlinePill: true,
+          },
+          {
+            name: 'background',
+            label: 'Background',
+            type: 'enum',
+            options: ['auto', 'opaque', 'transparent'],
+            default: 'auto',
+            inlinePill: true,
+          },
+          {
+            name: 'output_format',
+            label: 'Output Format',
+            type: 'enum',
+            options: ['png', 'jpeg', 'webp'],
+            default: 'png',
+            inlinePill: true,
+          },
+        ],
+      },
+      {
+        id: 'dall-e-3',
+        label: 'DALL·E 3',
+        modality: 'image',
+        platformId: 'openai',
+        providerFamily: 'OpenAI',
+        supportsReferences: false,
+        maxReferences: 0,
+        aspectRatios: ['1:1', '16:9', '9:16'],
+        resolutions: ['1K', '2K'],
+        defaultAspectRatio: '16:9',
+        defaultResolution: '2K',
+        parameters: [
+          {
+            name: 'quality',
+            label: 'Quality',
+            type: 'enum',
+            options: ['standard', 'hd'],
+            default: 'hd',
+            inlinePill: true,
+          },
+        ],
       },
       {
         id: 'sora-2',
         label: 'Sora 2',
         modality: 'video',
         platformId: 'openai',
+        providerFamily: 'OpenAI',
+        supportsReferences: true,
+        maxReferences: 1,
+        supportsStartEndFrames: false,
+        supportsNativeAudio: true,
+        aspectRatios: ['16:9', '9:16', '1:1'],
+        resolutions: ['720p', '1080p'],
+        durationsSec: [4, 8, 12],
+        defaultAspectRatio: '16:9',
+        defaultResolution: '1080p',
+        defaultDurationSec: 8,
+      },
+      {
+        id: 'sora-2-pro',
+        label: 'Sora 2 Pro',
+        modality: 'video',
+        platformId: 'openai',
+        providerFamily: 'OpenAI',
         supportsReferences: true,
         maxReferences: 1,
         supportsStartEndFrames: false,

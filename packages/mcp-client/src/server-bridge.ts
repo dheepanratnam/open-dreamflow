@@ -419,6 +419,9 @@ export function normalizeHiggsfieldMcpModelId(
       'chatgpt-image-2.6': 'gpt_image_2_6',
       'gpt-image-2.6': 'gpt_image_2_6',
       gpt_image_2_6: 'gpt_image_2_6',
+      'chatgpt-image-2.5': 'gpt_image_2_5',
+      'gpt-image-2.5': 'gpt_image_2_5',
+      gpt_image_2_5: 'gpt_image_2_5',
       'gpt-image-2': 'gpt_image_2',
       gpt_image_2: 'gpt_image_2',
       'higgsfield-soul': 'soul_2',
@@ -432,10 +435,12 @@ export function normalizeHiggsfieldMcpModelId(
       'flux-kontext-max': 'flux_kontext',
       'flux-kontext': 'flux_kontext',
       flux_kontext: 'flux_kontext',
+      'flux-1-pro': 'flux_3_image',
       'flux-3': 'flux_3_image',
       flux_3_image: 'flux_3_image',
       'nano-banana-2': 'nano_banana_2_1',
       nano_banana_2_1: 'nano_banana_2_1',
+      'seedream-5.0': 'seedream_v5_pro',
       'seedream-5.0-pro': 'seedream_v5_pro',
       seedream_v5_pro: 'seedream_v5_pro',
     };
@@ -1078,6 +1083,10 @@ export class McpStdioBridgeServer {
     }
   >();
   private readonly mcpRefUploadCache = new Map<string, string>();
+  private readonly mcpCatalogCache = new Map<
+    string,
+    { fetchedAt: number; models: Array<Record<string, unknown>> }
+  >();
   private bridgeEvents: BridgeRelayEvent[] = [];
   private readonly bridgeJobs = new Map<string, BridgeJobRecord>();
   private readonly bridgeJobWaiters = new Map<
@@ -3867,12 +3876,197 @@ export class McpStdioBridgeServer {
     }
   }
 
-  public async getPlatformsCatalogWithStatus(): Promise<Record<string, unknown>> {
+  private getHiggsfieldDiskCachePath(): string {
+    return path.join(os.homedir(), '.open-dreamflow', 'higgsfield-models-cache.json');
+  }
+
+  public async getHiggsfieldLiveCatalogWithCache(
+    serverId: string,
+    forceRefresh = false
+  ): Promise<Array<Record<string, unknown>>> {
+    const servers = this.externalMcpHost.listServers();
+    const srv = servers.find((s) => s.id === serverId);
+    if (!srv || srv.status !== 'connected' || !srv.tools.some((t) => t.name === 'models_explore')) {
+      return [];
+    }
+
+    const now = Date.now();
+    const TTL_MS = 5 * 60_000;
+    const memCached = this.mcpCatalogCache.get(serverId);
+    if (!forceRefresh && memCached && now - memCached.fetchedAt < TTL_MS) {
+      return memCached.models;
+    }
+
+    const diskPath = this.getHiggsfieldDiskCachePath();
+    if (!forceRefresh) {
+      try {
+        if (fs.existsSync(diskPath)) {
+          const parsedDisk = JSON.parse(fs.readFileSync(diskPath, 'utf8')) as {
+            fetchedAt?: number;
+            serverUrl?: string;
+            models?: Array<Record<string, unknown>>;
+          };
+          const urlMatches = !parsedDisk.serverUrl || !srv.url || parsedDisk.serverUrl === srv.url;
+          if (
+            urlMatches &&
+            typeof parsedDisk.fetchedAt === 'number' &&
+            now - parsedDisk.fetchedAt < TTL_MS &&
+            Array.isArray(parsedDisk.models) &&
+            parsedDisk.models.length > 0
+          ) {
+            this.mcpCatalogCache.set(serverId, {
+              fetchedAt: parsedDisk.fetchedAt,
+              models: parsedDisk.models,
+            });
+            return parsedDisk.models;
+          }
+        }
+      } catch {
+        // Ignore corrupt/unreadable disk cache and query live MCP
+      }
+    }
+
+    try {
+      const sdk = await this.loadProviderSdk();
+      const types: Array<'image' | 'video' | 'audio'> = ['image', 'video', 'audio'];
+      const responses = await Promise.all(
+        types.map((t) =>
+          this.externalMcpHost.callTool({
+            serverId,
+            toolName: 'models_explore',
+            arguments: { action: 'list', type: t, limit: 100 },
+            timeoutMs: 15_000,
+          })
+        )
+      );
+
+      const rawItems: Array<Record<string, unknown>> = [];
+      for (const res of responses) {
+        const sc = res.rawResult?.structuredContent as Record<string, unknown> | undefined;
+        let items: unknown = sc?.items;
+        if (!Array.isArray(items) && res.textSummary) {
+          try {
+            const parsedText = JSON.parse(res.textSummary) as Record<string, unknown>;
+            items = parsedText?.items ?? parsedText?.models ?? (Array.isArray(parsedText) ? parsedText : undefined);
+          } catch {
+            // ignore non-JSON text
+          }
+        }
+        if (Array.isArray(items)) {
+          for (const item of items) {
+            if (item && typeof item === 'object') {
+              rawItems.push(item as Record<string, unknown>);
+            }
+          }
+        }
+      }
+
+      if (rawItems.length === 0) {
+        return memCached ? memCached.models : [];
+      }
+
+      const converted = (
+        typeof sdk.convertRawHiggsfieldCatalog === 'function'
+          ? sdk.convertRawHiggsfieldCatalog(rawItems, srv.platformId || 'higgsfield')
+          : rawItems
+      ) as Array<Record<string, unknown>>;
+
+      this.mcpCatalogCache.set(serverId, { fetchedAt: now, models: converted });
+      try {
+        fs.mkdirSync(path.dirname(diskPath), { recursive: true });
+        fs.writeFileSync(
+          diskPath,
+          JSON.stringify({ fetchedAt: now, serverUrl: srv.url || '', models: converted }, null, 2)
+        );
+      } catch {
+        // Ignore read-only home dir
+      }
+      return converted;
+    } catch {
+      if (memCached) return memCached.models;
+      try {
+        if (fs.existsSync(diskPath)) {
+          const parsedDisk = JSON.parse(fs.readFileSync(diskPath, 'utf8')) as {
+            serverUrl?: string;
+            models?: Array<Record<string, unknown>>;
+          };
+          if (
+            (!parsedDisk.serverUrl || !srv.url || parsedDisk.serverUrl === srv.url) &&
+            Array.isArray(parsedDisk.models)
+          ) {
+            return parsedDisk.models;
+          }
+        }
+      } catch {
+        // Ignore disk fallback failure
+      }
+      return [];
+    }
+  }
+
+  public async getMcpModelsCatalog(
+    options: { platformId?: string; forceRefresh?: boolean } = {}
+  ): Promise<Record<string, unknown>> {
+    const platformId = String(options.platformId || 'higgsfield').trim().toLowerCase() || 'higgsfield';
+    const forceRefresh = Boolean(options.forceRefresh);
+    const allMcpServers = this.externalMcpHost.listServers();
+    const matching = allMcpServers.find(
+      (s) =>
+        s.status === 'connected' &&
+        s.platformId === platformId &&
+        s.tools.some((t) => t.name === 'models_explore')
+    );
+
+    if (matching) {
+      const liveModels = await this.getHiggsfieldLiveCatalogWithCache(matching.id, forceRefresh);
+      if (liveModels.length > 0) {
+        return {
+          ok: true,
+          platformId,
+          serverId: matching.id,
+          source: 'mcp',
+          count: liveModels.length,
+          models: liveModels,
+        };
+      }
+    }
+
+    const sdk = await this.loadProviderSdk();
+    const rawCatalog = (Array.isArray(sdk.PLATFORM_CATALOG) ? sdk.PLATFORM_CATALOG : []) as Array<
+      Record<string, unknown>
+    >;
+    const entry = rawCatalog.find((p) => String(p.id || '').toLowerCase() === platformId);
+    const fallbackModels = Array.isArray(entry?.models)
+      ? (entry.models as Array<Record<string, unknown>>)
+      : [];
+    return {
+      ok: true,
+      platformId,
+      source: 'catalog',
+      count: fallbackModels.length,
+      models: fallbackModels,
+    };
+  }
+
+  public async getPlatformsCatalogWithStatus(
+    options: { forceRefresh?: boolean } = {}
+  ): Promise<Record<string, unknown>> {
+    const forceRefresh = Boolean(options.forceRefresh);
     const sdk = await this.loadProviderSdk();
     const rawCatalog = (Array.isArray(sdk.PLATFORM_CATALOG) ? sdk.PLATFORM_CATALOG : []) as Array<
       Record<string, unknown>
     >;
     const allMcpServers = this.externalMcpHost.listServers();
+
+    const liveCatalogByServerId = new Map<string, Array<Record<string, unknown>>>();
+    await Promise.all(
+      allMcpServers
+        .filter((s) => s.status === 'connected' && s.tools.some((t) => t.name === 'models_explore'))
+        .map(async (s) => {
+          const live = await this.getHiggsfieldLiveCatalogWithCache(s.id, forceRefresh);
+          if (live.length > 0) liveCatalogByServerId.set(s.id, live);
+        })
+    );
 
     const platforms = rawCatalog.map((p) => {
       const id = String(p.id || '');
@@ -3888,6 +4082,11 @@ export class McpStdioBridgeServer {
       let models = Array.isArray(p.models)
         ? (p.models as Array<Record<string, unknown>>)
         : [];
+
+      const liveServerForPlatform = matchingMcp.find((s) => liveCatalogByServerId.has(s.id));
+      if (id !== 'custom-mcp' && liveServerForPlatform) {
+        models = liveCatalogByServerId.get(liveServerForPlatform.id)!;
+      }
 
       if (id === 'custom-mcp') {
         models = [];
@@ -4495,6 +4694,339 @@ export class McpStdioBridgeServer {
     return mediaId;
   }
 
+  private async findHiggsfieldModelSchema(
+    serverId: string,
+    normalizedModelId: string
+  ): Promise<Record<string, unknown> | null> {
+    const liveModels = await this.getHiggsfieldLiveCatalogWithCache(serverId, false);
+    const liveHit = liveModels.find((m) => String(m.id || '') === normalizedModelId);
+    if (liveHit) return liveHit;
+
+    try {
+      const sdk = await this.loadProviderSdk();
+      const fallbackModels = Array.isArray(sdk.HIGGSFIELD_CANONICAL_MODELS)
+        ? (sdk.HIGGSFIELD_CANONICAL_MODELS as Array<Record<string, unknown>>)
+        : [];
+      return fallbackModels.find((m) => String(m.id || '') === normalizedModelId) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveHiggsfieldRoleForModel(
+    normalizedModel: string,
+    modelDef: Record<string, unknown> | null,
+    index: number,
+    isEndFrame: boolean,
+    preferMultiImageReferences = false
+  ): string | null {
+    const modelRoles = Array.isArray(modelDef?.mediaRoles)
+      ? (modelDef.mediaRoles as Array<unknown>).map((r) => String(r).trim()).filter(Boolean)
+      : null;
+
+    if (modelRoles) {
+      if (modelRoles.length === 0) return null;
+      if (isEndFrame && modelRoles.includes('end_image')) return 'end_image';
+      if (preferMultiImageReferences && modelRoles.includes('image_references')) {
+        return 'image_references';
+      }
+      if (index === 0 && modelRoles.includes('start_image')) return 'start_image';
+      if (index === 0 && modelRoles.includes('image') && !modelRoles.includes('image_references')) {
+        return 'image';
+      }
+      if (modelRoles.includes('image_references')) return 'image_references';
+      return modelRoles[0];
+    }
+
+    return getHiggsfieldMcpMediaRole(normalizedModel, index, isEndFrame);
+  }
+
+  private buildHiggsfieldModelParams(opts: {
+    normalizedModel: string;
+    kind: 'image' | 'video' | 'audio';
+    modelDef: Record<string, unknown> | null;
+    prompt: string;
+    aspectRatio: string;
+    resolution: string;
+    quality: string;
+    durationSec: number;
+    batchCount: number;
+    audioEnabled: boolean;
+    voiceId?: string;
+    seed?: unknown;
+    mergedModelParams: Record<string, unknown>;
+    medias: Array<{ value: string; role: string }>;
+    explicitParams: Record<string, unknown>;
+  }): Record<string, unknown> {
+    const {
+      normalizedModel,
+      kind,
+      modelDef,
+      prompt,
+      aspectRatio,
+      resolution,
+      quality,
+      durationSec,
+      batchCount,
+      audioEnabled,
+      voiceId,
+      seed,
+      mergedModelParams,
+      medias,
+      explicitParams,
+    } = opts;
+
+    const paramSpecs = Array.isArray(modelDef?.parameters)
+      ? (modelDef.parameters as Array<Record<string, unknown>>)
+      : [];
+    const specByName = new Map<string, Record<string, unknown>>();
+    for (const s of paramSpecs) {
+      if (s && typeof s.name === 'string') specByName.set(s.name, s);
+    }
+
+    const matchOption = (rawVal: unknown, options: unknown): unknown => {
+      if (!Array.isArray(options) || options.length === 0) return undefined;
+      const needle = String(rawVal ?? '').trim().toLowerCase();
+      if (!needle) return undefined;
+      const exact = options.find((opt) => String(opt).toLowerCase() === needle);
+      if (exact !== undefined) return exact;
+      // Handle e.g. '1080p' -> '1080' for minimax_hailuo
+      if (needle.endsWith('p')) {
+        const stripped = needle.slice(0, -1);
+        const noP = options.find((opt) => String(opt).toLowerCase() === stripped);
+        if (noP !== undefined) return noP;
+      }
+      return undefined;
+    };
+
+    const hfParams: Record<string, unknown> = {
+      model: normalizedModel,
+      prompt,
+    };
+
+    // Aspect ratio: only send if model supports aspect ratios
+    const modelAspectRatios = Array.isArray(modelDef?.aspectRatios)
+      ? (modelDef.aspectRatios as Array<unknown>).map((a) => String(a))
+      : null;
+    if (modelAspectRatios) {
+      if (modelAspectRatios.length > 0 && aspectRatio) {
+        const matchedAr = matchOption(aspectRatio, modelAspectRatios);
+        if (matchedAr !== undefined) {
+          hfParams.aspect_ratio = matchedAr;
+        } else if (typeof modelDef?.defaultAspectRatio === 'string' && modelDef.defaultAspectRatio) {
+          hfParams.aspect_ratio = modelDef.defaultAspectRatio;
+        } else {
+          hfParams.aspect_ratio = modelAspectRatios[0];
+        }
+      }
+    } else if (kind !== 'audio' && aspectRatio) {
+      hfParams.aspect_ratio = aspectRatio;
+    }
+
+    if (kind === 'image' || batchCount > 1) {
+      hfParams.count = batchCount;
+    }
+
+    // Check output_format early because SVG omits `medias`
+    const outputFormatSpec = specByName.get('output_format');
+    const rawOutputFormat = mergedModelParams.output_format ?? explicitParams.output_format;
+    let resolvedOutputFormat = '';
+    if (outputFormatSpec && rawOutputFormat !== undefined && rawOutputFormat !== '') {
+      const matchedFmt = matchOption(rawOutputFormat, outputFormatSpec.options);
+      if (matchedFmt !== undefined) {
+        resolvedOutputFormat = String(matchedFmt).toLowerCase();
+        hfParams.output_format = matchedFmt;
+      }
+    }
+
+    if (medias.length > 0 && resolvedOutputFormat !== 'svg') {
+      hfParams.medias = medias;
+    }
+
+    // Resolution & Quality handling
+    const resSpec = specByName.get('resolution');
+    const qualitySpec = specByName.get('quality');
+
+    if (resSpec) {
+      const rawRes = String(mergedModelParams.resolution ?? resolution ?? '').trim();
+      if (rawRes) {
+        const matchedRes = matchOption(rawRes, resSpec.options);
+        if (matchedRes !== undefined) {
+          hfParams.resolution = matchedRes;
+        }
+      }
+    }
+
+    if (qualitySpec) {
+      let rawQual = String(mergedModelParams.quality ?? quality ?? '').trim();
+      if (!rawQual && !resSpec) {
+        // Models like soul_2, soul_cinematic, wan2_6 store resolution tier inside `quality`
+        rawQual = String(resolution || '').trim();
+      }
+      if (rawQual) {
+        const matchedQual = matchOption(rawQual, qualitySpec.options);
+        if (matchedQual !== undefined) {
+          hfParams.quality = matchedQual;
+        } else if (
+          (rawQual.toLowerCase() === 'xhigh' || rawQual.toLowerCase() === 'max') &&
+          Array.isArray(qualitySpec.options) &&
+          qualitySpec.options.some((o) => String(o).toLowerCase() === 'high')
+        ) {
+          hfParams.quality = matchOption('high', qualitySpec.options);
+        }
+      }
+    }
+
+    // Duration handling
+    const durationSpec = specByName.get('duration');
+    if ((kind === 'video' && (!modelDef || durationSpec)) || durationSpec) {
+      const rawDur =
+        mergedModelParams.duration !== undefined
+          ? Number(mergedModelParams.duration)
+          : durationSec;
+      if (Number.isFinite(rawDur) && rawDur > 0) {
+        if (durationSpec && Array.isArray(durationSpec.options) && durationSpec.options.length > 0) {
+          const numOpts = durationSpec.options
+            .map((o) => Number(o))
+            .filter((n) => Number.isFinite(n) && n > 0);
+          if (numOpts.length > 0) {
+            let best = numOpts[0];
+            for (const candidate of numOpts) {
+              if (Math.abs(candidate - rawDur) < Math.abs(best - rawDur)) {
+                best = candidate;
+              }
+            }
+            hfParams.duration = best;
+          }
+        } else if (durationSpec) {
+          const minD = Math.max(1, typeof durationSpec.min === 'number' ? durationSpec.min : 1);
+          const maxD = Math.max(minD, typeof durationSpec.max === 'number' ? durationSpec.max : 600);
+          hfParams.duration = Math.max(minD, Math.min(maxD, Math.round(rawDur)));
+        } else {
+          hfParams.duration = Math.round(rawDur);
+        }
+      }
+    }
+
+    // Video audio toggle (`generate_audio` vs `sound`)
+    const genAudioSpec = specByName.get('generate_audio');
+    if (genAudioSpec) {
+      const val =
+        mergedModelParams.generate_audio !== undefined
+          ? mergedModelParams.generate_audio === true ||
+            String(mergedModelParams.generate_audio).toLowerCase() === 'true'
+          : audioEnabled;
+      hfParams.generate_audio = Boolean(val);
+    }
+
+    const soundSpec = specByName.get('sound');
+    if (soundSpec) {
+      const rawSound = mergedModelParams.sound !== undefined ? mergedModelParams.sound : audioEnabled;
+      if (soundSpec.type === 'boolean') {
+        hfParams.sound = rawSound === true || String(rawSound).toLowerCase() === 'true';
+      } else if (Array.isArray(soundSpec.options)) {
+        const mapped =
+          typeof rawSound === 'boolean' ? (rawSound ? 'on' : 'off') : rawSound;
+        const matchedSound = matchOption(mapped, soundSpec.options);
+        if (matchedSound !== undefined) hfParams.sound = matchedSound;
+      }
+    }
+
+    // Voice & Seed
+    if (voiceId && specByName.has('voice_id')) {
+      hfParams.voice_id = voiceId;
+    }
+    if (voiceId && specByName.has('voice') && !mergedModelParams.voice) {
+      hfParams.voice = voiceId;
+    }
+    if (seed !== undefined && seed !== null && seed !== '' && specByName.has('seed')) {
+      const nSeed = Number(seed);
+      if (Number.isFinite(nSeed)) hfParams.seed = Math.round(nSeed);
+    }
+
+    // Forward all other model-declared `modelParams`, stripping unsupported keys
+    const handledKeys = new Set([
+      'use_unlim',
+      'billing_mode',
+      'resolution',
+      'quality',
+      'duration',
+      'generate_audio',
+      'sound',
+      'output_format',
+      'model',
+      'prompt',
+      'aspect_ratio',
+      'medias',
+      'count',
+      'batch_size',
+      'seed',
+    ]);
+    for (const [key, rawVal] of Object.entries(mergedModelParams)) {
+      if (handledKeys.has(key)) continue;
+      if (rawVal === undefined || rawVal === null || rawVal === '') continue;
+      const spec = specByName.get(key);
+      if (!spec) continue;
+
+      if (spec.type === 'enum' && Array.isArray(spec.options)) {
+        const matched = matchOption(rawVal, spec.options);
+        if (matched !== undefined) hfParams[key] = matched;
+      } else if (spec.type === 'boolean') {
+        hfParams[key] = rawVal === true || String(rawVal).toLowerCase() === 'true';
+      } else if (spec.type === 'number') {
+        const num = Number(rawVal);
+        if (Number.isFinite(num)) {
+          const minN = typeof spec.min === 'number' ? spec.min : -Infinity;
+          const maxN = typeof spec.max === 'number' ? spec.max : Infinity;
+          hfParams[key] = Math.max(minN, Math.min(maxN, num));
+        }
+      } else {
+        hfParams[key] = String(rawVal);
+      }
+    }
+
+    // Auto-upgrade `mode` when references are attached and caller left mode omitted or text-only
+    const modeSpec = specByName.get('mode');
+    if (medias.length > 0 && modeSpec && Array.isArray(modeSpec.options)) {
+      const modeOpts = modeSpec.options.map((o) => String(o));
+      const curMode = String(hfParams.mode || '').toLowerCase();
+      if (!curMode || curMode === 'text-to-video' || curMode === 't2v') {
+        const imageRefCount = medias.filter((m) => m.role === 'image_references').length;
+        const hasStartImage = medias.some((m) => m.role === 'start_image');
+        if (modeOpts.includes('reference-to-video') && (!hasStartImage || imageRefCount > 1)) {
+          hfParams.mode = 'reference-to-video';
+        } else if (modeOpts.includes('image-to-video')) {
+          hfParams.mode = 'image-to-video';
+        } else if (modeOpts.includes('omni_reference')) {
+          hfParams.mode = 'omni_reference';
+        }
+      }
+    }
+
+    // Billing / `use_unlim` policy: batch > 1 or explicit credits forces `use_unlim: false`
+    const explicitUnlim =
+      mergedModelParams.use_unlim ?? mergedModelParams.billing_mode ?? explicitParams.use_unlim;
+    if (
+      batchCount > 1 ||
+      explicitUnlim === false ||
+      explicitUnlim === 'false' ||
+      explicitUnlim === 'credits'
+    ) {
+      hfParams.use_unlim = false;
+    } else if (
+      explicitUnlim === true ||
+      explicitUnlim === 'true' ||
+      explicitUnlim === 'unlimited'
+    ) {
+      hfParams.use_unlim = true;
+    }
+
+    return {
+      ...hfParams,
+      ...explicitParams,
+    };
+  }
+
   /**
    * `POST /api/generate-node`:
    * Unified per-node Zero-Markup Execution Router across:
@@ -4695,21 +5227,83 @@ export class McpStdioBridgeServer {
       let normalizedHiggsfieldModel = rawModelForMcp;
       let hfBaseParams: Record<string, unknown> | null = null;
 
+      const rawSettingsModelParams =
+        typeof settings.modelParams === 'object' && settings.modelParams !== null
+          ? (settings.modelParams as Record<string, unknown>)
+          : {};
+      const rawTopModelParams =
+        typeof params.modelParams === 'object' && params.modelParams !== null
+          ? (params.modelParams as Record<string, unknown>)
+          : {};
+      const mergedModelParams: Record<string, unknown> = {
+        ...rawSettingsModelParams,
+        ...rawTopModelParams,
+      };
+      const quality = String(
+        settings.quality ?? params.quality ?? mergedModelParams.quality ?? ''
+      ).trim();
+      const seedParam = settings.seed ?? params.seed ?? mergedModelParams.seed;
+
       if (isHiggsfieldOfficialMcp) {
         normalizedHiggsfieldModel = normalizeHiggsfieldMcpModelId(rawModelForMcp, kind);
-        const endRefIndex =
-          typeof params.endImageUrl === 'string' && params.endImageUrl.trim()
-            ? resolvedReferenceImages.length - 1
-            : -1;
-        const medias: Array<{ value: string; role: string }> = [];
-        const firstRole = getHiggsfieldMcpMediaRole(normalizedHiggsfieldModel, 0, false);
+        const modelDef = await this.findHiggsfieldModelSchema(
+          candidateMcpServer.id,
+          normalizedHiggsfieldModel
+        );
 
-        if (firstRole !== null && resolvedReferenceImages.length > 0) {
+        const explicitParams =
+          typeof explicitMcpArgs.params === 'object' && explicitMcpArgs.params !== null
+            ? (explicitMcpArgs.params as Record<string, unknown>)
+            : {};
+        const explicitTop = { ...explicitMcpArgs };
+        delete explicitTop.params;
+
+        const selectedOutputFormat = String(
+          mergedModelParams.output_format ?? explicitParams.output_format ?? ''
+        )
+          .trim()
+          .toLowerCase();
+
+        const hasExplicitStartFrame =
+          typeof params.startImageUrl === 'string' && Boolean(params.startImageUrl.trim());
+        const hasExplicitEndFrame =
+          typeof params.endImageUrl === 'string' && Boolean(params.endImageUrl.trim());
+        const endRefIndex = hasExplicitEndFrame ? resolvedReferenceImages.length - 1 : -1;
+        const modelModeSpec = Array.isArray(modelDef?.parameters)
+          ? (modelDef.parameters as Array<Record<string, unknown>>).find((p) => p?.name === 'mode')
+          : undefined;
+        const supportsRef2VidMode =
+          Array.isArray(modelModeSpec?.options) &&
+          modelModeSpec.options.some((o) => String(o) === 'reference-to-video');
+        const requestedModeLower = String(mergedModelParams.mode ?? '').trim().toLowerCase();
+        const preferMultiImageReferences =
+          !hasExplicitStartFrame &&
+          !hasExplicitEndFrame &&
+          resolvedReferenceImages.length > 1 &&
+          supportsRef2VidMode &&
+          requestedModeLower !== 'image-to-video';
+
+        const medias: Array<{ value: string; role: string }> = [];
+        const firstRole = this.resolveHiggsfieldRoleForModel(
+          normalizedHiggsfieldModel,
+          modelDef,
+          0,
+          false,
+          preferMultiImageReferences
+        );
+
+        if (
+          firstRole !== null &&
+          selectedOutputFormat !== 'svg' &&
+          resolvedReferenceImages.length > 0
+        ) {
           for (let i = 0; i < resolvedReferenceImages.length; i++) {
-            const role = getHiggsfieldMcpMediaRole(
+            const role = this.resolveHiggsfieldRoleForModel(
               normalizedHiggsfieldModel,
+              modelDef,
               i,
-              endRefIndex === i
+              endRefIndex === i,
+              preferMultiImageReferences
             );
             if (!role) continue;
             const uploadedMediaId = await this.uploadReferenceForHiggsfieldMcp(
@@ -4723,22 +5317,23 @@ export class McpStdioBridgeServer {
           }
         }
 
-        const explicitParams =
-          typeof explicitMcpArgs.params === 'object' && explicitMcpArgs.params !== null
-            ? (explicitMcpArgs.params as Record<string, unknown>)
-            : {};
-        const explicitTop = { ...explicitMcpArgs };
-        delete explicitTop.params;
-
-        hfBaseParams = {
-          model: normalizedHiggsfieldModel,
+        hfBaseParams = this.buildHiggsfieldModelParams({
+          normalizedModel: normalizedHiggsfieldModel,
+          kind,
+          modelDef,
           prompt,
-          ...(kind !== 'audio' && aspectRatio ? { aspect_ratio: aspectRatio } : {}),
-          ...(kind === 'image' ? { count: 1 } : {}),
-          ...(kind === 'video' && durationSec ? { duration: durationSec } : {}),
-          ...(medias.length > 0 ? { medias } : {}),
-          ...explicitParams,
-        };
+          aspectRatio,
+          resolution,
+          quality,
+          durationSec,
+          batchCount,
+          audioEnabled,
+          voiceId,
+          seed: seedParam,
+          mergedModelParams,
+          medias,
+          explicitParams,
+        });
         mcpToolArgs = {
           params: hfBaseParams,
           context: 'Generate media asset for Open-DreamFlow spatial canvas node.',
@@ -5121,20 +5716,40 @@ export class McpStdioBridgeServer {
               outputs: [saved.mediaUrl],
             };
           } else {
+            const oaiModelParams =
+              typeof settings.modelParams === 'object' && settings.modelParams !== null
+                ? (settings.modelParams as Record<string, unknown>)
+                : typeof params.modelParams === 'object' && params.modelParams !== null
+                  ? (params.modelParams as Record<string, unknown>)
+                  : {};
+            const oaiQuality = String(
+              settings.quality ?? params.quality ?? oaiModelParams.quality ?? ''
+            ).trim();
+            const oaiBackground = String(oaiModelParams.background ?? '').trim();
+            const oaiOutputFormat = String(oaiModelParams.output_format ?? '').trim().toLowerCase();
             const out = await client.generateImage({
               model: modelId || 'gpt-image-1',
               prompt,
               aspectRatio,
+              ...(oaiQuality ? { quality: oaiQuality } : {}),
+              ...(oaiBackground ? { background: oaiBackground } : {}),
+              ...(oaiOutputFormat ? { outputFormat: oaiOutputFormat } : {}),
               n: batchCount,
               referenceImages: resolvedReferenceImages,
             });
+            const ext =
+              out.mimeType === 'image/jpeg'
+                ? '.jpg'
+                : out.mimeType === 'image/webp'
+                  ? '.webp'
+                  : '.png';
             const savedOutputs: string[] = [];
             for (const item of out.outputs) {
               if (item.b64_json) {
                 const s = await this.writeRawLiveBytesToMedia(
                   Buffer.from(item.b64_json, 'base64'),
                   'openai_live',
-                  '.png'
+                  ext
                 );
                 savedOutputs.push(s.mediaUrl);
               } else if (item.url) {
@@ -8648,7 +9263,29 @@ export class McpStdioBridgeServer {
     // 4b. Stage 7 Multi-Platform Catalog & External Multi-Server MCP Host Routes
     if (pathname === '/api/platforms' && req.method === 'GET') {
       try {
-        this.sendJson(res, 200, await this.getPlatformsCatalogWithStatus());
+        const forceRefreshParam = String(reqUrl.searchParams.get('forceRefresh') || '').trim().toLowerCase();
+        const forceRefresh = forceRefreshParam === '1' || forceRefreshParam === 'true';
+        this.sendJson(res, 200, await this.getPlatformsCatalogWithStatus({ forceRefresh }));
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+        this.sendJson(res, status, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/mcp/models' && req.method === 'GET') {
+      try {
+        const platformIdParam = String(reqUrl.searchParams.get('platformId') || 'higgsfield').trim();
+        const forceRefreshParam = String(reqUrl.searchParams.get('forceRefresh') || '').trim().toLowerCase();
+        const forceRefresh = forceRefreshParam === '1' || forceRefreshParam === 'true';
+        this.sendJson(
+          res,
+          200,
+          await this.getMcpModelsCatalog({ platformId: platformIdParam, forceRefresh })
+        );
       } catch (err) {
         const status = err instanceof BridgeHttpError ? err.statusCode : 500;
         this.sendJson(res, status, {

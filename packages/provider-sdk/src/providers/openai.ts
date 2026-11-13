@@ -21,7 +21,10 @@ export interface OpenAIImageRequest {
   model?: string;
   prompt: string;
   aspectRatio?: string;
-  quality?: 'low' | 'medium' | 'high' | 'auto';
+  quality?: 'low' | 'medium' | 'high' | 'auto' | 'standard' | 'hd';
+  background?: 'auto' | 'opaque' | 'transparent';
+  outputFormat?: 'png' | 'jpeg' | 'webp';
+  output_format?: 'png' | 'jpeg' | 'webp';
   n?: number;
   referenceImages?: string[];
   signal?: AbortSignal;
@@ -142,15 +145,20 @@ export class OpenAIClient {
     const size = mapAspectRatioToOpenAISize(req.aspectRatio);
     const n = Math.max(1, Math.min(4, req.n ?? 1));
     const refs = (req.referenceImages || []).filter(Boolean);
+    const resolvedOutputFormat = req.outputFormat ?? req.output_format;
+    const isGptImage = model.startsWith('gpt-image');
 
     let parsed: Record<string, unknown>;
 
-    if (refs.length > 0 && model.startsWith('gpt-image')) {
+    if (refs.length > 0 && isGptImage) {
       const form = new FormData();
       form.append('model', model);
       form.append('prompt', prompt);
       form.append('size', size);
       form.append('n', String(n));
+      if (req.quality) form.append('quality', req.quality);
+      if (req.background) form.append('background', req.background);
+      if (resolvedOutputFormat) form.append('output_format', resolvedOutputFormat);
 
       for (let i = 0; i < Math.min(4, refs.length); i++) {
         const resolved = await resolveReferenceImageForCloud(refs[i], {
@@ -197,8 +205,14 @@ export class OpenAIClient {
         size,
         n,
       };
-      if (req.quality && model.startsWith('gpt-image')) {
+      if (req.quality && (isGptImage || model.startsWith('dall-e'))) {
         payload.quality = req.quality;
+      }
+      if (req.background && isGptImage) {
+        payload.background = req.background;
+      }
+      if (resolvedOutputFormat && isGptImage) {
+        payload.output_format = resolvedOutputFormat;
       }
 
       const res = await this.fetchImpl(`${this.baseUrl}/images/generations`, {
@@ -233,12 +247,19 @@ export class OpenAIClient {
       );
     }
 
+    const mimeType =
+      resolvedOutputFormat === 'jpeg'
+        ? 'image/jpeg'
+        : resolvedOutputFormat === 'webp'
+          ? 'image/webp'
+          : 'image/png';
+
     return {
       provider: 'openai',
       model,
       imageBase64: first.b64_json,
       imageUrl: first.url,
-      mimeType: 'image/png',
+      mimeType,
       outputs: dataArr,
       rawResponse: parsed,
     };
