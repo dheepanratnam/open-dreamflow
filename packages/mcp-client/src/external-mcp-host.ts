@@ -75,6 +75,7 @@ export interface PublicMcpServerSummary {
   pid?: number | null;
   error?: string | null;
   tools: ExternalMcpToolSchema[];
+  balance?: { credits?: number; plan?: string; rawText?: string } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -252,6 +253,28 @@ export class ExternalMcpHost {
       if (exact) return exact;
     }
 
+    const canonicalNames: Record<'image' | 'video' | 'audio', string[]> = {
+      image: ['generate_image', 'create_image', 'text_to_image', 'render_image'],
+      video: ['generate_video', 'create_video', 'text_to_video', 'image_to_video', 'render_video'],
+      audio: [
+        'generate_audio',
+        'text_to_speech',
+        'text_to_sound_effects',
+        'speech_to_speech',
+        'create_audio',
+        'generate_speech',
+        'generate_music',
+      ],
+    };
+
+    // Tier 1: Exact canonical tool names in strict priority order
+    for (const canonical of canonicalNames[modality]) {
+      const exactCanonical = runtime.tools.find(
+        (t) => t.name.toLowerCase() === canonical
+      );
+      if (exactCanonical) return exactCanonical;
+    }
+
     const keywordsByModality: Record<'image' | 'video' | 'audio', RegExp> = {
       image: /image|photo|picture|draw|flux|seedream|imagen|kolors|render_image|text_to_image/i,
       video: /video|animate|i2v|t2v|kling|veo|seedance|wan|sora|motion|genjutsu/i,
@@ -261,13 +284,40 @@ export class ExternalMcpHost {
       /^(get_|list_|check_)?(gpu_status|account|credits|status|job_status|result|models|health|whoami|user_info)$/i.test(
         t.name
       );
+    const tier2Excluded =
+      /(batch|explore|list|get_|show_|status|quote|prepare|register|publish|picker|history|samples|presets|3d_)/i;
+    const readOnlyOrAdminRe =
+      /^(use_|get_|list_|show_|check_|register_|publish_|prepare_|resolve_|search_|update_|delete_|archive_|unarchive_|move_|copy_|rename_|attach_|remove_|confirm_|cancel_|select_|track_|set_|sync_|deploy_|participate_|models_explore|job_status|jobs_wait|job_display|balance|transactions|assets_picker|visual_effects|tiktok_)/i;
     const pattern = keywordsByModality[modality];
-    const matched = runtime.tools.find(
-      (t) => !isStatusOrInfoTool(t) && (pattern.test(t.name) || pattern.test(t.description || ''))
+
+    // Tier 2: ^(generate|create|render|synthesize)_ + modality keyword in t.name (excluding batch/explore/admin)
+    const tier2 = runtime.tools.find(
+      (t) =>
+        /^(generate|create|render|synthesize)_/i.test(t.name) &&
+        pattern.test(t.name) &&
+        !tier2Excluded.test(t.name)
+    );
+    if (tier2) return tier2;
+
+    // Tier 3: modality keyword in t.name excluding read-only/admin tools
+    const tier3 = runtime.tools.find(
+      (t) =>
+        pattern.test(t.name) &&
+        !readOnlyOrAdminRe.test(t.name) &&
+        !isStatusOrInfoTool(t)
+    );
+    if (tier3) return tier3;
+
+    // Tier 4: modality keyword in t.description excluding read-only/admin tools
+    const tier4 = runtime.tools.find(
+      (t) =>
+        pattern.test(t.description || '') &&
+        !readOnlyOrAdminRe.test(t.name) &&
+        !isStatusOrInfoTool(t)
     );
     return (
-      matched ||
-      runtime.tools.find((t) => !isStatusOrInfoTool(t)) ||
+      tier4 ||
+      runtime.tools.find((t) => !readOnlyOrAdminRe.test(t.name) && !isStatusOrInfoTool(t)) ||
       runtime.tools[0]
     );
   }
@@ -509,58 +559,94 @@ export class ExternalMcpHost {
     >;
     const propNames = Object.keys(props);
 
-    if (propNames.length === 0) {
-      return {
-        prompt: nodeInput.prompt,
-        ...(nodeInput.negativePrompt ? { negative_prompt: nodeInput.negativePrompt } : {}),
-        ...(nodeInput.aspectRatio ? { aspect_ratio: nodeInput.aspectRatio } : {}),
-        ...(nodeInput.durationSec ? { duration: nodeInput.durationSec } : {}),
-        ...(nodeInput.voiceId ? { voice_id: nodeInput.voiceId } : {}),
-        ...(nodeInput.modelId ? { model: nodeInput.modelId } : {}),
-        ...(nodeInput.referenceImages?.length
-          ? { image_url: nodeInput.referenceImages[0], reference_images: nodeInput.referenceImages }
-          : {}),
-      };
-    }
-
-    const args: Record<string, unknown> = {};
-    const setFirstMatching = (candidates: string[], value: unknown) => {
-      if (value === undefined || value === null || value === '') return;
-      for (const key of candidates) {
-        if (key in props) {
-          args[key] = value;
-          return;
-        }
+    const mapFieldsToTarget = (
+      targetProps: Record<string, Record<string, unknown>>,
+      useAllPresentKeysFallback: boolean
+    ): Record<string, unknown> => {
+      const targetKeys = Object.keys(targetProps);
+      if (targetKeys.length === 0 || useAllPresentKeysFallback) {
+        return {
+          prompt: nodeInput.prompt,
+          ...(nodeInput.negativePrompt ? { negative_prompt: nodeInput.negativePrompt } : {}),
+          ...(nodeInput.aspectRatio ? { aspect_ratio: nodeInput.aspectRatio } : {}),
+          ...(nodeInput.durationSec ? { duration: nodeInput.durationSec } : {}),
+          ...(nodeInput.voiceId ? { voice_id: nodeInput.voiceId } : {}),
+          ...(nodeInput.modelId ? { model: nodeInput.modelId } : {}),
+          ...(nodeInput.referenceImages?.length
+            ? { image_url: nodeInput.referenceImages[0], reference_images: nodeInput.referenceImages }
+            : {}),
+        };
       }
+
+      const mapped: Record<string, unknown> = {};
+      const setFirstMatching = (candidates: string[], value: unknown) => {
+        if (value === undefined || value === null || value === '') return;
+        for (const key of candidates) {
+          if (key in targetProps) {
+            mapped[key] = value;
+            return;
+          }
+        }
+      };
+
+      setFirstMatching(['prompt', 'text', 'description', 'query', 'input'], nodeInput.prompt);
+      if (Object.keys(mapped).length === 0) {
+        mapped.prompt = nodeInput.prompt;
+      }
+
+      setFirstMatching(['negative_prompt', 'negativePrompt'], nodeInput.negativePrompt);
+      setFirstMatching(['aspect_ratio', 'aspectRatio', 'ratio'], nodeInput.aspectRatio);
+      setFirstMatching(['resolution', 'quality', 'size'], nodeInput.resolution);
+      setFirstMatching(
+        ['duration_seconds', 'durationSeconds', 'duration', 'durationSec', 'seconds'],
+        nodeInput.durationSec
+      );
+      setFirstMatching(['voice_id', 'voiceId', 'voice'], nodeInput.voiceId);
+      setFirstMatching(['model_id', 'modelId', 'model', 'model_name'], nodeInput.modelId);
+
+      if (nodeInput.referenceImages && nodeInput.referenceImages.length > 0) {
+        setFirstMatching(
+          ['image_url', 'imageUrl', 'image', 'start_image', 'first_frame', 'source_image'],
+          nodeInput.referenceImages[0]
+        );
+        setFirstMatching(
+          ['reference_images', 'referenceImages', 'images', 'image_urls'],
+          nodeInput.referenceImages
+        );
+      }
+      return mapped;
     };
 
-    setFirstMatching(['prompt', 'text', 'description', 'query', 'input'], nodeInput.prompt);
-    if (Object.keys(args).length === 0) {
-      args.prompt = nodeInput.prompt;
+    if (propNames.length === 0) {
+      return mapFieldsToTarget({}, true);
     }
 
-    setFirstMatching(['negative_prompt', 'negativePrompt'], nodeInput.negativePrompt);
-    setFirstMatching(['aspect_ratio', 'aspectRatio', 'ratio'], nodeInput.aspectRatio);
-    setFirstMatching(['resolution', 'quality', 'size'], nodeInput.resolution);
-    setFirstMatching(
-      ['duration_seconds', 'durationSeconds', 'duration', 'durationSec', 'seconds'],
-      nodeInput.durationSec
-    );
-    setFirstMatching(['voice_id', 'voiceId', 'voice'], nodeInput.voiceId);
-    setFirstMatching(['model_id', 'modelId', 'model', 'model_name'], nodeInput.modelId);
-
-    if (nodeInput.referenceImages && nodeInput.referenceImages.length > 0) {
-      setFirstMatching(
-        ['image_url', 'imageUrl', 'image', 'start_image', 'first_frame', 'source_image'],
-        nodeInput.referenceImages[0]
-      );
-      setFirstMatching(
-        ['reference_images', 'referenceImages', 'images', 'image_urls'],
-        nodeInput.referenceImages
-      );
+    // Handle MCP tools (like Higgsfield official MCP) that nest fields under `params` (object or `anyOf` object)
+    if ('params' in props && !('prompt' in props)) {
+      const paramsSchema = (props.params || {}) as Record<string, unknown>;
+      const anyOfSchemas = Array.isArray(paramsSchema.anyOf)
+        ? (paramsSchema.anyOf as Array<Record<string, unknown>>)
+        : [];
+      const objectVariant =
+        paramsSchema.type === 'object'
+          ? paramsSchema
+          : anyOfSchemas.find((entry) => entry && entry.type === 'object');
+      if (paramsSchema.type === 'object' || anyOfSchemas.length > 0 || !paramsSchema.type) {
+        const nestedProps = ((objectVariant?.properties as Record<string, unknown>) || {}) as Record<
+          string,
+          Record<string, unknown>
+        >;
+        const nestedArgs = mapFieldsToTarget(nestedProps, Object.keys(nestedProps).length === 0);
+        return {
+          params: nestedArgs,
+          ...('context' in props
+            ? { context: 'Generate media asset for Open-DreamFlow spatial canvas node.' }
+            : {}),
+        };
+      }
     }
 
-    return args;
+    return mapFieldsToTarget(props, false);
   }
 
   private async connectRuntime(runtime: LiveServerRuntime): Promise<void> {
@@ -1057,9 +1143,35 @@ export class ExternalMcpHost {
     resultObj: Record<string, unknown>
   ): ExtractedMcpMediaCandidate[] {
     const candidates: ExtractedMcpMediaCandidate[] = [];
+    const deferredCandidates: ExtractedMcpMediaCandidate[] = [];
+    const visited = new WeakSet<object>();
+
+    const inspectNestedValue = (val: unknown, kindHint?: 'image' | 'video' | 'audio') => {
+      if (!val) return;
+      if (typeof val === 'string' && val.trim()) {
+        candidates.push({ source: val.trim(), kindHint });
+        return;
+      }
+      if (Array.isArray(val)) {
+        for (const item of val) {
+          inspectNestedValue(item, kindHint);
+        }
+        return;
+      }
+      if (typeof val === 'object') {
+        inspectObject(val as Record<string, unknown>);
+      }
+    };
 
     const inspectObject = (obj: Record<string, unknown>) => {
-      const urlKeys: Array<{ key: string; hint?: 'image' | 'video' | 'audio' }> = [
+      if (visited.has(obj)) return;
+      visited.add(obj);
+
+      const urlKeys: Array<{ key: string; hint?: 'image' | 'video' | 'audio'; deferred?: boolean }> = [
+        { key: 'rawUrl' },
+        { key: 'raw_url' },
+        { key: 'downloadUrl' },
+        { key: 'download_url' },
         { key: 'videoUrl', hint: 'video' },
         { key: 'video_url', hint: 'video' },
         { key: 'audioUrl', hint: 'audio' },
@@ -1070,11 +1182,13 @@ export class ExternalMcpHost {
         { key: 'media_url' },
         { key: 'dataUrl' },
         { key: 'url' },
+        { key: 'minUrl', deferred: true },
+        { key: 'min_url', deferred: true },
       ];
-      for (const { key, hint } of urlKeys) {
+      for (const { key, hint, deferred } of urlKeys) {
         const val = obj[key];
         if (typeof val === 'string' && val.trim()) {
-          candidates.push({ source: val.trim(), kindHint: hint });
+          (deferred ? deferredCandidates : candidates).push({ source: val.trim(), kindHint: hint });
         }
       }
 
@@ -1108,31 +1222,15 @@ export class ExternalMcpHost {
       }
 
       if (Array.isArray(obj.images)) {
-        for (const item of obj.images as Array<unknown>) {
-          if (typeof item === 'string' && item.trim()) {
-            candidates.push({ source: item.trim(), kindHint: 'image' });
-          } else if (typeof item === 'object' && item !== null) {
-            inspectObject(item as Record<string, unknown>);
-          }
-        }
+        inspectNestedValue(obj.images, 'image');
       }
       if (Array.isArray(obj.videos)) {
-        for (const item of obj.videos as Array<unknown>) {
-          if (typeof item === 'string' && item.trim()) {
-            candidates.push({ source: item.trim(), kindHint: 'video' });
-          } else if (typeof item === 'object' && item !== null) {
-            inspectObject(item as Record<string, unknown>);
-          }
-        }
+        inspectNestedValue(obj.videos, 'video');
       }
-      if (typeof obj.data === 'object' && obj.data !== null && !Array.isArray(obj.data)) {
-        inspectObject(obj.data as Record<string, unknown>);
-      }
-      if (Array.isArray(obj.data)) {
-        for (const item of obj.data as Array<unknown>) {
-          if (typeof item === 'object' && item !== null) {
-            inspectObject(item as Record<string, unknown>);
-          }
+      for (const nestedKey of ['generation', 'results', 'outputs', 'items', 'data']) {
+        const nestedVal = obj[nestedKey];
+        if (nestedVal && typeof nestedVal === 'object') {
+          inspectNestedValue(nestedVal);
         }
       }
     };
@@ -1163,6 +1261,23 @@ export class ExternalMcpHost {
           mimeType: mime,
           source: rawData.startsWith('data:') ? rawData : `data:${mime};base64,${rawData}`,
         });
+        continue;
+      }
+
+      if (bType === 'resource_link' && typeof block.uri === 'string' && block.uri.trim()) {
+        const mime =
+          typeof block.mimeType === 'string'
+            ? block.mimeType
+            : typeof block.mime_type === 'string'
+              ? block.mime_type
+              : undefined;
+        const uri = block.uri.trim();
+        if (uri.startsWith('file://')) {
+          const fp = uri.replace(/^file:\/\//, '');
+          if (fs.existsSync(fp)) candidates.push({ source: `absfile:${fp}`, mimeType: mime });
+        } else {
+          candidates.push({ source: uri, mimeType: mime });
+        }
         continue;
       }
 
@@ -1231,6 +1346,6 @@ export class ExternalMcpHost {
       }
     }
 
-    return candidates;
+    return [...candidates, ...deferredCandidates];
   }
 }
