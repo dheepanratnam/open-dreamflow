@@ -149,56 +149,96 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
     name: 'Higgsfield',
     shortLabel: 'Higgsfield',
     webUrl: 'https://higgsfield.ai',
-    modalities: ['image', 'video'],
+    modalities: ['image', 'video', 'audio'],
     supportsBrowserBridge: true,
     supportsApiKey: true,
     supportsMcp: true,
     models: [
       {
-        id: 'chatgpt-image-2.6',
+        id: 'gpt_image_2_6',
         label: 'ChatGPT Image 2.6',
         modality: 'image',
-        description: 'Prompt-adherent base image & character reference generation on Higgsfield',
+        description: 'Unlimited on Ultimate · Prompt-adherent stills, infographics & reference edits',
         supportsReferences: true,
         maxReferences: 4,
         defaultAspect: '16:9',
         defaultResolution: '2K',
       },
       {
-        id: 'higgsfield-soul',
-        label: 'Higgsfield Soul',
+        id: 'soul_2',
+        label: 'Higgsfield Soul 2.0',
         modality: 'image',
-        description: 'Editorial photoreal human & fashion aesthetic model',
+        description: 'Unlimited on Ultimate · Photoreal character, fashion & editorial',
         supportsReferences: true,
         maxReferences: 4,
         defaultAspect: '16:9',
         defaultResolution: '2K',
       },
       {
-        id: 'flux-1-pro',
-        label: 'Flux.1 Pro',
+        id: 'cinematic_studio_2_5',
+        label: 'Cinema Studio Image 2.5',
         modality: 'image',
-        description: 'High-detail architectural & product photography',
-        supportsReferences: true,
-        maxReferences: 2,
-        defaultAspect: '16:9',
-        defaultResolution: '2K',
-      },
-      {
-        id: 'seedream-5.0',
-        label: 'Seedream 5.0',
-        modality: 'image',
-        description: 'Cinematic composition & typography accuracy',
+        description: '35mm / Anamorphic cinema stills',
         supportsReferences: true,
         maxReferences: 4,
         defaultAspect: '16:9',
         defaultResolution: '2K',
       },
       {
-        id: 'higgsfield-dop-i2v',
-        label: 'DoP Cinema I2V-01',
+        id: 'soul_cinematic',
+        label: 'Soul Cinema',
+        modality: 'image',
+        description: 'Dramatic cinema concept & lighting',
+        supportsReferences: true,
+        maxReferences: 4,
+        defaultAspect: '16:9',
+        defaultResolution: '2K',
+      },
+      {
+        id: 'nano_banana_2_1',
+        label: 'Nano Banana 2.1',
+        modality: 'image',
+        description: 'Unlimited on Ultimate · Multi-reference editing',
+        supportsReferences: true,
+        maxReferences: 4,
+        defaultAspect: '16:9',
+        defaultResolution: '2K',
+      },
+      {
+        id: 'seedream_v5_pro',
+        label: 'Seedream 5.0 Pro',
+        modality: 'image',
+        description: 'Unlimited on Ultimate · High-detail 2K/4K composition',
+        supportsReferences: true,
+        maxReferences: 4,
+        defaultAspect: '16:9',
+        defaultResolution: '2K',
+      },
+      {
+        id: 'flux_3_image',
+        label: 'FLUX 3 Image',
+        modality: 'image',
+        description: 'Black Forest Labs flagship photorealism',
+        supportsReferences: true,
+        maxReferences: 4,
+        defaultAspect: '16:9',
+        defaultResolution: '2K',
+      },
+      {
+        id: 'flux_kontext',
+        label: 'Flux Kontext',
+        modality: 'image',
+        description: 'Reference-locked scene & context editing',
+        supportsReferences: true,
+        maxReferences: 4,
+        defaultAspect: '16:9',
+        defaultResolution: '2K',
+      },
+      {
+        id: 'cinematic_studio_video_4_0',
+        label: 'Cinema Studio 4.0',
         modality: 'video',
-        description: 'Director-of-photography camera moves from base image reference',
+        description: 'Flagship Higgsfield DoP camera & optics',
         supportsReferences: true,
         maxReferences: 2,
         supportsAudio: true,
@@ -207,10 +247,10 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
         defaultDurationSec: 5,
       },
       {
-        id: 'wan-2.6',
-        label: 'Wan 2.6',
+        id: 'cinematic_studio_3_0',
+        label: 'Cinema Studio 3.0',
         modality: 'video',
-        description: 'Fluid motion synthesis with reference lock',
+        description: 'Cinema-grade I2V & T2V up to 4K',
         supportsReferences: true,
         maxReferences: 2,
         supportsAudio: true,
@@ -219,16 +259,96 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
         defaultDurationSec: 5,
       },
       {
-        id: 'kling-4.0-hf',
-        label: 'Kling 4.0',
+        id: 'kling4_0',
+        label: 'Kling 4.0 (Higgsfield)',
         modality: 'video',
-        description: 'Kling 4.0 hosted inside Higgsfield credits',
+        description: 'Physics-accurate I2V & T2V with multi-ref',
         supportsReferences: true,
         maxReferences: 4,
         supportsAudio: true,
         defaultAspect: '16:9',
         defaultResolution: '1080p',
         defaultDurationSec: 5,
+      },
+      {
+        id: 'kling_4_0_flash',
+        label: 'Kling 4.0 Flash',
+        modality: 'video',
+        description: 'Fast Kling 4.0 motion synthesis',
+        supportsReferences: true,
+        maxReferences: 4,
+        supportsAudio: true,
+        defaultAspect: '16:9',
+        defaultResolution: '1080p',
+        defaultDurationSec: 5,
+      },
+      {
+        id: 'seedance_2_5',
+        label: 'Seedance 2.5 (Higgsfield)',
+        modality: 'video',
+        description: 'Unlimited on Ultimate · Multi-shot motion & audio',
+        supportsReferences: true,
+        maxReferences: 4,
+        supportsAudio: true,
+        defaultAspect: '16:9',
+        defaultResolution: '1080p',
+        defaultDurationSec: 5,
+      },
+      {
+        id: 'veo3_1',
+        label: 'Google Veo 3.1 (Higgsfield)',
+        modality: 'video',
+        description: 'Cinema physics & start-frame lock',
+        supportsReferences: true,
+        maxReferences: 2,
+        supportsAudio: true,
+        defaultAspect: '16:9',
+        defaultResolution: '1080p',
+        defaultDurationSec: 5,
+      },
+      {
+        id: 'wan3_0',
+        label: 'Wan 3.0 (Higgsfield)',
+        modality: 'video',
+        description: 'Fluid start/end frame & reference motion',
+        supportsReferences: true,
+        maxReferences: 2,
+        supportsAudio: true,
+        defaultAspect: '16:9',
+        defaultResolution: '1080p',
+        defaultDurationSec: 5,
+      },
+      {
+        id: 'elevenlabs_v4',
+        label: 'ElevenLabs v4 TTS (Higgsfield)',
+        modality: 'audio',
+        description: 'Expressive character voiceover',
+        supportsAudio: true,
+        defaultDurationSec: 8,
+      },
+      {
+        id: 'elevenlabs_music_v2_5',
+        label: 'ElevenLabs Music v2.5',
+        modality: 'audio',
+        description: 'Cinematic score & music',
+        supportsAudio: true,
+        defaultDurationSec: 8,
+      },
+      {
+        id: 'seed_audio',
+        label: 'Seed Audio 1.0',
+        modality: 'audio',
+        description: 'Unlimited on Ultimate · Foley & ambient audio',
+        supportsAudio: true,
+        defaultDurationSec: 8,
+      },
+      {
+        id: 'text2speech_v2',
+        label: 'Higgsfield TTS v2',
+        modality: 'audio',
+        description: 'Unlimited on Ultimate · Clean narration',
+        supportsAudio: true,
+        defaultDurationSec: 8,
       },
     ],
   },
@@ -868,23 +988,47 @@ export function getModelsForPlatformAndModality(
   if (!platform) return [];
   const baseModels = platform.models.filter((m) => m.modality === modality);
 
-  // Also append any tools from external MCP servers bound to this platformId
+  // Append tools only for custom/small-catalog MCP servers where the platform doesn't already provide a curated catalog
   const extraMcpTools: PlatformModelDefinition[] = [];
   for (const srv of externalMcpServers) {
-    if (srv.platformId === platformId) {
-      for (const tool of srv.tools || []) {
-        extraMcpTools.push({
-          id: `mcp:${srv.id}:${tool.name}`,
-          label: `MCP · ${tool.name}`,
-          modality,
-          description: tool.description || `${srv.name} MCP tool`,
-          supportsReferences: true,
-          maxReferences: 4,
-        });
-      }
+    if (srv.platformId !== platformId) continue;
+    const toolCount = srv.tools?.length || 0;
+    const allowInDropdown =
+      baseModels.length === 0 || (platformId !== 'higgsfield' && toolCount <= 15);
+    if (!allowInDropdown) continue;
+    for (const tool of srv.tools || []) {
+      extraMcpTools.push({
+        id: `mcp:${srv.id}:${tool.name}`,
+        label: `MCP · ${tool.name}`,
+        modality,
+        description: tool.description || `${srv.name} MCP tool`,
+        supportsReferences: true,
+        maxReferences: 4,
+      });
     }
   }
   return [...baseModels, ...extraMcpTools];
+}
+
+export const LEGACY_MODEL_LABEL_MAP: Record<string, string> = {
+  'chatgpt-image-2.6': 'ChatGPT Image 2.6',
+  'higgsfield-soul': 'Higgsfield Soul 2.0',
+  'higgsfield-dop-i2v': 'Cinema Studio 4.0',
+  'wan-2.6': 'Wan 2.6',
+  'kling-4.0-hf': 'Kling 4.0 (Higgsfield)',
+  'flux-1-pro': 'FLUX 3 Image',
+  'seedream-5.0': 'Seedream 5.0 Pro',
+};
+
+export function resolveModelDisplayLabel(
+  platformId?: PlatformId,
+  modelId?: string,
+  catalog: PlatformDefinition[] = PLATFORM_CATALOG
+): string | null {
+  if (!modelId) return null;
+  const platform = platformId ? catalog.find((p) => p.id === platformId) : undefined;
+  const foundModel = platform?.models.find((m) => m.id === modelId);
+  return foundModel?.label || LEGACY_MODEL_LABEL_MAP[modelId] || modelId;
 }
 
 export function getPlatformBadgeLabel(
@@ -904,8 +1048,7 @@ export function getPlatformBadgeLabel(
     return `${srv?.name || 'MCP'} · ${toolName}`;
   }
 
-  const foundModel = platform?.models.find((m) => m.id === modelId);
-  return `${pLabel} · ${foundModel?.label || modelId}`;
+  return `${pLabel} · ${resolveModelDisplayLabel(platformId, modelId, catalog) || modelId}`;
 }
 
 export interface PlatformUiMeta {

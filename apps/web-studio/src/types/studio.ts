@@ -99,6 +99,13 @@ export interface McpAccountInfo {
   orgId?: string;
 }
 
+export interface McpBalanceInfo {
+  credits?: number;
+  plan?: string;
+  rawText?: string;
+  updatedAt?: number;
+}
+
 export interface ExternalMcpServerRecord {
   id: string;
   name: string;
@@ -111,6 +118,7 @@ export interface ExternalMcpServerRecord {
   headers?: Record<string, string>;
   authType?: 'oauth' | 'headers' | 'stdio' | string;
   account?: McpAccountInfo;
+  balance?: McpBalanceInfo;
   status: 'connected' | 'connecting' | 'error' | 'disconnected' | string;
   error?: string;
   tools: ExternalMcpToolItem[];
@@ -411,6 +419,8 @@ export interface ConnectionsStatusSnapshot {
   connectedBrowserPlatforms: PlatformId[];
   connectedMcpPlatforms: PlatformId[];
   configuredApiPlatforms: PlatformId[];
+  mcpServers?: ExternalMcpServerRecord[];
+  mcpBalance?: McpBalanceInfo;
   browserSessionOpen?: boolean;
   activeBrowserProfileDir?: string;
 }

@@ -38,6 +38,7 @@ import {
   PLATFORM_CATALOG,
   getModelsForPlatformAndModality,
   getPlatformBadgeLabel,
+  getPlatformConnectionStatus,
   nodeKindToModality,
   resolveByokCredentialsForPlatform,
 } from '../presets/platformCatalog';
@@ -690,7 +691,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   checkingBrowserPlatform: null,
   mcpOAuthSession: null,
   lastImagePlatformId: 'higgsfield',
-  lastVideoPlatformId: 'kling',
+  lastVideoPlatformId: 'higgsfield',
   lastAudioPlatformId: 'elevenlabs',
   lastFailedPlatformId: null,
   workflowRunning: false,
@@ -3679,6 +3680,23 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       if (raw.sessionId) {
         void get().pollMcpOAuthStatus(raw.sessionId);
       }
+      set((s) => ({
+        lastFailedPlatformId: raw.ok ? null : s.lastFailedPlatformId,
+        mcpOAuthSession:
+          s.mcpOAuthSession ||
+          (raw.sessionId || raw.platformId
+            ? {
+                sessionId: raw.sessionId || 'oauth_done',
+                platformId: raw.platformId || 'higgsfield',
+                mcpUrl:
+                  raw.platformId === 'higgsfield' ? 'https://mcp.higgsfield.ai/mcp' : '',
+                serverId: raw.serverId,
+                step: raw.ok ? 'connected' : 'error',
+                error: raw.error,
+                updatedAt: Date.now(),
+              }
+            : null),
+      }));
       if (raw.ok) {
         void get().refreshPlatformsAndExternalMcp();
         get().showToast(`${raw.platformId || 'MCP'} connected successfully!`, 'ok');
@@ -5670,8 +5688,29 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     });
 
     if (!res.ok) {
+      const latestState = get();
+      const backendPlat = latestState.platformsCatalog.find((p) => p.id === platformId);
+      const connStatus = getPlatformConnectionStatus(
+        platformId,
+        latestState.byok,
+        latestState.chromeBridge,
+        latestState.externalMcpServers,
+        backendPlat,
+        {
+          connectedBrowserPlatforms: latestState.connectedBrowserPlatforms,
+          connectedMcpPlatforms: latestState.connectedMcpPlatforms,
+          configuredApiPlatforms: latestState.configuredApiPlatforms,
+        }
+      );
+      const errMsg = res.error || '';
+      const explicitlyNeedsAuth =
+        /\b401\b|not connected|unauthorized|expired.*token|missing credentials|no api key/i.test(
+          errMsg
+        );
+      const shouldShowConnectButton = !connStatus.connected || explicitlyNeedsAuth;
+
       set((s) => ({
-        lastFailedPlatformId: platformId,
+        lastFailedPlatformId: shouldShowConnectButton ? platformId : null,
         nodes: s.nodes.map((n) => {
           if (n.id !== nodeId) return n;
           const hadMedia = Boolean(n.imageUrl || n.videoUrl || n.audioUrl);
@@ -5685,7 +5724,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }));
       get().showToast(
         res.error ||
-          `Connect your ${badge} credits (MCP, Browser Session, or API Key) in Connections · Credits.`,
+          (shouldShowConnectButton
+            ? `Connect your ${badge} credits (MCP, Browser Session, or API Key) in Connections · Credits.`
+            : `${badge} generation failed — please try again.`),
         'error'
       );
       return false;
@@ -5899,21 +5940,71 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     set((s) => {
       const browserSet = new Set<string>(snap.connectedBrowserPlatforms);
+      const mcpSet = new Set<string>(snap.connectedMcpPlatforms);
+      const apiSet = new Set<string>(snap.configuredApiPlatforms);
       const nextPlatformMap: Record<string, boolean> = {
         ...s.chromeBridge.connectedPlatforms,
       };
       for (const pid of snap.connectedBrowserPlatforms) {
         nextPlatformMap[pid] = true;
       }
-      const nextLastFailed =
-        s.lastFailedPlatformId && browserSet.has(s.lastFailedPlatformId)
-          ? null
-          : s.lastFailedPlatformId;
+
+      // Merge snap.mcpServers while preserving richer tool schemas already loaded in externalMcpServers
+      let mergedExternalMcp = s.externalMcpServers;
+      if (snap.mcpServers && snap.mcpServers.length > 0) {
+        const existingById = new Map(s.externalMcpServers.map((srv) => [srv.id, srv]));
+        mergedExternalMcp = snap.mcpServers.map((incoming) => {
+          const prev = existingById.get(incoming.id);
+          return {
+            ...prev,
+            ...incoming,
+            tools:
+              incoming.tools && incoming.tools.length > 0
+                ? incoming.tools
+                : prev?.tools || [],
+            balance: incoming.balance || prev?.balance || snap.mcpBalance,
+          };
+        });
+      }
+
+      const nextFailedStillConnected =
+        s.lastFailedPlatformId &&
+        (browserSet.has(s.lastFailedPlatformId) ||
+          mcpSet.has(s.lastFailedPlatformId) ||
+          apiSet.has(s.lastFailedPlatformId));
+      const nextLastFailed = nextFailedStillConnected ? null : s.lastFailedPlatformId;
+
+      const liveObj = {
+        connectedBrowserPlatforms: snap.connectedBrowserPlatforms,
+        connectedMcpPlatforms: snap.connectedMcpPlatforms,
+        configuredApiPlatforms: snap.configuredApiPlatforms,
+      };
+      const isPlatConnected = (pid: PlatformId) =>
+        getPlatformConnectionStatus(
+          pid,
+          s.byok,
+          s.chromeBridge,
+          mergedExternalMcp,
+          s.platformsCatalog.find((p) => p.id === pid),
+          liveObj
+        ).connected;
+
+      const pickForModality = (mod: 'image' | 'video' | 'audio', cur: PlatformId): PlatformId => {
+        if (isPlatConnected(cur)) return cur;
+        const found = s.platformsCatalog.find(
+          (p) => p.modalities.includes(mod) && isPlatConnected(p.id)
+        );
+        return found ? found.id : cur;
+      };
 
       return {
         connectedBrowserPlatforms: snap.connectedBrowserPlatforms,
         connectedMcpPlatforms: snap.connectedMcpPlatforms,
         configuredApiPlatforms: snap.configuredApiPlatforms,
+        externalMcpServers: mergedExternalMcp,
+        lastImagePlatformId: pickForModality('image', s.lastImagePlatformId),
+        lastVideoPlatformId: pickForModality('video', s.lastVideoPlatformId),
+        lastAudioPlatformId: pickForModality('audio', s.lastAudioPlatformId),
         lastFailedPlatformId: nextLastFailed,
         bridgeWsConnected:
           snap.bridgeClients > 0 ? true : s.bridgeWsConnected,
@@ -6077,9 +6168,47 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         }
       }
 
+      let nextExternalMcp = s.externalMcpServers;
+      if (mcpRes.ok) {
+        const prevById = new Map(s.externalMcpServers.map((srv) => [srv.id, srv]));
+        nextExternalMcp = mcpRes.servers.map((incoming) => {
+          const prev = prevById.get(incoming.id);
+          return {
+            ...incoming,
+            balance: incoming.balance || prev?.balance,
+          };
+        });
+      }
+
+      const liveObj = {
+        connectedBrowserPlatforms: s.connectedBrowserPlatforms,
+        connectedMcpPlatforms: s.connectedMcpPlatforms,
+        configuredApiPlatforms: s.configuredApiPlatforms,
+      };
+      const isPlatConnected = (pid: PlatformId) =>
+        getPlatformConnectionStatus(
+          pid,
+          s.byok,
+          s.chromeBridge,
+          nextExternalMcp,
+          mergedCatalog.find((p) => p.id === pid),
+          liveObj
+        ).connected;
+
+      const pickForModality = (mod: 'image' | 'video' | 'audio', cur: PlatformId): PlatformId => {
+        if (isPlatConnected(cur)) return cur;
+        const found = mergedCatalog.find(
+          (p) => p.modalities.includes(mod) && isPlatConnected(p.id)
+        );
+        return found ? found.id : cur;
+      };
+
       return {
         platformsCatalog: mergedCatalog,
-        externalMcpServers: mcpRes.ok ? mcpRes.servers : s.externalMcpServers,
+        externalMcpServers: nextExternalMcp,
+        lastImagePlatformId: pickForModality('image', s.lastImagePlatformId),
+        lastVideoPlatformId: pickForModality('video', s.lastVideoPlatformId),
+        lastAudioPlatformId: pickForModality('audio', s.lastAudioPlatformId),
       };
     });
   },

@@ -101,6 +101,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const workflowProgressText = useStudioStore((s) => s.workflowProgressText);
   const externalMcpServers = useStudioStore((s) => s.externalMcpServers);
   const connectedBrowserPlatforms = useStudioStore((s) => s.connectedBrowserPlatforms);
+  const connectedMcpPlatforms = useStudioStore((s) => s.connectedMcpPlatforms);
   const configuredApiPlatforms = useStudioStore((s) => s.configuredApiPlatforms);
   const past = useStudioStore((s) => s.past);
   const future = useStudioStore((s) => s.future);
@@ -167,8 +168,19 @@ export const DreaminaFloatingChrome: React.FC = () => {
   }
   if (chromeBridge.dreaminaTabConnected) connectedSet.add('dreamina');
   if (chromeBridge.flowTabConnected) connectedSet.add('google-flow');
+  for (const p of connectedMcpPlatforms) connectedSet.add(p);
   for (const p of configuredApiPlatforms) connectedSet.add(p);
-  if (byok.higgsfieldApiKey?.trim()) connectedSet.add('higgsfield');
+  for (const srv of externalMcpServers) {
+    if (srv.status === 'connected') {
+      connectedSet.add(String(srv.platformId || srv.id));
+    }
+  }
+  if (
+    byok.higgsfieldApiKey?.trim() ||
+    (byok.higgsfieldKeyId?.trim() && byok.higgsfieldKeySecret?.trim())
+  ) {
+    connectedSet.add('higgsfield');
+  }
   if (byok.sumeApiKey?.trim()) connectedSet.add('sume');
   if (byok.klingAccessKey?.trim() || byok.klingApiKey?.trim()) connectedSet.add('kling');
   if (byok.seedanceApiKey?.trim()) connectedSet.add('dreamina');
@@ -180,9 +192,14 @@ export const DreaminaFloatingChrome: React.FC = () => {
   if (byok.falApiKey?.trim()) connectedSet.add('fal');
   if (byok.replicateApiKey?.trim()) connectedSet.add('replicate');
 
-  const connectedCreditSourcesCount =
-    connectedSet.size +
-    externalMcpServers.filter((srv) => srv.status === 'connected').length;
+  const connectedCreditSourcesCount = connectedSet.size;
+  const activeMcpWithBalance = externalMcpServers.find(
+    (srv) => srv.status === 'connected' && srv.balance?.credits !== undefined
+  );
+  const formattedBalancePill =
+    activeMcpWithBalance?.balance?.credits !== undefined
+      ? `${activeMcpWithBalance.platformId === 'higgsfield' ? 'Higgsfield MCP' : 'MCP'} · ${activeMcpWithBalance.balance.credits.toLocaleString(undefined, { maximumFractionDigits: 1 })} cr`
+      : null;
 
   const getViewportCenterWorld = () => {
     const w = typeof window !== 'undefined' ? window.innerWidth : 1440;
@@ -765,7 +782,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 connectedCreditSourcesCount > 0 ? 'bg-[#10b981]' : 'bg-white/35'
               }`}
             />
-            <span>Connections · Credits</span>
+            <span>{formattedBalancePill || 'Connections · Credits'}</span>
             {connectedCreditSourcesCount > 0 && (
               <span className="px-1.5 py-[1px] rounded-[5px] bg-[#10b981]/15 text-[#34d399] font-mono text-[10px]">
                 {connectedCreditSourcesCount}

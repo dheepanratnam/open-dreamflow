@@ -577,16 +577,22 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
   };
 
   const handleQuickInfoCheck = async () => {
-    const infoCandidate =
+    const balanceTool = server.tools.find((t) => t.name === 'balance');
+    const gpuStatusTool = server.tools.find((t) => t.name === 'gpu_status');
+    const accountOverviewTool = server.tools.find((t) => t.name === 'get_account_overview');
+    const fallbackTool =
       server.tools.find((t) =>
         /status|gpu|account|info|credit|user|quota|models|list/i.test(t.name)
       ) || server.tools[0];
+    const infoCandidate = balanceTool || gpuStatusTool || accountOverviewTool || fallbackTool;
     if (!infoCandidate) {
       showToast('Connected MCP has 0 callable tools registered yet.', 'error');
       return;
     }
+    const args =
+      infoCandidate.name === 'get_account_overview' ? { info: 'free_trial' } : {};
     setSelectedToolName(infoCandidate.name);
-    await runToolWithArgs(infoCandidate.name, {});
+    await runToolWithArgs(infoCandidate.name, args);
   };
 
   return (
@@ -602,6 +608,16 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
               <span className="text-xs font-semibold text-white">
                 ✓ {server.name} Connected
               </span>
+              {server.balance?.credits !== undefined && (
+                <span className="rounded-full border border-[#10b981]/40 bg-[#10b981]/15 px-2.5 py-0.5 text-[10.5px] font-semibold text-white">
+                  {server.balance.credits.toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}{' '}
+                  Credits
+                  {server.balance.plan ? ` · ${server.balance.plan.toUpperCase()}` : ''}
+                </span>
+              )}
               <span className="rounded-full bg-[#10b981]/20 px-2 py-0.5 text-[10px] font-medium text-[#6ee7b7]">
                 {server.tools.length} functions discovered
               </span>
@@ -658,7 +674,7 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
               className="inline-flex items-center gap-1.5 rounded-lg border border-[#20D5EC]/35 bg-[#20D5EC]/10 hover:bg-[#20D5EC]/20 disabled:opacity-50 px-2.5 py-1.5 text-[11px] font-medium text-[#7ceeff]"
             >
               {runningTool ? <Loader2 className="w-3 h-3 animate-spin" /> : <Cpu className="w-3 h-3" />}
-              <span>Check GPU / Account Status</span>
+              <span>Check Credits &amp; Plan Balance</span>
             </button>
             <button
               type="button"

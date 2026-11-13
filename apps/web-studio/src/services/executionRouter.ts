@@ -597,12 +597,31 @@ export async function fetchConnectionsStatusViaBackend(): Promise<ConnectionsSta
       }
     }
 
+    const byId =
+      json.byId && typeof json.byId === 'object'
+        ? (json.byId as Record<string, Record<string, unknown>>)
+        : {};
+    const rawMcpServers = Array.isArray(json.mcpServers)
+      ? (json.mcpServers as ExternalMcpServerRecord[])
+      : [];
+    const enrichedMcpServers = rawMcpServers.map((srv) => {
+      const pidRec = byId[String(srv.platformId)];
+      const bal = srv.balance || (pidRec?.mcpBalance as ExternalMcpServerRecord['balance']);
+      return bal ? { ...srv, balance: bal } : srv;
+    });
+    const topBalance =
+      (json.mcpBalance as ConnectionsStatusSnapshot['mcpBalance']) ||
+      (byId.higgsfield?.mcpBalance as ConnectionsStatusSnapshot['mcpBalance']) ||
+      enrichedMcpServers.find((s) => s.balance)?.balance;
+
     return {
       ok: Boolean(json.ok ?? true),
       bridgeClients: typeof json.bridgeClients === 'number' ? json.bridgeClients : 0,
       connectedBrowserPlatforms: Array.from(connectedBrowserPlatforms),
       connectedMcpPlatforms: Array.from(connectedMcpPlatforms),
       configuredApiPlatforms: Array.from(configuredApiPlatforms),
+      mcpServers: enrichedMcpServers,
+      mcpBalance: topBalance,
       browserSessionOpen: Boolean(json.browserSessionOpen),
       activeBrowserProfileDir:
         typeof json.activeBrowserProfileDir === 'string'
@@ -616,6 +635,7 @@ export async function fetchConnectionsStatusViaBackend(): Promise<ConnectionsSta
       connectedBrowserPlatforms: [],
       connectedMcpPlatforms: [],
       configuredApiPlatforms: [],
+      mcpServers: [],
     };
   }
 }

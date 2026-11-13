@@ -40,6 +40,7 @@ import {
   getPlatformConnectionStatus,
   getPlatformsForModality,
   nodeKindToModality,
+  resolveModelDisplayLabel,
 } from '../presets/platformCatalog';
 import { useStudioStore } from '../store/useStudioStore';
 import { SmartMediaImage } from './SmartMedia';
@@ -241,10 +242,13 @@ export const ContextualNodeOverlay: React.FC = () => {
         liveConnStatusObj
       )
     : {
-        connected: connectedBrowserPlatforms.includes(effectivePlatformId),
+        connected:
+          connectedMcpPlatforms.includes(effectivePlatformId) ||
+          connectedBrowserPlatforms.includes(effectivePlatformId) ||
+          configuredApiPlatforms.includes(effectivePlatformId),
         hasBrowser: connectedBrowserPlatforms.includes(effectivePlatformId),
-        hasMcp: false,
-        hasApiKey: false,
+        hasMcp: connectedMcpPlatforms.includes(effectivePlatformId),
+        hasApiKey: configuredApiPlatforms.includes(effectivePlatformId),
         transports: [],
         statusLabel: 'Not Connected' as const,
         summary: 'Connect Credits',
@@ -252,6 +256,8 @@ export const ContextualNodeOverlay: React.FC = () => {
 
   const isEffectivePlatformConnected =
     activeConnStatus.connected ||
+    connectedMcpPlatforms.includes(effectivePlatformId) ||
+    configuredApiPlatforms.includes(effectivePlatformId) ||
     connectedBrowserPlatforms.includes(effectivePlatformId) ||
     Boolean(chromeBridge.connectedPlatforms?.[effectivePlatformId]) ||
     (effectivePlatformId === 'dreamina' && chromeBridge.dreaminaTabConnected) ||
@@ -658,28 +664,47 @@ export const ContextualNodeOverlay: React.FC = () => {
             </div>
 
             {/* Active Connection Badge */}
-            <button
-              type="button"
-              onClick={() =>
-                openProviderModal(
-                  activeConnStatus.transports.includes('mcp')
-                    ? 'mcp'
-                    : activeConnStatus.transports.includes('browser-bridge')
-                    ? 'bridge'
-                    : 'byok',
-                  effectivePlatformId
-                )
-              }
-              className="h-6 px-2 rounded-[6px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.07] text-[10.5px] text-white/70 hover:text-white flex items-center gap-1.5 transition-colors"
-              title="Configure MCP, Browser Session Credits, or Zero-Markup API Keys"
-            >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  activeConnStatus.connected ? 'bg-[#10b981]' : 'bg-amber-400/80'
-                }`}
-              />
-              <span>{activeConnStatus.summary}</span>
-            </button>
+            {(() => {
+              const matchingMcpSrv = externalMcpServers.find(
+                (s) => s.platformId === effectivePlatformId && s.status === 'connected'
+              );
+              const mcpCredits = matchingMcpSrv?.balance?.credits;
+              const badgeText = activeConnStatus.connected
+                ? activeConnStatus.hasMcp
+                  ? mcpCredits !== undefined
+                    ? `✓ MCP · ${mcpCredits.toLocaleString(undefined, { maximumFractionDigits: 1 })} cr`
+                    : '✓ MCP Connected'
+                  : `✓ ${activeConnStatus.summary}`
+                : 'Connect Credits';
+              return (
+                <button
+                  type="button"
+                  onClick={() =>
+                    openProviderModal(
+                      activeConnStatus.transports.includes('mcp')
+                        ? 'mcp'
+                        : activeConnStatus.transports.includes('browser-bridge')
+                        ? 'bridge'
+                        : 'byok',
+                      effectivePlatformId
+                    )
+                  }
+                  className={`h-6 px-2.5 rounded-[6px] border text-[10.5px] font-medium flex items-center gap-1.5 transition-colors ${
+                    activeConnStatus.connected
+                      ? 'bg-[#10b981]/12 hover:bg-[#10b981]/20 border-[#10b981]/30 text-[#6ee7b7]'
+                      : 'bg-[#252525] hover:bg-white/[0.1] border-white/[0.07] text-white/70 hover:text-white'
+                  }`}
+                  title="Configure MCP, Browser Session Credits, or Zero-Markup API Keys"
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      activeConnStatus.connected ? 'bg-[#10b981]' : 'bg-amber-400/80'
+                    }`}
+                  />
+                  <span>{badgeText}</span>
+                </button>
+              );
+            })()}
           </div>
 
           {/* Prompt Input Area */}
@@ -861,7 +886,11 @@ export const ContextualNodeOverlay: React.FC = () => {
                     {activeModelDef?.label ||
                       (effectivePlatformId === 'custom-mcp'
                         ? 'Connect MCP Tool…'
-                        : selectedNode.modelId || 'Select Model')}
+                        : resolveModelDisplayLabel(
+                            effectivePlatformId,
+                            selectedNode.modelId,
+                            platformsCatalog
+                          ) || 'Select Model')}
                   </span>
                   <ChevronDown className="w-3.5 h-3.5 text-white/45 shrink-0" strokeWidth={1.6} />
                 </button>
