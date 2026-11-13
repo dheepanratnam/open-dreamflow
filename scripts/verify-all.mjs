@@ -773,7 +773,7 @@ async function verifyLiveServerStages() {
 
     const serializedCatalog = JSON.stringify(rawCatalog);
     for (const expectedModel of [
-      'chatgpt-image-2.6',
+      'gpt_image_2_6',
       'kling-4.0',
       'seedream-5.0-lite',
       'veo-3.1-fast-generate-preview',
@@ -1164,7 +1164,13 @@ async function verifyLiveServerStages() {
             };
           } else if (rpc.method === 'tools/call' && rpc.params?.name === 'generate_image') {
             const nestedParams = rpc.params?.arguments?.params || {};
-            if (nestedParams.model !== 'gpt_image_2_6' || nestedParams.aspect_ratio !== '16:9') {
+            if (
+              nestedParams.model !== 'gpt_image_2_6' ||
+              nestedParams.aspect_ratio !== '16:9' ||
+              nestedParams.quality !== 'high' ||
+              nestedParams.background !== 'transparent' ||
+              nestedParams.output_format !== 'png'
+            ) {
               res.writeHead(400, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: `Unexpected params payload: ${JSON.stringify(rpc.params?.arguments)}` }));
               return;
@@ -1255,7 +1261,7 @@ async function verifyLiveServerStages() {
     });
     assert(gpuCall.ok === true && String(gpuCall.textContent || '').includes('healthy'), `gpu_status MCP call failed: ${JSON.stringify(gpuCall)}`);
 
-    // Stage 9.1 mock nested { params, context } + models_explore skip + results[0].id -> job_status({ jobId, sync: true }) + resource_link/rawUrl over minUrl
+    // Stage 9.1 + 9.2 mock nested { params, context } + models_explore skip + modelParams forwarding + results[0].id -> job_status({ jobId, sync: true }) + resource_link/rawUrl over minUrl
     const mcpNodeGen = await postJson(baseUrl, '/api/generate-node', {
       nodeId: 'e2e-stage91-mcp-node',
       kind: 'image',
@@ -1264,7 +1270,12 @@ async function verifyLiveServerStages() {
       mcpServerId: registeredOAuthServerId,
       modelId: 'chatgpt-image-2.6',
       prompt: 'Seagull field guide coastal cliff illustration',
-      settings: { aspectRatio: '16:9', resolution: '2K' },
+      settings: {
+        aspectRatio: '16:9',
+        resolution: '2K',
+        quality: 'high',
+        modelParams: { background: 'transparent', output_format: 'png' },
+      },
     });
     assert(mcpNodeGen.ok === true && mcpNodeGen.transportUsed === 'mcp', `Mock nested MCP generate-node failed: ${JSON.stringify(mcpNodeGen)}`);
     assert(mcpNodeGen.mcpToolName === 'generate_image', `Expected selectBestToolForModality to pick generate_image over models_explore, got ${mcpNodeGen.mcpToolName}`);
@@ -1273,6 +1284,29 @@ async function verifyLiveServerStages() {
     assert(typeof mcpNodeGen.mediaUrl === 'string' && mcpNodeGen.mediaUrl.endsWith('.png'), `Expected lossless .png ahead of _min.webp, got ${mcpNodeGen.mediaUrl}`);
     createdMediaPaths.push(mcpNodeGen.mediaUrl);
     assert(findGeneratedMediaDiskPath(mcpNodeGen.mediaUrl), `Generated Stage 9.1 mock PNG missing on disk: ${mcpNodeGen.mediaUrl}`);
+
+    // Stage 9.2 live catalog + dynamic per-model parameter schema endpoint check
+    const mcpModelsRes = await fetch(`${baseUrl}/api/mcp/models?platformId=higgsfield`);
+    assert(mcpModelsRes.status === 200, `GET /api/mcp/models failed (${mcpModelsRes.status})`);
+    const mcpModelsJson = await mcpModelsRes.json();
+    assert(mcpModelsJson.ok === true && Array.isArray(mcpModelsJson.models) && mcpModelsJson.models.length >= 50, `Expected >= 50 Higgsfield models from /api/mcp/models, got ${mcpModelsJson.models?.length}`);
+    const gpt26Schema = mcpModelsJson.models.find((m) => m.id === 'gpt_image_2_6');
+    assert(
+      gpt26Schema &&
+        Array.isArray(gpt26Schema.parameters) &&
+        gpt26Schema.parameters.some((p) => p.name === 'quality') &&
+        gpt26Schema.parameters.some((p) => p.name === 'background') &&
+        gpt26Schema.parameters.some((p) => p.name === 'output_format'),
+      `Expected gpt_image_2_6 parameters (quality, background, output_format) in /api/mcp/models: ${JSON.stringify(gpt26Schema?.parameters)}`
+    );
+    const platformsCatalogRes = await fetch(`${baseUrl}/api/platforms`);
+    assert(platformsCatalogRes.status === 200, `GET /api/platforms failed (${platformsCatalogRes.status})`);
+    const platformsCatalogJson = await platformsCatalogRes.json();
+    const oaiCatalog = (platformsCatalogJson.platforms || []).find((p) => p.id === 'openai');
+    assert(
+      oaiCatalog && oaiCatalog.models?.some((m) => m.id === 'gpt-image-1.5') && oaiCatalog.models?.some((m) => m.id === 'sora-2'),
+      `Expected enriched OpenAI catalog (gpt-image-1.5, sora-2), got: ${JSON.stringify(oaiCatalog?.models?.map((m) => m.id))}`
+    );
 
     const balanceConnRes = await fetch(`${baseUrl}/api/connections/status?forceRefresh=1`);
     assert(balanceConnRes.status === 200, `GET /api/connections/status?forceRefresh=1 failed (${balanceConnRes.status})`);
@@ -1487,6 +1521,12 @@ function verifyStage13WebStudioBundle() {
 
   const jsBundle = fs.readFileSync(jsPath, 'utf8');
   for (const marker of [
+    'Search 100+ models',
+    'gpt_image_2_6_flare',
+    'cinematic_studio_video_4_0',
+    'Quality:',
+    'UNLIM',
+    'modelParams',
     'PlatformBrandIcon',
     'Connect Higgsfield via MCP',
     'Connected Successfully',
