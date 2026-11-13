@@ -1,24 +1,27 @@
 #!/usr/bin/env node
 /**
- * Open-DreamFlow — 13-Stage Automated Monorepo End-to-End Verification Suite
+ * Open-DreamFlow — 14-Stage Automated Monorepo End-to-End Verification Suite
  *
  * Stages:
- *   [1/13 provider-sdk]                      Zero-markup SDK clients, 13-platform PLATFORM_CATALOG & $0 markup estimator
- *   [2/13 mcp-client]                        Live JSON-RPC roundtrip verifying all 12 built-in MCP tools on :3001/mcp
- *   [3/13 real-photography-media]            206 Partial Content streaming, ffprobe real photography/cinema check & zero-slop bundle audit
- *   [4/13 inline-editor]                     Live /api/upload-media, /api/inpaint (mask), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)
- *   [5/13 keyframe-bridge-and-audio]         Live /api/keyframe-bridge (A->B), /api/generate-audio (64-bar waveform + MP3) & multi-track /api/compile-timeline
- *   [6/13 persistence-bridge]                Live /api/projects CRUD + .dreamflow.json export + /api/bridge/push -> /api/bridge/events
- *   [7/13 live-provider-and-bridge-jobs]     /api/verify-provider, GET /bridge-connector.js (PNA CORS) & Dreamina live bridge lifecycle
- *   [8/13 multi-platform-and-external-mcp]   GET /api/platforms (13 platforms) + real stdio External MCP Server tools/list, /api/mcp/call & /api/generate-node
- *   [9/13 cross-platform-chained-workflow]   Higgsfield (ChatGPT Image 2.6) -> Kling 4.0 (Video) chained base64 reference forwarding
- *   [10/13 guided-connections-and-sume]      GET /api/connections/status, dryRun 1-click Chrome profile launcher (higgsfield + all) & bridge_session status sync
- *   [11/13 chrome-bridge]                    Manifest V3 v1.2.0 across all 8 creator domains (incl. sume.com), icons & syntax check across all 6 scripts
- *   [12/13 cli-and-docker]                   open-dreamflow doctor CLI check, unified single-port SPA GET :3001/, Dockerfile & docker-compose.yml
- *   [13/13 web-studio]                       Production Vite bundle + Stage 8 guided onboarding, Sume & DoP Rig UI markers + dist/media integrity
+ *   [1/14 provider-sdk]                      Zero-markup SDK clients, 13-platform PLATFORM_CATALOG & $0 markup estimator
+ *   [2/14 mcp-client]                        Live JSON-RPC roundtrip verifying all 12 built-in MCP tools on :3001/mcp
+ *   [3/14 real-photography-media]            206 Partial Content streaming, ffprobe real photography/cinema check & zero-slop bundle audit
+ *   [4/14 inline-editor]                     Live /api/upload-media, /api/inpaint (mask), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)
+ *   [5/14 keyframe-bridge-and-audio]         Live /api/keyframe-bridge (A->B), /api/generate-audio (64-bar waveform + MP3) & multi-track /api/compile-timeline
+ *   [6/14 persistence-bridge]                Live /api/projects CRUD + .dreamflow.json export + /api/bridge/push -> /api/bridge/events
+ *   [7/14 live-provider-and-bridge-jobs]     /api/verify-provider, GET /bridge-connector.js (PNA CORS) & Dreamina live bridge lifecycle
+ *   [8/14 multi-platform-and-external-mcp]   GET /api/platforms (13 platforms) + real stdio External MCP Server tools/list, /api/mcp/call & /api/generate-node
+ *   [9/14 cross-platform-chained-workflow]   Higgsfield (ChatGPT Image 2.6) -> Kling 4.0 (Video) chained base64 reference forwarding
+ *   [10/14 guided-connections-and-sume]      GET /api/connections/status, dryRun 1-click Chrome profile launcher (higgsfield + all) & bridge_session status sync
+ *   [11/14 mcp-oauth-and-check-browser]      MCP OAuth 2.1 + PKCE + Streamable HTTP SSE lifecycle (mock + live Higgsfield probe), /api/mcp/call & /api/connections/check-browser
+ *   [12/14 chrome-bridge]                    Manifest V3 v1.2.0 across all 8 creator domains (incl. sume.com), icons & syntax check across all 6 scripts
+ *   [13/14 cli-and-docker]                   open-dreamflow doctor CLI check, unified single-port SPA GET :3001/, Dockerfile & docker-compose.yml
+ *   [14/14 web-studio]                       Production Vite bundle + Stage 9 Brand Icons & MCP OAuth UI markers + Stage 8 markers + dist/media integrity
  */
 
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -293,7 +296,7 @@ async function verifyStage1ProviderSdk() {
   assert(cost.rawProviderCostUsd > 0, 'Raw Gemini Omni 15s estimate must be positive');
 
   logStep(
-    '1/13 provider-sdk',
+    '1/14 provider-sdk',
     `Verified zero-markup BYOK/Local GPU clients, ${sdk.PLATFORM_CATALOG.length}-platform PLATFORM_CATALOG + $0 markup estimator`
   );
 }
@@ -329,8 +332,14 @@ async function verifyLiveServerStages() {
   const hadPriorMcpCfg = fs.existsSync(mcpCfgPath);
   const priorMcpCfgBytes = hadPriorMcpCfg ? fs.readFileSync(mcpCfgPath) : null;
 
+  const oauthClientsPath = path.join(ROOT, '.dreamflow-data.nosync/mcp-oauth-clients.json');
+  const hadPriorOAuthClients = fs.existsSync(oauthClientsPath);
+  const priorOAuthClientsBytes = hadPriorOAuthClients ? fs.readFileSync(oauthClientsPath) : null;
+
   const tmpMcpScriptPath = path.join(os.tmpdir(), `dreamflow_e2e_mcp_stdio_${Date.now()}.mjs`);
   let registeredMcpServerId = null;
+  let registeredOAuthServerId = null;
+  let mockOAuthHttpServer = null;
   let initialOpenDomains = null;
 
   try {
@@ -346,7 +355,7 @@ async function verifyLiveServerStages() {
     }
 
     // -------------------------------------------------------------------------
-    // Stage [2/13 mcp-client]: Live JSON-RPC roundtrip verifying all 12 MCP tools
+    // Stage [2/14 mcp-client]: Live JSON-RPC roundtrip verifying all 12 MCP tools
     // -------------------------------------------------------------------------
     const healthRes = await fetch(`${baseUrl}/api/health`);
     assert(healthRes.ok, '/api/health returned non-200');
@@ -390,12 +399,12 @@ async function verifyLiveServerStages() {
     await client.disconnect();
 
     logStep(
-      '2/13 mcp-client',
+      '2/14 mcp-client',
       `Live JSON-RPC roundtrip on ${baseUrl}/mcp verified all ${expectedTools.length} built-in MCP tools`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [3/13 real-photography-media]: 206 Partial Content + ffprobe + zero neon slop
+    // Stage [3/14 real-photography-media]: 206 Partial Content + ffprobe + zero neon slop
     // -------------------------------------------------------------------------
     const publicMediaDir = path.join(ROOT, 'apps/web-studio/public/media');
     const distMediaDir = path.join(ROOT, 'apps/web-studio/dist/media');
@@ -472,12 +481,12 @@ async function verifyLiveServerStages() {
 
     const masterSizeMb = (fs.statSync(resolveAsset('real_salt_terracotta_master.mp4')).size / (1024 * 1024)).toFixed(2);
     logStep(
-      '3/13 real-photography-media',
+      '3/14 real-photography-media',
       `Verified 206 Range streaming, ffprobe on ${requiredRealMedia.length} real 35mm/cinema assets (master = ${masterSizeMb} MB) & 0 neon strings in JS bundle`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [4/13 inline-editor]: Live upload, mask inpaint, 16:9 outpaint, cutout & 4K upscale
+    // Stage [4/14 inline-editor]: Live upload, mask inpaint, 16:9 outpaint, cutout & 4K upscale
     // -------------------------------------------------------------------------
     assert(health.ffmpeg === true, 'FFmpeg must be available for Stage 4 inline-editor verification');
 
@@ -525,12 +534,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(upscaleRes.imageUrl), 'Upscale 4K PNG missing on disk');
 
     logStep(
-      '4/13 inline-editor',
+      '4/14 inline-editor',
       'Verified live /api/upload-media, /api/inpaint (masked), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [5/13 keyframe-bridge-and-audio]: A->B optical bridge + 64-bar audio + multi-track mix
+    // Stage [5/14 keyframe-bridge-and-audio]: A->B optical bridge + 64-bar audio + multi-track mix
     // -------------------------------------------------------------------------
     const bridgeRes = await postJson(baseUrl, '/api/keyframe-bridge', {
       startImageUrl: '/media/real_courtyard_sun.jpg',
@@ -570,12 +579,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(compiledMasterUrl), 'Multi-track compiled master MP4 missing on disk');
 
     logStep(
-      '5/13 keyframe-bridge-and-audio',
+      '5/14 keyframe-bridge-and-audio',
       'Verified live /api/keyframe-bridge (A→B), /api/generate-audio (64-bar RMS waveform + MP3) & multi-track /api/compile-timeline'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [6/13 persistence-bridge]: Projects CRUD + .dreamflow.json export + Bridge relay
+    // Stage [6/14 persistence-bridge]: Projects CRUD + .dreamflow.json export + Bridge relay
     // -------------------------------------------------------------------------
     const saveRes = await postJson(baseUrl, '/api/projects', {
       id: tempProjectId,
@@ -625,12 +634,12 @@ async function verifyLiveServerStages() {
     );
 
     logStep(
-      '6/13 persistence-bridge',
+      '6/14 persistence-bridge',
       'Verified /api/projects CRUD + snapshot + .dreamflow.json export + /api/bridge/push -> /api/bridge/events'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [7/13 live-provider-and-bridge-jobs]:
+    // Stage [7/14 live-provider-and-bridge-jobs]:
     //   /api/verify-provider, GET /bridge-connector.js & Dreamina job lifecycle
     // -------------------------------------------------------------------------
     const verifyEmptyRes = await fetch(`${baseUrl}/api/verify-provider`, {
@@ -729,12 +738,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(savedLiveImage), `Ingested ${savedLiveImage} missing on disk`);
 
     logStep(
-      '7/13 live-provider-and-bridge-jobs',
+      '7/14 live-provider-and-bridge-jobs',
       `Verified /api/verify-provider, GET /bridge-connector.js (PNA CORS) & Dreamina bridge lifecycle (${path.basename(savedLiveImage)})`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [8/13 multi-platform-and-external-mcp]:
+    // Stage [8/14 multi-platform-and-external-mcp]:
     //   1) GET /api/platforms (all 13 platforms incl. sume + modality-accurate models)
     //   2) Real External stdio MCP Server roundtrip
     // -------------------------------------------------------------------------
@@ -835,12 +844,12 @@ async function verifyLiveServerStages() {
     registeredMcpServerId = null;
 
     logStep(
-      '8/13 multi-platform-and-external-mcp',
+      '8/14 multi-platform-and-external-mcp',
       `Verified GET /api/platforms (${platformList.length} platforms incl. sume) + real stdio External MCP Server (${path.basename(nodeMcpMedia)})`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [9/13 cross-platform-chained-workflow]:
+    // Stage [9/14 cross-platform-chained-workflow]:
     //   Higgsfield (ChatGPT Image 2.6) -> Kling AI (Kling 4.0) chained reference forwarding
     // -------------------------------------------------------------------------
     const hfPrompt = `E2E Higgsfield Base Frame ${Date.now()}`;
@@ -933,12 +942,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(node2VideoPath), `Node 2 ${node2VideoPath} missing on disk`);
 
     logStep(
-      '9/13 cross-platform-chained-workflow',
+      '9/14 cross-platform-chained-workflow',
       `Verified Higgsfield (chatgpt-image-2.6) -> Kling 4.0 chained base64 reference forwarding (${path.basename(node1MediaPath)} -> ${path.basename(node2VideoPath)})`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [10/13 guided-connections-and-sume]:
+    // Stage [10/14 guided-connections-and-sume]:
     //   1) GET /api/connections/status (includes all 8 browser platforms incl. sume)
     //   2) POST /api/connections/launch-browser dryRun for 'higgsfield' & 'all'
     //   3) POST /api/bridge/push type:'bridge_session' updates connectedBrowserPlatforms
@@ -997,17 +1006,210 @@ async function verifyLiveServerStages() {
     );
 
     logStep(
-      '10/13 guided-connections-and-sume',
+      '10/14 guided-connections-and-sume',
       `Verified /api/connections/status (8 browser platforms + ${dryHiggs.browserName}), dryRun --load-extension & bridge_session sync`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [11/13 chrome-bridge]: Manifest V3 v1.2.0 across all 8 creator domains
+    // Stage [11/14 mcp-oauth-and-check-browser]: MCP OAuth 2.1 + PKCE + Streamable HTTP SSE + CDP Check
+    // -------------------------------------------------------------------------
+    const b64u = (v) => Buffer.from(JSON.stringify(v)).toString('base64url');
+    const mockAccessToken = `${b64u({ alg: 'none' })}.${b64u({
+      sub: 'usr_stage9_e2e',
+      email: 'director@higgsfield.ai',
+      name: 'Stage 9 Director',
+    })}.sig`;
+    let mockBaseUrl = '';
+    const mockSseSessionId = 'sess_mock_streamable_sse_01';
+
+    mockOAuthHttpServer = http.createServer(async (req, res) => {
+      const reqUrl = new URL(req.url || '/', mockBaseUrl || 'http://127.0.0.1');
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      const rawBody = Buffer.concat(chunks).toString('utf8');
+
+      if (reqUrl.pathname.startsWith('/.well-known/oauth-protected-resource')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ resource: `${mockBaseUrl}/mcp`, authorization_servers: [mockBaseUrl] }));
+        return;
+      }
+      if (reqUrl.pathname.startsWith('/.well-known/oauth-authorization-server')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            issuer: mockBaseUrl,
+            authorization_endpoint: `${mockBaseUrl}/oauth/authorize`,
+            token_endpoint: `${mockBaseUrl}/oauth/token`,
+            registration_endpoint: `${mockBaseUrl}/oauth/register`,
+            code_challenge_methods_supported: ['S256'],
+            scopes_supported: ['openid', 'email', 'offline_access'],
+          })
+        );
+        return;
+      }
+      if (reqUrl.pathname === '/oauth/register' && req.method === 'POST') {
+        const regBody = JSON.parse(rawBody || '{}');
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ client_id: 'mock_dcr_client_stage9', client_name: regBody.client_name }));
+        return;
+      }
+      if (reqUrl.pathname === '/oauth/token' && req.method === 'POST') {
+        const params = new URLSearchParams(rawBody);
+        if (params.get('code') !== 'mock_auth_code_9' || !params.get('code_verifier')) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_grant' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            access_token: mockAccessToken,
+            id_token: mockAccessToken,
+            refresh_token: 'mock_refresh_stage9',
+            token_type: 'Bearer',
+            expires_in: 3600,
+          })
+        );
+        return;
+      }
+      if (reqUrl.pathname === '/mcp' && req.method === 'POST') {
+        if (req.headers.authorization !== `Bearer ${mockAccessToken}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'unauthorized' }));
+          return;
+        }
+        const rpc = JSON.parse(rawBody || '{}');
+        if (rpc.id === undefined || rpc.id === null || rpc.method === 'notifications/initialized') {
+          res.writeHead(202, { 'Mcp-Session-Id': mockSseSessionId });
+          res.end();
+          return;
+        }
+        let result = {};
+        if (rpc.method === 'initialize') {
+          result = {
+            protocolVersion: '2025-03-26',
+            capabilities: { tools: {} },
+            serverInfo: { name: 'mock-streamable-higgsfield-mcp', version: '1.0.0' },
+          };
+        } else if (rpc.method === 'tools/list') {
+          if (req.headers['mcp-session-id'] !== mockSseSessionId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing Mcp-Session-Id' }));
+            return;
+          }
+          result = {
+            tools: [
+              { name: 'generate_image', description: 'Generate image', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } } } },
+              { name: 'generate_video', description: 'Generate video', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } } } },
+              { name: 'genjutsu', description: 'Style transfer', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } } } },
+              { name: 'gpu_status', description: 'Check GPU worker and credit status', inputSchema: { type: 'object', properties: {} } },
+            ],
+          };
+        } else if (rpc.method === 'tools/call' && rpc.params?.name === 'gpu_status') {
+          result = {
+            content: [{ type: 'text', text: JSON.stringify({ status: 'healthy', activeGpus: 8, queueDepth: 0 }) }],
+          };
+        }
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Mcp-Session-Id': mockSseSessionId,
+        });
+        res.end(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result })}\n\n`);
+        return;
+      }
+      res.writeHead(404).end();
+    });
+
+    await new Promise((resolve) => mockOAuthHttpServer.listen(0, '127.0.0.1', resolve));
+    const mockAddr = mockOAuthHttpServer.address();
+    mockBaseUrl = `http://127.0.0.1:${mockAddr.port}`;
+
+    const oauthStart = await postJson(baseUrl, '/api/mcp/oauth/start', {
+      platformId: 'mock_oauth_e2e',
+      serverName: 'Mock OAuth Streamable MCP',
+      mcpUrl: `${mockBaseUrl}/mcp`,
+    });
+    assert(oauthStart.ok === true && oauthStart.sessionId && oauthStart.state, 'POST /api/mcp/oauth/start failed');
+    assert(oauthStart.step === 'awaiting_login', `Expected step=awaiting_login, got ${oauthStart.step}`);
+    assert(
+      typeof oauthStart.authorizeUrl === 'string' &&
+        oauthStart.authorizeUrl.startsWith(`${mockBaseUrl}/oauth/authorize`) &&
+        oauthStart.authorizeUrl.includes('code_challenge_method=S256'),
+      `Invalid mock PKCE authorizeUrl: ${oauthStart.authorizeUrl}`
+    );
+
+    const cbRes = await fetch(
+      `${baseUrl}/api/mcp/oauth/callback?code=mock_auth_code_9&state=${encodeURIComponent(oauthStart.state)}`
+    );
+    assert(cbRes.status === 200, `GET /api/mcp/oauth/callback returned ${cbRes.status}`);
+    const cbHtml = await cbRes.text();
+    assert(cbHtml.includes('dreamflow_mcp_oauth_complete'), 'OAuth callback HTML missing postMessage event');
+
+    const statusRes = await fetch(`${baseUrl}/api/mcp/oauth/status/${encodeURIComponent(oauthStart.sessionId)}`);
+    assert(statusRes.status === 200, `GET /api/mcp/oauth/status failed: ${statusRes.status}`);
+    const statusJson = await statusRes.json();
+    assert(statusJson.session?.step === 'connected', `Expected session.step=connected, got ${statusJson.session?.step}`);
+    assert(
+      statusJson.session?.account?.email === 'director@higgsfield.ai',
+      `Expected decoded JWT email, got ${JSON.stringify(statusJson.session?.account)}`
+    );
+    const toolNames = (statusJson.session?.tools || []).map((t) => t.name);
+    for (const reqTool of ['generate_image', 'generate_video', 'genjutsu', 'gpu_status']) {
+      assert(toolNames.includes(reqTool), `Missing Streamable HTTP SSE tool ${reqTool}: ${JSON.stringify(toolNames)}`);
+    }
+    registeredOAuthServerId = statusJson.session.serverId;
+
+    const gpuCall = await postJson(baseUrl, '/api/mcp/call', {
+      serverId: registeredOAuthServerId,
+      toolName: 'gpu_status',
+      arguments: {},
+    });
+    assert(gpuCall.ok === true && String(gpuCall.textContent || '').includes('healthy'), `gpu_status MCP call failed: ${JSON.stringify(gpuCall)}`);
+
+    // Live Higgsfield https://mcp.higgsfield.ai/mcp DCR + PKCE probe
+    const liveHiggsRes = await fetch(`${baseUrl}/api/mcp/oauth/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platformId: 'higgsfield' }),
+    });
+    const liveHiggsJson = await liveHiggsRes.json();
+    let liveHiggsStatus = 'live-probe';
+    if (liveHiggsRes.ok && liveHiggsJson.ok) {
+      assert(
+        typeof liveHiggsJson.authorizeUrl === 'string' &&
+          (liveHiggsJson.authorizeUrl.startsWith('https://clerk.higgsfield.ai/oauth/authorize') ||
+            liveHiggsJson.authorizeUrl.startsWith('https://mcp.higgsfield.ai/oauth2/authorize')),
+        `Unexpected live Higgsfield authorizeUrl: ${liveHiggsJson.authorizeUrl}`
+      );
+      assert(
+        liveHiggsJson.authorizeUrl.includes('code_challenge_method=S256') &&
+          liveHiggsJson.authorizeUrl.includes('redirect_uri='),
+        `Live Higgsfield authorizeUrl missing S256 PKCE or redirect_uri: ${liveHiggsJson.authorizeUrl}`
+      );
+      liveHiggsStatus = `live Higgsfield PKCE ok (${new URL(liveHiggsJson.authorizeUrl).host})`;
+    } else {
+      assert(
+        /fetch failed|ENOTFOUND|ECONNREFUSED|timeout/i.test(String(liveHiggsJson.error || '')),
+        `Live Higgsfield oauth/start returned unexpected non-network error: ${JSON.stringify(liveHiggsJson)}`
+      );
+      liveHiggsStatus = 'offline fallback checked';
+    }
+
+    const checkBrowserRes = await postJson(baseUrl, '/api/connections/check-browser', {});
+    assert(checkBrowserRes.ok === true && Array.isArray(checkBrowserRes.connectedBrowserPlatforms), 'POST /api/connections/check-browser invalid response');
+
+    logStep(
+      '11/14 mcp-oauth-and-check-browser',
+      `Verified Mock OAuth 2.1 PKCE + Streamable HTTP SSE (4 tools + gpu_status), ${liveHiggsStatus}, & POST /api/connections/check-browser (200 OK)`
+    );
+
+    // -------------------------------------------------------------------------
+    // Stage [12/14 chrome-bridge]: Manifest V3 v1.2.0 across all 8 creator domains
     // -------------------------------------------------------------------------
     verifyStage11ChromeBridge();
 
     // -------------------------------------------------------------------------
-    // Stage [12/13 cli-and-docker]: open-dreamflow doctor + unified SPA GET :3001/ + Docker
+    // Stage [13/14 cli-and-docker]: open-dreamflow doctor + unified SPA GET :3001/ + Docker
     // -------------------------------------------------------------------------
     const cliPath = path.join(ROOT, 'bin/open-dreamflow.mjs');
     assert(fs.existsSync(cliPath), 'bin/open-dreamflow.mjs missing');
@@ -1028,7 +1230,7 @@ async function verifyLiveServerStages() {
     }
 
     logStep(
-      '12/13 cli-and-docker',
+      '13/14 cli-and-docker',
       `Verified 'open-dreamflow doctor' (exit 0), unified single-port SPA GET ${baseUrl}/ (200 OK) & Dockerfile + docker-compose.yml`
     );
   } finally {
@@ -1047,9 +1249,16 @@ async function verifyLiveServerStages() {
         // ignore
       }
     }
-    if (registeredMcpServerId) {
+    for (const sid of [registeredMcpServerId, registeredOAuthServerId].filter(Boolean)) {
       try {
-        await fetch(`${baseUrl}/api/mcp/servers/${encodeURIComponent(registeredMcpServerId)}`, { method: 'DELETE' });
+        await fetch(`${baseUrl}/api/mcp/servers/${encodeURIComponent(sid)}`, { method: 'DELETE' });
+      } catch {
+        // ignore
+      }
+    }
+    if (mockOAuthHttpServer) {
+      try {
+        await new Promise((r) => mockOAuthHttpServer.close(r));
       } catch {
         // ignore
       }
@@ -1078,6 +1287,11 @@ async function verifyLiveServerStages() {
       fs.writeFileSync(mcpCfgPath, priorMcpCfgBytes);
     } else if (!hadPriorMcpCfg && fs.existsSync(mcpCfgPath)) {
       fs.unlinkSync(mcpCfgPath);
+    }
+    if (hadPriorOAuthClients && priorOAuthClientsBytes) {
+      fs.writeFileSync(oauthClientsPath, priorOAuthClientsBytes);
+    } else if (!hadPriorOAuthClients && fs.existsSync(oauthClientsPath)) {
+      fs.unlinkSync(oauthClientsPath);
     }
     if (ephemeralBridge) {
       await ephemeralBridge.stop();
@@ -1125,7 +1339,7 @@ function verifyStage11ChromeBridge() {
   assert(bgSource.includes('dispatch_bridge_job'), 'background.js missing dispatch_bridge_job WS listener');
 
   logStep(
-    '11/13 chrome-bridge',
+    '12/14 chrome-bridge',
     `Manifest V3 v${manifest.version} (8 creator domains incl. sume.com), 3 icons & ${jsScripts.length} scripts syntax-checked`
   );
 }
@@ -1156,6 +1370,11 @@ function verifyStage13WebStudioBundle() {
 
   const jsBundle = fs.readFileSync(jsPath, 'utf8');
   for (const marker of [
+    'PlatformBrandIcon',
+    'Connect Higgsfield via MCP',
+    'Connected Successfully',
+    '/api/mcp/oauth/start',
+    '/api/connections/check-browser',
     'Launch Connected Creator Browser',
     'Connected via Browser',
     'DoP Rig',
@@ -1184,17 +1403,17 @@ function verifyStage13WebStudioBundle() {
   }
 
   logStep(
-    '13/13 web-studio',
+    '14/14 web-studio',
     `Dreamina 1:1 Vite bundle + Guided 1-Click Connections, Sume & DoP Rig UI verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
   );
 }
 
 async function main() {
-  console.log('\nOpen-DreamFlow — Running 13-Stage End-to-End Verification Suite...');
+  console.log('\nOpen-DreamFlow — Running 14-Stage End-to-End Verification Suite...');
   await verifyStage1ProviderSdk();
   await verifyLiveServerStages();
   verifyStage13WebStudioBundle();
-  console.log('All 13/13 Open-DreamFlow subsystems passed verification with 0 errors!\n');
+  console.log('All 14/14 Open-DreamFlow subsystems passed verification with 0 errors!\n');
 }
 
 main().catch((err) => {
