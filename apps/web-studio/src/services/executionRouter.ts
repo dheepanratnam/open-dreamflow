@@ -4,16 +4,41 @@ import type {
   BYOKCredentials,
   DiskProjectMeta,
   DiskProjectRecord,
+  KeyframeBridgeCurve,
   MCPToolDefinition,
   McpBackendHealth,
   ProviderId,
   ResolutionTier,
 } from '../types/studio';
 
-export const LOCAL_MCP_BASE = 'http://localhost:3001';
+function resolveBackendOrigin(): string {
+  if (
+    typeof window !== 'undefined' &&
+    (window.location.protocol === 'http:' || window.location.protocol === 'https:')
+  ) {
+    const port = window.location.port;
+    if (port && port !== '8789' && port !== '5173' && port !== '4173') {
+      return window.location.origin;
+    }
+    if (
+      !port &&
+      window.location.hostname !== 'localhost' &&
+      window.location.hostname !== '127.0.0.1'
+    ) {
+      return window.location.origin;
+    }
+  }
+  return 'http://localhost:3001';
+}
+
+export const LOCAL_MCP_BASE = resolveBackendOrigin();
+const LOCAL_MCP_WS_ORIGIN = LOCAL_MCP_BASE.replace(/^http:\/\//, 'ws://').replace(
+  /^https:\/\//,
+  'wss://'
+);
 export const LOCAL_MCP_HTTP_URL = `${LOCAL_MCP_BASE}/mcp`;
-export const LOCAL_MCP_WS_URL = 'ws://localhost:3001/mcp';
-export const LOCAL_BRIDGE_WS_URL = 'ws://localhost:3001/bridge';
+export const LOCAL_MCP_WS_URL = `${LOCAL_MCP_WS_ORIGIN}/mcp`;
+export const LOCAL_BRIDGE_WS_URL = `${LOCAL_MCP_WS_ORIGIN}/bridge`;
 
 export function getActiveApiKeyForProvider(
   provider: ProviderId,
@@ -85,6 +110,9 @@ export function toBackendRelativeMediaPath(urlOrPath?: string): string | undefin
   if (!urlOrPath) return undefined;
   if (urlOrPath.startsWith(`${LOCAL_MCP_BASE}/`)) {
     return urlOrPath.slice(LOCAL_MCP_BASE.length);
+  }
+  if (urlOrPath.startsWith('http://localhost:3001/')) {
+    return urlOrPath.slice('http://localhost:3001'.length);
   }
   if (urlOrPath.startsWith('http://127.0.0.1:3001/')) {
     return urlOrPath.slice('http://127.0.0.1:3001'.length);
@@ -181,7 +209,7 @@ export async function probeLiveMcpBackend(): Promise<McpBackendHealth> {
     return {
       online,
       ffmpegAvailable,
-      toolCount: online ? Math.max(toolCount, 10) : tools.length,
+      toolCount: online ? Math.max(toolCount, 12) : tools.length,
       tools,
       mediaFiles: Array.isArray(healthData?.mediaFiles) ? healthData!.mediaFiles! : [],
       baseUrl: LOCAL_MCP_BASE,
@@ -388,12 +416,20 @@ export async function compileTimelineViaBackend(params: {
   clips: string[];
   title: string;
   outputName?: string;
+  audioTracks?: Array<{ audioUrl: string; volume?: number }>;
 }): Promise<{ ok: boolean; masterUrl?: string; bytes?: number }> {
   if (params.clips.length === 0) return { ok: false };
   try {
     const cleanClips = params.clips
       .map((c) => toBackendRelativeMediaPath(c))
       .filter((c): c is string => Boolean(c));
+
+    const cleanAudioTracks = (params.audioTracks || [])
+      .map((t) => {
+        const cleanAudio = toBackendRelativeMediaPath(t.audioUrl);
+        return cleanAudio ? { audioUrl: cleanAudio, volume: t.volume ?? 0.65 } : null;
+      })
+      .filter((t): t is { audioUrl: string; volume: number } => Boolean(t));
 
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 35000);
@@ -407,6 +443,7 @@ export async function compileTimelineViaBackend(params: {
         videoUrls: cleanClips,
         title: params.title,
         outputName: params.outputName,
+        ...(cleanAudioTracks.length > 0 ? { audioTracks: cleanAudioTracks } : {}),
       }),
     });
     clearTimeout(timer);
@@ -594,14 +631,17 @@ export async function executeStudioGeneration(
 
   // Try live :3001 FFmpeg + Zero-Markup Media Server first for video/multiframe requests
   if (req.mode === 'video' || req.mode === 'multiframe') {
+    const lower = req.prompt.toLowerCase();
     const inputImg =
       req.firstFrameDataUrl ||
       req.referenceImages?.[0] ||
-      (req.prompt.toLowerCase().includes('sunrise') || req.prompt.toLowerCase().includes('dawn')
-        ? '/media/shot02b_sunrise_remix.png'
-        : req.prompt.toLowerCase().includes('alley') || req.prompt.toLowerCase().includes('sprint')
-        ? '/media/shot02_alley_chase.png'
-        : '/media/shot01_rooftop.png');
+      (lower.includes('atelier') || lower.includes('studio') || lower.includes('kyoto')
+        ? '/media/real_atelier_interior.jpg'
+        : lower.includes('cliff') || lower.includes('ocean') || lower.includes('coast')
+        ? '/media/real_coastal_cliffs.jpg'
+        : lower.includes('alpine') || lower.includes('mountain')
+        ? '/media/real_alpine_road.jpg'
+        : '/media/real_courtyard_sun.jpg');
 
     const ffmpegRes = await renderVideoViaBackend({
       prompt: req.prompt,
@@ -740,6 +780,37 @@ export function getDefaultDiscoveredMcpTools(
       serverUrl,
       serverName,
       inputSchema: { type: 'object', properties: { prompt: { type: 'string' }, duration_seconds: { type: 'number' } } },
+    },
+    {
+      name: 'keyframe_bridge',
+      description:
+        'Synthesizes smooth First-Frame → Last-Frame optical transition MP4 across motion curves (ease-in-out, linear, match-dissolve, whip-pan)',
+      serverUrl,
+      serverName,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          startImageUrl: { type: 'string' },
+          endImageUrl: { type: 'string' },
+          motionCurve: { type: 'string' },
+          durationSec: { type: 'number' },
+        },
+      },
+    },
+    {
+      name: 'generate_audio',
+      description:
+        'Synthesizes real MP3 voiceover (macOS TTS) or stereo acoustic foley + 64-bar normalized waveform array',
+      serverUrl,
+      serverName,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string' },
+          mode: { type: 'string' },
+          durationSec: { type: 'number' },
+        },
+      },
     },
     {
       name: 'slice_contact_sheet',
@@ -1184,6 +1255,133 @@ export async function pushBridgeEventViaBackend(
       body: JSON.stringify(event),
     });
     return { ok: res.ok };
+  } catch {
+    return { ok: false };
+  }
+}
+
+// ============================================================================
+// Stage 5: True First-Frame → Last-Frame Keyframe Bridge & Audio / TTS APIs
+// ============================================================================
+
+export async function keyframeBridgeViaBackend(params: {
+  startImageUrl: string;
+  endImageUrl: string;
+  durationSec?: number;
+  motionCurve?: KeyframeBridgeCurve;
+  prompt?: string;
+  provider?: ProviderId;
+  apiKey?: string;
+}): Promise<{
+  ok: boolean;
+  videoUrl?: string;
+  fullUrl?: string;
+  durationSec?: number;
+  motionCurve?: KeyframeBridgeCurve;
+  engine?: string;
+}> {
+  try {
+    const cleanStart = toBackendRelativeMediaPath(params.startImageUrl) || params.startImageUrl;
+    const cleanEnd = toBackendRelativeMediaPath(params.endImageUrl) || params.endImageUrl;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/keyframe-bridge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        startImageUrl: cleanStart,
+        endImageUrl: cleanEnd,
+        durationSec: params.durationSec || 6,
+        motionCurve: params.motionCurve || 'ease-in-out',
+        prompt: params.prompt,
+        provider: params.provider,
+        apiKey: params.apiKey,
+      }),
+    });
+    clearTimeout(timer);
+    if (!res.ok) return { ok: false };
+
+    const json = (await res.json()) as {
+      ok?: boolean;
+      videoUrl?: string;
+      fullUrl?: string;
+      durationSec?: number;
+      motionCurve?: KeyframeBridgeCurve;
+      engine?: string;
+    };
+    const rel = json.videoUrl || toBackendRelativeMediaPath(json.fullUrl);
+    const full = json.fullUrl || normalizeBackendMediaUrl(rel, true);
+    if (!full && !rel) return { ok: false };
+
+    return {
+      ok: true,
+      videoUrl: rel || full,
+      fullUrl: full || rel,
+      durationSec: json.durationSec || params.durationSec || 6,
+      motionCurve: json.motionCurve || params.motionCurve || 'ease-in-out',
+      engine: json.engine || 'ffmpeg-keyframe-bridge',
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function generateAudioViaBackend(params: {
+  prompt: string;
+  mode?: 'voiceover' | 'ambient' | 'sfx';
+  voiceText?: string;
+  durationSec?: number;
+}): Promise<{
+  ok: boolean;
+  audioUrl?: string;
+  fullUrl?: string;
+  durationSec?: number;
+  mode?: 'voiceover' | 'ambient' | 'sfx';
+  waveform?: number[];
+}> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 28000);
+
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/generate-audio`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        prompt: params.prompt,
+        mode: params.mode || 'ambient',
+        voiceText: params.voiceText || (params.mode === 'voiceover' ? params.prompt : undefined),
+        durationSec: params.durationSec || 8,
+      }),
+    });
+    clearTimeout(timer);
+    if (!res.ok) return { ok: false };
+
+    const json = (await res.json()) as {
+      ok?: boolean;
+      audioUrl?: string;
+      fullUrl?: string;
+      durationSec?: number;
+      mode?: 'voiceover' | 'ambient' | 'sfx';
+      waveform?: number[];
+    };
+    const rel = json.audioUrl || toBackendRelativeMediaPath(json.fullUrl);
+    const full = json.fullUrl || normalizeBackendMediaUrl(rel, true);
+    if (!full && !rel) return { ok: false };
+
+    return {
+      ok: true,
+      audioUrl: rel || full,
+      fullUrl: full || rel,
+      durationSec: json.durationSec || params.durationSec || 8,
+      mode: json.mode || params.mode || 'ambient',
+      waveform:
+        Array.isArray(json.waveform) && json.waveform.length > 0
+          ? json.waveform.slice(0, 64)
+          : undefined,
+    };
   } catch {
     return { ok: false };
   }

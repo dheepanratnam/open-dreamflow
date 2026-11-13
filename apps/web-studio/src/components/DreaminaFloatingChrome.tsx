@@ -41,7 +41,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { DreaminaToolId } from '../types/studio';
-import { MEDIA_ASSET_CATALOG } from '../presets/studioPresets';
+import { MEDIA_ASSET_CATALOG, STUDIO_PRESETS } from '../presets/studioPresets';
 import { useStudioStore } from '../store/useStudioStore';
 import { SmartMediaImage } from './SmartMedia';
 import { downloadTextFile, generateFcpxmlDocument } from '../utils/exporters';
@@ -148,7 +148,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [chatInput, setChatInput] = useState('');
   const [directorBrief, setDirectorBrief] = useState(
-    'Cyberpunk rainy rooftop chase in Neo-Shinjuku starring @Hero_Kael wearing @Cyber_Sneaker, culminating in golden dawn reveal.'
+    '35mm Kodak Vision3 250D coastal portrait film starring @Clara_Vidal holding @Leica_M6 inside @Limestone_Villa, transitioning to golden Atlantic cliffs.'
   );
 
   const getViewportCenterWorld = () => {
@@ -350,6 +350,50 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 </div>
               )}
 
+              <div className="my-1 h-px bg-white/[0.07]" />
+
+              <div className="px-2.5 py-1 text-[11px] text-white/45 font-medium flex items-center justify-between">
+                <span>Photography Presets (35mm)</span>
+                <span className="font-mono text-[10px] text-white/35">3</span>
+              </div>
+
+              {STUDIO_PRESETS.filter((p) => p.id !== 'blank').map((preset) => {
+                const isPresetActive = activeProjectId.startsWith(preset.id);
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => {
+                      loadPresetProject(preset.id);
+                      setProjectMenuOpen(false);
+                    }}
+                    className={`w-full px-2 py-1.5 rounded-[8px] text-left flex items-center gap-2.5 transition-colors ${
+                      isPresetActive
+                        ? 'bg-white/[0.1] text-white'
+                        : 'hover:bg-white/[0.07] text-white/85'
+                    }`}
+                  >
+                    {preset.thumbnailUrl ? (
+                      <div className="w-8 h-6 rounded-[5px] overflow-hidden bg-[#222222] border border-white/[0.08] shrink-0">
+                        <SmartMediaImage
+                          src={preset.thumbnailUrl}
+                          alt={preset.title}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                    ) : null}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11.5px] font-medium truncate">
+                        {preset.title}
+                      </div>
+                      <div className="text-[10px] text-white/42 truncate">
+                        {preset.subtitle}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+
               <button
                 type="button"
                 onClick={() => {
@@ -360,18 +404,6 @@ export const DreaminaFloatingChrome: React.FC = () => {
               >
                 <Plus className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
                 <span>New Blank Canvas</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  loadPresetProject('protocol-rain');
-                  setProjectMenuOpen(false);
-                }}
-                className="w-full h-8 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/80 flex items-center justify-between"
-              >
-                <span>Reset Preset: Protocol Rain</span>
-                <RotateCcw className="w-3 h-3 text-white/45" strokeWidth={1.5} />
               </button>
 
               <div className="my-1 h-px bg-white/[0.07]" />
@@ -621,13 +653,13 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    loadPresetProject('protocol-rain');
+                    loadPresetProject('salt-terracotta');
                     setMoreMenuOpen(false);
                   }}
                   className="w-full h-8 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/75 flex items-center gap-2"
                 >
                   <RotateCcw className="w-3.5 h-3.5 text-white/50" strokeWidth={1.5} />
-                  <span>Reset Protocol: Rain</span>
+                  <span>Reset Salt & Terracotta</span>
                 </button>
               </div>
             )}

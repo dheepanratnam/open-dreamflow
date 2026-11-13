@@ -33,7 +33,12 @@ import {
 } from 'lucide-react';
 import type { CanvasNode, DreaminaToolId } from '../types/studio';
 import { useStudioStore } from '../store/useStudioStore';
-import { SmartMediaImage, SmartMediaVideo } from './SmartMedia';
+import { createDefaultWaveform } from '../utils/proceduralMedia';
+import {
+  SmartMediaImage,
+  SmartMediaVideo,
+  resolvePlayableAudioUrl,
+} from './SmartMedia';
 import { TimelineCanvasNode } from './TimelineCanvasNode';
 
 export interface CanvasBoardProps {
@@ -93,7 +98,7 @@ const WIRE_DROP_ITEMS: Array<{
   { id: 'timeline', label: 'Timeline', icon: Film },
   { id: 'element', label: 'Element', icon: UserSquare2 },
   { id: 'camera-3d', label: '3D Director Console', icon: Compass },
-  { id: 'blend', label: 'Blend · Multi-Turn', icon: GitBranch },
+  { id: 'blend', label: 'Keyframe Bridge · A→B', icon: GitBranch },
 ];
 
 function getNodeKindIcon(kind: CanvasNode['kind']): LucideIcon {
@@ -922,6 +927,17 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                       className="w-full h-full object-cover"
                     />
 
+                    {/* Stage 5: Subtle A → B Keyframe Bridge Micro-Pill */}
+                    {(node.bridgeMode || (node.startImageUrl && node.endImageUrl)) &&
+                      !node.editBadge && (
+                        <div className="absolute top-2.5 left-2.5 px-2 py-0.5 rounded-[6px] bg-black/65 backdrop-blur-md border border-white/[0.12] flex items-center gap-1.5 pointer-events-none">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
+                          <span className="text-[10.5px] font-medium text-white/90 tracking-tight">
+                            A → B Bridge
+                          </span>
+                        </div>
+                      )}
+
                     {/* Subtle Hover Audio & Play Micro-Controls */}
                     <div
                       onPointerDown={(e) => e.stopPropagation()}
@@ -1112,10 +1128,10 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
 
                     <div className="space-y-1 text-[11.5px] text-white/60">
                       <div className="truncate">
-                        Lens: {node.styleDna?.lens || '35mm Anamorphic Prime'}
+                        Lens: {node.styleDna?.lens || 'Cooke S4/i 35mm T2.0'}
                       </div>
                       <div className="truncate">
-                        Stock: {node.styleDna?.filmStock || 'Kodak Vision3 500T'}
+                        Stock: {node.styleDna?.filmStock || 'Kodak Vision3 250D'}
                       </div>
                     </div>
                   </div>
@@ -1454,7 +1470,8 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
 
                 {(contextNode.kind === 'video' ||
                   contextNode.kind === 'image' ||
-                  contextNode.kind === 'contact-sheet') && (
+                  contextNode.kind === 'contact-sheet' ||
+                  contextNode.kind === 'audio') && (
                   <button
                     type="button"
                     onClick={() => {
@@ -1464,7 +1481,11 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                     className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
                   >
                     <Film className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
-                    <span>Send to Timeline</span>
+                    <span>
+                      {contextNode.kind === 'audio'
+                        ? 'Send to Timeline (A1)'
+                        : 'Send to Timeline'}
+                    </span>
                   </button>
                 )}
 
@@ -1518,7 +1539,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                     onClick={() => {
                       void branchVideoMultiTurn(
                         contextNode.id,
-                        'Shift weather from neon rain to golden dawn light'
+                        'Shift midday courtyard sun to warm late-afternoon amber dusk'
                       );
                       setContextMenu(null);
                     }}
@@ -1573,7 +1594,7 @@ const InpaintMaskOverlay: React.FC<{
 }> = ({ node, onCancel, onApply }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [regionalPrompt, setRegionalPrompt] = useState(
-    'Add glowing cyan visor reflection and rain droplets'
+    'Warm afternoon olive branch shadow across limestone wall'
   );
   const drawingRef = useRef(false);
 
@@ -1646,29 +1667,40 @@ const InpaintMaskOverlay: React.FC<{
 
 const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
   const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [liveDuration, setLiveDuration] = useState<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const oscCtxRef = useRef<AudioContext | null>(null);
+  const rafTimerRef = useRef<number | null>(null);
 
-  const togglePlay = () => {
-    if (node.audioUrl) {
-      if (!audioRef.current) return;
-      if (playing) {
-        audioRef.current.pause();
-        setPlaying(false);
-      } else {
-        void audioRef.current.play();
-        setPlaying(true);
+  const playableSrc = useMemo(
+    () => resolvePlayableAudioUrl(node.audioUrl),
+    [node.audioUrl]
+  );
+
+  const waveform = useMemo(() => {
+    if (Array.isArray(node.waveform) && node.waveform.length > 0) {
+      if (node.waveform.length >= 64) return node.waveform.slice(0, 64);
+      const padded = [...node.waveform];
+      while (padded.length < 64) {
+        padded.push(node.waveform[padded.length % node.waveform.length] || 0.35);
       }
-      return;
+      return padded;
     }
+    return createDefaultWaveform(node.seed || 305, 64);
+  }, [node.waveform, node.seed]);
 
-    if (playing) {
+  useEffect(() => {
+    setPlaying(false);
+    setProgress(0);
+    setLiveDuration(null);
+    return () => {
+      if (rafTimerRef.current) window.clearInterval(rafTimerRef.current);
       oscCtxRef.current?.close().catch(() => undefined);
-      oscCtxRef.current = null;
-      setPlaying(false);
-      return;
-    }
+    };
+  }, [playableSrc]);
 
+  const startSynthFallback = () => {
     try {
       const Ctor =
         window.AudioContext ||
@@ -1679,39 +1711,123 @@ const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(110, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(55, ctx.currentTime + 2.5);
-      gain.gain.setValueAtTime(0.06, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 2.5);
+      osc.frequency.setValueAtTime(164, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(110, ctx.currentTime + 3.0);
+      gain.gain.setValueAtTime(0.05, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 3.0);
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start();
-      osc.stop(ctx.currentTime + 2.5);
+      osc.stop(ctx.currentTime + 3.0);
       setPlaying(true);
-      setTimeout(() => setPlaying(false), 2500);
+      const t0 = performance.now();
+      rafTimerRef.current = window.setInterval(() => {
+        const p = Math.min(1, (performance.now() - t0) / 3000);
+        setProgress(p);
+        if (p >= 1) {
+          if (rafTimerRef.current) window.clearInterval(rafTimerRef.current);
+          setPlaying(false);
+          setProgress(0);
+        }
+      }, 50);
     } catch {
       setPlaying(false);
     }
   };
 
-  const bars = [28, 52, 74, 44, 88, 64, 38, 82, 58, 92, 48, 70, 42, 60, 34, 76, 50, 30];
+  const togglePlay = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (playableSrc && audioRef.current) {
+      if (playing) {
+        audioRef.current.pause();
+        setPlaying(false);
+      } else {
+        audioRef.current
+          .play()
+          .then(() => setPlaying(true))
+          .catch(() => startSynthFallback());
+      }
+      return;
+    }
+
+    if (playing) {
+      if (rafTimerRef.current) window.clearInterval(rafTimerRef.current);
+      oscCtxRef.current?.close().catch(() => undefined);
+      oscCtxRef.current = null;
+      setPlaying(false);
+      return;
+    }
+    startSynthFallback();
+  };
+
+  const handleWaveformScrub = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(
+      0,
+      Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width))
+    );
+    setProgress(ratio);
+    if (audioRef.current && Number.isFinite(audioRef.current.duration) && audioRef.current.duration > 0) {
+      audioRef.current.currentTime = ratio * audioRef.current.duration;
+      if (!playing) {
+        audioRef.current
+          .play()
+          .then(() => setPlaying(true))
+          .catch(() => undefined);
+      }
+    }
+  };
+
+  const modeLabel =
+    node.audioMode === 'voiceover'
+      ? 'Voiceover'
+      : node.audioMode === 'sfx'
+      ? 'Foley SFX'
+      : 'Ambient Foley';
+
+  const displaySec = liveDuration || node.durationSec || 12;
 
   return (
-    <div
-      onPointerDown={(e) => e.stopPropagation()}
-      className="w-full h-full px-4 py-3.5 bg-[#191919] flex flex-col justify-between"
-    >
-      {node.audioUrl && (
+    <div className="w-full h-full px-4 py-3 bg-[#191919] flex flex-col justify-between">
+      {playableSrc && (
         <audio
           ref={audioRef}
-          src={node.audioUrl}
-          onEnded={() => setPlaying(false)}
+          src={playableSrc}
+          preload="metadata"
+          onLoadedMetadata={(ev) => {
+            const d = ev.currentTarget.duration;
+            if (Number.isFinite(d) && d > 0) setLiveDuration(d);
+          }}
+          onTimeUpdate={(ev) => {
+            const el = ev.currentTarget;
+            const d = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : displaySec;
+            setProgress(Math.min(1, Math.max(0, el.currentTime / Math.max(0.1, d))));
+          }}
+          onEnded={() => {
+            setPlaying(false);
+            setProgress(0);
+          }}
         />
       )}
-      <div className="flex items-center gap-3">
+
+      {/* Top Row: Mode Tag + Duration Readout */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] border border-white/[0.06] text-[10.5px] font-medium text-white/80">
+          {modeLabel}
+        </span>
+        <span className="font-mono text-[11px] tabular-nums text-white/55">
+          {formatDurationPill(displaySec)}
+        </span>
+      </div>
+
+      {/* Middle Row: Play/Pause + 64-Bar Interactive Waveform */}
+      <div className="flex items-center gap-3 my-1">
         <button
           type="button"
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={togglePlay}
+          title={playing ? 'Pause audio' : 'Play audio'}
           className="w-9 h-9 rounded-full bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] flex items-center justify-center shrink-0 transition-colors"
         >
           {playing ? (
@@ -1721,24 +1837,35 @@ const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
           )}
         </button>
 
-        <div className="flex-1 h-9 flex items-center gap-1">
-          {bars.map((h, i) => (
-            <div
-              key={i}
-              style={{ height: `${playing ? Math.min(100, h + ((i * 13) % 20)) : h}%` }}
-              className={`flex-1 rounded-full transition-all ${
-                playing ? 'bg-[#20D5EC]' : 'bg-white/25'
-              }`}
-            />
-          ))}
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={handleWaveformScrub}
+          title="Click to scrub 64-bar waveform"
+          className="flex-1 h-10 flex items-center gap-[2px] cursor-pointer py-1"
+        >
+          {waveform.map((amp, i) => {
+            const barRatio = (i + 0.5) / waveform.length;
+            const isPlayed = progress > 0 && barRatio <= progress;
+            const heightPct = Math.max(12, Math.min(100, Math.round(amp * 100)));
+            return (
+              <div
+                key={i}
+                data-waveform-bar={i}
+                style={{
+                  height: `${heightPct}%`,
+                  backgroundColor: isPlayed
+                    ? '#20D5EC'
+                    : 'rgba(255, 255, 255, 0.22)',
+                }}
+                className="flex-1 min-w-[2px] rounded-full transition-colors duration-75"
+              />
+            );
+          })}
         </div>
-
-        <span className="font-mono text-[11px] text-white/50">
-          {formatDurationPill(node.durationSec || 6)}
-        </span>
       </div>
 
-      <div className="text-[11.5px] text-white/55 truncate">{node.prompt}</div>
+      {/* Bottom Row: Prompt Caption */}
+      <div className="text-[11px] text-white/50 truncate">{node.prompt}</div>
     </div>
   );
 };

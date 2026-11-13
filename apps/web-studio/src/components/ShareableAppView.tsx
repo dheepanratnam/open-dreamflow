@@ -33,31 +33,31 @@ const CURVES: CameraTransitionCurve[] = [
 const INITIAL_BEATS: ShareableBeatInput[] = [
   {
     id: 'beat-1',
-    title: 'Beat 01 · Rooftop Rain Hook',
+    title: 'Beat 01 · Limestone Courtyard Daylight',
     prompt:
-      'Wide anamorphic establishing shot on rain-slicked Neo-Tokyo rooftop ledge, cyan reflections',
-    imageUrl: '/media/shot01_rooftop.png',
-    videoUrl: '/media/shot01_rooftop.mp4',
+      'Wide 35mm Kodak Vision3 250D establishing shot of @Clara_Vidal in sunlit Mediterranean limestone courtyard, dappled olive shadows',
+    imageUrl: '/media/real_courtyard_sun.jpg',
+    videoUrl: '/media/real_shot01_courtyard.mp4',
     durationSec: 6,
     cameraCurve: 'Dolly In',
   },
   {
     id: 'beat-2',
-    title: 'Beat 02 · Shinjuku Alley Pursuit',
+    title: 'Beat 02 · Courtyard → Atlantic Cliffs Bridge',
     prompt:
-      'High-energy tracking sprint down wet Shinjuku alley, kinetic sole splashing rainwater',
-    imageUrl: '/media/shot02_alley_chase.png',
-    videoUrl: '/media/shot02_alley_chase.mp4',
+      'Smooth optical keyframe bridge carrying camera from warm terracotta archways out to windswept coastal limestone cliffs at golden hour',
+    imageUrl: '/media/real_coastal_cliffs.jpg',
+    videoUrl: '/media/real_shot02_bridge.mp4',
     durationSec: 6,
     cameraCurve: 'Orbit 180°',
   },
   {
     id: 'beat-3',
-    title: 'Beat 03 · Golden Dawn Climax',
+    title: 'Beat 03 · Atelier Contact Table',
     prompt:
-      'Multi-turn lighting shift as golden sunrise breaks through storm clouds over hero silhouette',
-    imageUrl: '/media/shot02b_sunrise_remix.png',
-    videoUrl: '/media/shot02b_sunrise_remix.mp4',
+      'Intimate 50mm Leica Summilux close-up inside quiet daylight studio as @Clara_Vidal inspects silver-gelatin contact prints beside @Leica_M6',
+    imageUrl: '/media/real_atelier_interior.jpg',
+    videoUrl: '/media/real_shot03_atelier.mp4',
     durationSec: 6,
     cameraCurve: 'Crane Up',
   },
@@ -79,8 +79,8 @@ export const ShareableAppView: React.FC = () => {
 
   const [filmTitle, setFilmTitle] = useState(`${projectTitle} · Shareable App`);
   const [selectedHandles, setSelectedHandles] = useState<string[]>([
-    '@Hero_Kael',
-    '@Cyber_Sneaker',
+    '@Clara_Vidal',
+    '@Leica_M6',
   ]);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
   const [resolution, setResolution] = useState<ResolutionTier>('720p');
@@ -325,9 +325,9 @@ export const ShareableAppView: React.FC = () => {
                       id: `beat-${Date.now()}`,
                       title: `Beat 0${cur.length + 1} · New Shot`,
                       prompt:
-                        'Cinematic follow shot locking @Hero_Kael in wet Neo-Shinjuku street reflections',
-                      imageUrl: '/media/shot01_rooftop.png',
-                      videoUrl: '/media/shot01_rooftop.mp4',
+                        'Natural daylight Steadicam follow shot locking @Clara_Vidal along sunlit limestone terrace',
+                      imageUrl: '/media/real_courtyard_sun.jpg',
+                      videoUrl: '/media/real_shot01_courtyard.mp4',
                       durationSec: 6,
                       cameraCurve: 'Dolly In',
                     },
@@ -358,9 +358,9 @@ export const ShareableAppView: React.FC = () => {
 
               <div className="aspect-video rounded-[10px] overflow-hidden bg-[#121212] border border-white/[0.08]">
                 <video
-                  key={masterRenderUrl || '/media/protocol_rain_master.mp4'}
-                  src={masterRenderUrl || '/media/protocol_rain_master.mp4'}
-                  poster="/media/shot01_rooftop.png"
+                  key={masterRenderUrl || '/media/real_salt_terracotta_master.mp4'}
+                  src={masterRenderUrl || '/media/real_salt_terracotta_master.mp4'}
+                  poster="/media/real_courtyard_sun.jpg"
                   controls
                   autoPlay
                   loop

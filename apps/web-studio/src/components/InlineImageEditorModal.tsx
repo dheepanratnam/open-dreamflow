@@ -60,11 +60,11 @@ export const InlineImageEditorModal: React.FC = () => {
   const [brushSize, setBrushSize] = useState(38);
   const [strokes, setStrokes] = useState<BrushStroke[]>([]);
   const [inpaintPrompt, setInpaintPrompt] = useState(
-    'Cyberpunk cyan visor glow, rain droplets, high-contrast cinema rim light'
+    'Warm terracotta ceramic amphora in dappled Mediterranean courtyard sunlight, 35mm Kodak 250D'
   );
   const [targetAspect, setTargetAspect] = useState<AspectRatio>('21:9');
   const [outpaintPrompt, setOutpaintPrompt] = useState(
-    'Expand atmospheric Neo-Shinjuku rain-slicked skyline and neon bokeh'
+    'Expand sunlit limestone colonnade, olive branches, and distant Atlantic coastline'
   );
   const [submitting, setSubmitting] = useState(false);
 
@@ -122,7 +122,7 @@ export const InlineImageEditorModal: React.FC = () => {
 
   if (!modal.open || !node) return null;
 
-  const sourceImageUrl = node.imageUrl || '/media/shot01_rooftop.png';
+  const sourceImageUrl = node.imageUrl || '/media/real_courtyard_sun.jpg';
 
   const getCanvasPoint = (clientX: number, clientY: number) => {
     const canvas = previewCanvasRef.current;

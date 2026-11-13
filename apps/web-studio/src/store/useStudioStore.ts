@@ -15,6 +15,7 @@ import type {
   ElementVault,
   FrameLayer,
   FrameLayerType,
+  KeyframeBridgeCurve,
   MCPServerEntry,
   MCPToolDefinition,
   McpBackendHealth,
@@ -23,6 +24,7 @@ import type {
   ProviderId,
   ResolutionTier,
   StudioHistorySnapshot,
+  StudioPresetId,
   StyleDNAPayload,
   TimelineClip,
 } from '../types/studio';
@@ -31,6 +33,7 @@ import {
   buildBlankStudioGraph,
   buildInitialElements,
   buildInitialStudioGraph,
+  buildStudioPresetGraph,
   createDefaultLayers,
   type MediaCatalogItem,
 } from '../presets/studioPresets';
@@ -38,6 +41,7 @@ import {
   FOUR_ANGLE_LABELS,
   NINE_GRID_LABELS,
   compositeInpaintRedraw,
+  createDefaultWaveform,
   decomposeSubjectAndBackground,
   expandOutpaintDataUrl,
   extractStyleDnaFromPrompt,
@@ -55,11 +59,13 @@ import {
   executeStudioGeneration,
   exportDiskProjectBundle,
   extractLastFrameViaBackend,
+  generateAudioViaBackend,
   getActiveApiKeyForProvider,
   getDefaultDiscoveredMcpTools,
   getDiskProject,
   importDiskProjectBundle,
   inpaintViaBackend,
+  keyframeBridgeViaBackend,
   listDiskProjects,
   normalizeBackendMediaUrl,
   outpaintViaBackend,
@@ -117,9 +123,9 @@ function extractHandles(text: string): string[] {
 
 function inferMoodFromPrompt(prompt: string): string {
   const low = prompt.toLowerCase();
-  if (low.includes('sunrise') || low.includes('dawn') || low.includes('golden')) return 'sunrise';
-  if (low.includes('night') || low.includes('crimson') || low.includes('midnight')) return 'night';
-  return 'rain';
+  if (low.includes('dusk') || low.includes('amber') || low.includes('golden')) return 'golden';
+  if (low.includes('cliff') || low.includes('ocean') || low.includes('coastal')) return 'coastal';
+  return 'daylight';
 }
 
 export type ActiveWorkspaceView = 'canvas' | 'multiframes' | 'split' | 'app';
@@ -230,7 +236,7 @@ export interface StudioState {
   resetViewport: () => void;
   fitAllNodesInViewport: (vpWidth?: number, vpHeight?: number) => void;
   tidyUpNodes: () => void;
-  loadPresetProject: (preset: 'protocol-rain' | 'blank') => void;
+  loadPresetProject: (preset: StudioPresetId) => void;
 
   pushHistory: () => void;
   undo: () => void;
@@ -319,6 +325,26 @@ export interface StudioState {
   generateFourAngleCoverage: (nodeId: string) => Promise<void>;
   convertImageToOmniVideo: (nodeId: string, durationSec?: number) => Promise<void>;
   branchVideoMultiTurn: (nodeId: string, deltaPrompt: string) => Promise<void>;
+  generateKeyframeBridgeForNode: (
+    nodeId: string,
+    opts?: {
+      startImageUrl?: string;
+      endImageUrl?: string;
+      startNodeId?: string;
+      endNodeId?: string;
+      motionCurve?: KeyframeBridgeCurve;
+      durationSec?: number;
+      prompt?: string;
+    }
+  ) => Promise<void>;
+  generateAudioForNode: (
+    nodeId: string,
+    opts?: {
+      prompt?: string;
+      mode?: 'ambient' | 'voiceover' | 'sfx';
+      durationSec?: number;
+    }
+  ) => Promise<void>;
   executeMcpToolNode: (nodeId: string) => Promise<void>;
 
   addElementVault: (
@@ -389,8 +415,8 @@ const defaultMcpTools = getDefaultDiscoveredMcpTools(
 );
 
 export const useStudioStore = create<StudioState>((set, get) => ({
-  activeProjectId: 'protocol-rain',
-  projectTitle: 'Protocol: Rain',
+  activeProjectId: 'salt-terracotta',
+  projectTitle: 'Salt & Terracotta — Coastal Short',
   saveStatus: 'saved',
   diskProjects: [],
   projectSnapshots: [],
@@ -436,7 +462,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   future: [],
 
   promptText:
-    '@Hero_Kael sprinting across wet Neo-Tokyo rooftop wearing @Cyber_Sneaker, Panavision 40mm anamorphic',
+    'Measured 35mm dolly-in across sunlit limestone courtyard toward @Clara_Vidal holding @Leica_M6, Kodak Vision3 250D',
   promptMode: 'video',
   promptSubMode: 'omni-ref',
   promptAspect: '16:9',
@@ -482,7 +508,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   playheadSec: 0,
   isPlayingTimeline: false,
   timelineMuted: true,
-  masterRenderUrl: '/media/protocol_rain_master.mp4',
+  masterRenderUrl: '/media/real_salt_terracotta_master.mp4',
   isRenderingMasterMp4: false,
   appSynthesizing: false,
   appRenderLog: [],
@@ -643,13 +669,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   loadPresetProject: (preset) => {
     get().pushHistory();
+    const built = buildStudioPresetGraph(preset);
     if (preset === 'blank') {
-      const blank = buildBlankStudioGraph();
       set({
+        activeProjectId: `canvas_${Date.now().toString(36)}`,
         projectTitle: 'Untitled Canvas',
-        nodes: blank.nodes,
-        edges: blank.edges,
-        timelineClips: blank.timelineClips,
+        nodes: built.nodes,
+        edges: built.edges,
+        multiframes: built.multiframes,
+        bridges: built.bridges,
+        timelineClips: built.timelineClips,
         selectedNodeIds: [],
         panX: 120,
         panY: 80,
@@ -657,20 +686,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       });
       get().showToast('Created New Blank Canvas');
     } else {
-      const full = buildInitialStudioGraph();
       set({
-        projectTitle: 'Protocol: Rain',
-        nodes: full.nodes,
-        edges: full.edges,
-        multiframes: full.multiframes,
-        bridges: full.bridges,
-        timelineClips: full.timelineClips,
+        activeProjectId: preset,
+        projectTitle: built.title,
+        nodes: built.nodes,
+        edges: built.edges,
+        multiframes: built.multiframes,
+        bridges: built.bridges,
+        timelineClips: built.timelineClips,
         selectedNodeIds: [],
         panX: 84,
         panY: 54,
         zoom: 0.68,
       });
-      get().showToast('Loaded Protocol: Rain preset');
+      get().showToast(`Loaded "${built.title}"`);
     }
   },
 
@@ -745,18 +774,23 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const restoredNodes: CanvasNode[] = decoded.nodes.map((n) => {
       const dims =
         n.kind === 'timeline'
-          ? { width: 1120, height: 168 }
+          ? { width: 1120, height: 196 }
           : n.kind === 'style-dna'
           ? { width: 300, height: 210 }
+          : n.kind === 'audio'
+          ? { width: 360, height: 150 }
           : n.kind === 'video'
           ? { width: 568, height: 320 }
           : getDimensionsForAspect(n.aspectRatio, 340);
       const imageUrl =
-        n.kind === 'style-dna' || n.kind === 'mcp-tool' || n.kind === 'timeline'
+        n.kind === 'style-dna' ||
+        n.kind === 'mcp-tool' ||
+        n.kind === 'timeline' ||
+        n.kind === 'audio'
           ? undefined
           : n.kind === 'contact-sheet'
-          ? '/media/contact_sheet_9grid.png'
-          : '/media/shot01_rooftop.png';
+          ? '/media/real_contact_9grid.jpg'
+          : '/media/real_courtyard_sun.jpg';
       return {
         id: n.id,
         kind: n.kind,
@@ -769,7 +803,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         aspectRatio: n.aspectRatio,
         status: 'ready',
         imageUrl,
-        videoUrl: n.kind === 'video' ? '/media/shot01_rooftop.mp4' : undefined,
+        videoUrl: n.kind === 'video' ? '/media/real_shot01_courtyard.mp4' : undefined,
+        audioUrl: n.kind === 'audio' ? '/media/real_coastal_foley.mp3' : undefined,
+        waveform: n.kind === 'audio' ? createDefaultWaveform(n.seed || 305, 64) : undefined,
         seed: n.seed,
         resolution: n.resolution,
         durationSec: n.durationSec,
@@ -900,21 +936,62 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       label,
     };
 
-    set((s) => ({
-      edges: [...s.edges, newEdge],
-      nodes:
-        resolvedKind === 'style-dna'
-          ? s.nodes.map((n) =>
-              n.id === targetId ? { ...n, styleDnaId: sourceId } : n
-            )
-          : s.nodes,
-    }));
+    set((s) => {
+      const nextEdges = [...s.edges, newEdge];
+      let nextNodes = s.nodes;
 
-    // If wired into a Timeline node, automatically append source media to timelineClips!
+      if (resolvedKind === 'style-dna') {
+        nextNodes = nextNodes.map((n) =>
+          n.id === targetId ? { ...n, styleDnaId: sourceId } : n
+        );
+      }
+
+      // Stage 5: When 2 Image/Element nodes are wired into a Video node, auto-arm First→Last Keyframe Bridge
+      if (
+        targetNode?.kind === 'video' &&
+        sourceNode &&
+        (sourceNode.kind === 'image' || sourceNode.kind === 'element')
+      ) {
+        const upstreamImageNodes = nextEdges
+          .filter((e) => e.targetId === targetId)
+          .map((e) => nextNodes.find((nn) => nn.id === e.sourceId))
+          .filter(
+            (nn): nn is CanvasNode =>
+              Boolean(nn && (nn.kind === 'image' || nn.kind === 'element') && nn.imageUrl)
+          );
+
+        if (upstreamImageNodes.length >= 2) {
+          const firstImg = upstreamImageNodes[0];
+          const lastImg = upstreamImageNodes[upstreamImageNodes.length - 1];
+          nextNodes = nextNodes.map((n) =>
+            n.id === targetId
+              ? {
+                  ...n,
+                  bridgeMode: true,
+                  startNodeId: firstImg.id,
+                  endNodeId: lastImg.id,
+                  startImageUrl: firstImg.imageUrl,
+                  endImageUrl: lastImg.imageUrl,
+                  motionCurve: n.motionCurve || 'ease-in-out',
+                }
+              : n
+          );
+        }
+      }
+
+      return {
+        edges: nextEdges,
+        nodes: nextNodes,
+      };
+    });
+
+    // If wired into a Timeline node, automatically append source video/image/audio stem to timelineClips!
     if (
       targetNode?.kind === 'timeline' &&
       sourceNode &&
-      (sourceNode.kind === 'video' || sourceNode.kind === 'image')
+      (sourceNode.kind === 'video' ||
+        sourceNode.kind === 'image' ||
+        sourceNode.kind === 'audio')
     ) {
       get().sendNodeToTimeline(sourceNode.id);
     }
@@ -1030,30 +1107,38 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (opts?.asset) {
       const a = opts.asset;
       const isVid = a.kind === 'video';
-      const w = isVid ? 568 : a.kind === 'contact-sheet' ? 480 : 320;
-      const h = isVid ? 320 : a.kind === 'contact-sheet' ? 270 : 320;
+      const isAud = a.kind === 'audio';
+      const w = isVid ? 568 : a.kind === 'contact-sheet' ? 480 : isAud ? 360 : 320;
+      const h = isVid ? 320 : a.kind === 'contact-sheet' ? 270 : isAud ? 150 : 320;
       newNode = {
         id,
         kind: a.kind,
         title: a.title,
-        prompt: `${a.title} · @Hero_Kael @Cyber_Sneaker`,
+        prompt: `${a.title} · @Clara_Vidal @Leica_M6`,
         x,
         y,
         width: w,
         height: h,
-        aspectRatio: isVid || a.kind === 'contact-sheet' ? '16:9' : '1:1',
+        aspectRatio: isVid || a.kind === 'contact-sheet' || isAud ? '16:9' : '1:1',
         status: 'ready',
-        imageUrl: isVid ? a.posterUrl || '/media/shot01_rooftop.png' : a.url,
+        imageUrl: isAud
+          ? undefined
+          : isVid
+          ? a.posterUrl || '/media/real_courtyard_sun.jpg'
+          : a.url,
         videoUrl: isVid ? a.url : undefined,
+        audioUrl: isAud ? a.url : undefined,
+        audioMode: isAud ? 'ambient' : undefined,
+        waveform: isAud ? createDefaultWaveform(305, 64) : undefined,
         durationSec: a.durationSec,
         seed: Math.floor(Math.random() * 9000) + 100,
         resolution: '1080p',
-        elementHandles: ['@Hero_Kael', '@Cyber_Sneaker'],
+        elementHandles: isAud ? [] : ['@Clara_Vidal', '@Leica_M6'],
         gridSpec:
           a.kind === 'contact-sheet'
             ? { rows: 3, cols: 3, labels: NINE_GRID_LABELS }
             : undefined,
-        layers: createDefaultLayers(isVid ? a.posterUrl : a.url),
+        layers: isAud ? [] : createDefaultLayers(isVid ? a.posterUrl : a.url),
         providerUsed: 'Asset Vault',
         createdAt: Date.now(),
       };
@@ -1067,7 +1152,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             title: `Texts ${n}`,
             prompt:
               upstream?.prompt ||
-              'Write a scene description, dialogue beat, or camera prompt for @Hero_Kael...',
+              'Write a natural daylight scene note, field voiceover, or 35mm camera direction for @Clara_Vidal...',
             x,
             y,
             width: 320,
@@ -1076,7 +1161,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             status: 'ready',
             seed: 110 + n,
             resolution: '1080p',
-            elementHandles: ['@Hero_Kael'],
+            elementHandles: ['@Clara_Vidal'],
             layers: [],
             providerUsed: 'Dreamina Text Node',
             createdAt: Date.now(),
@@ -1085,14 +1170,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         }
         case 'image': {
           const n = countOfKind('image');
-          const img = upstream?.imageUrl || '/media/shot01_rooftop.png';
+          const img = upstream?.imageUrl || '/media/real_courtyard_sun.jpg';
           newNode = {
             id,
             kind: 'image',
             title: `Images ${n}`,
             prompt:
               upstream?.prompt ||
-              '@Hero_Kael standing under Neo-Tokyo rain neon, Panavision 40mm keyframe',
+              '@Clara_Vidal in sunlit Mediterranean limestone courtyard holding @Leica_M6, 35mm Kodak 250D',
             x,
             y,
             width: 320,
@@ -1102,7 +1187,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             imageUrl: img,
             seed: 200 + n * 37,
             resolution: '2K',
-            elementHandles: ['@Hero_Kael', '@Cyber_Sneaker'],
+            elementHandles: ['@Clara_Vidal', '@Leica_M6'],
             layers: createDefaultLayers(img),
             providerUsed: 'Dreamina Image Node',
             createdAt: Date.now(),
@@ -1114,19 +1199,19 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           const n = countOfKind('video');
           const isBlend = tool === 'blend';
           const img = isBlend
-            ? '/media/shot02b_sunrise_remix.png'
-            : upstream?.imageUrl || '/media/shot02_alley_chase.png';
+            ? '/media/real_coastal_cliffs.jpg'
+            : upstream?.imageUrl || '/media/real_courtyard_sun.jpg';
           const vid = isBlend
-            ? '/media/shot02b_sunrise_remix.mp4'
-            : '/media/shot02_alley_chase.mp4';
+            ? '/media/real_shot02_bridge.mp4'
+            : '/media/real_shot01_courtyard.mp4';
           newNode = {
             id,
             kind: 'video',
-            title: isBlend ? `Videos ${n} · Multi-Turn` : `Videos ${n}`,
+            title: isBlend ? `Videos ${n} · Keyframe Bridge` : `Videos ${n}`,
             prompt: isBlend
-              ? 'Keep @Hero_Kael motion vector locked; shift alley lighting to golden sunrise'
+              ? 'First-Frame → Last-Frame optical glide from limestone courtyard out over Atlantic headland cliffs'
               : upstream?.prompt ||
-                'Dynamic tracking shot of @Hero_Kael sprinting through rain-drenched alley in @Cyber_Sneaker',
+                'Measured 35mm tracking shot of @Clara_Vidal walking across sunlit limestone colonnade with @Leica_M6',
             x,
             y,
             width: 568,
@@ -1135,13 +1220,19 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             status: 'ready',
             imageUrl: img,
             videoUrl: vid,
+            bridgeMode: isBlend ? true : undefined,
+            startImageUrl: isBlend
+              ? upstream?.imageUrl || '/media/real_courtyard_sun.jpg'
+              : undefined,
+            endImageUrl: isBlend ? '/media/real_coastal_cliffs.jpg' : undefined,
+            motionCurve: isBlend ? 'ease-in-out' : undefined,
             durationSec: 6,
-            cameraMotion: 'Dolly In',
+            cameraMotion: isBlend ? 'Ease In-Out Bridge' : 'Dolly In',
             interactionId: `int_omni_${Date.now().toString(36)}`,
             previousInteractionId: upstream?.interactionId,
             seed: 500 + n * 41,
             resolution: '1080p',
-            elementHandles: ['@Hero_Kael', '@Cyber_Sneaker'],
+            elementHandles: ['@Clara_Vidal', '@Leica_M6'],
             layers: createDefaultLayers(img),
             providerUsed: 'Local FFmpeg 8.0 · $0.00',
             createdAt: Date.now(),
@@ -1150,23 +1241,28 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         }
         case 'audio': {
           const n = countOfKind('audio');
+          const seed = 600 + n * 29;
           newNode = {
             id,
             kind: 'audio',
-            title: `Audios ${n}`,
-            prompt: 'Binaural Neo-Tokyo rain ambience + 55Hz anamorphic sub-bass pulse',
+            title: `Audio ${n} · Coastal Foley`,
+            prompt:
+              'Natural Atlantic breeze through olive leaves, distant limestone surf wash, warm open-air room tone',
             x,
             y,
-            width: 340,
+            width: 360,
             height: 150,
             aspectRatio: '16:9',
             status: 'ready',
-            durationSec: 8,
-            seed: 600 + n,
+            audioUrl: '/media/real_coastal_foley.mp3',
+            audioMode: 'ambient',
+            waveform: createDefaultWaveform(seed, 64),
+            durationSec: 12,
+            seed,
             resolution: '1080p',
             elementHandles: [],
             layers: [],
-            providerUsed: 'Native Stereo Audio',
+            providerUsed: 'Acoustic Foley + 64-Bar Waveform',
             createdAt: Date.now(),
           };
           break;
@@ -1181,10 +1277,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             x,
             y,
             width: 1120,
-            height: 168,
+            height: 196,
             aspectRatio: '16:9',
             status: 'ready',
-            videoUrl: '/media/protocol_rain_master.mp4',
+            videoUrl: '/media/real_salt_terracotta_master.mp4',
             durationSec: 18,
             seed: 900 + n,
             resolution: '1080p',
@@ -1197,16 +1293,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         }
         case 'element': {
           const n = countOfKind('element');
-          const isSneaker = n % 2 === 0;
-          const img = isSneaker
-            ? '/media/cyber_sneaker_vault.png'
-            : '/media/hero_kael_vault.png';
-          const handle = isSneaker ? '@Cyber_Sneaker' : '@Hero_Kael';
+          const isCraft = n % 2 === 0;
+          const img = isCraft
+            ? '/media/real_leica_craft.jpg'
+            : '/media/real_portrait_clara.jpg';
+          const handle = isCraft ? '@Leica_M6' : '@Clara_Vidal';
           newNode = {
             id,
             kind: 'element',
             title: `Elements ${n} · ${handle}`,
-            prompt: `${handle} 6-reference visual continuity anchor`,
+            prompt: `${handle} 6-reference 35mm photographic continuity anchor`,
             x,
             y,
             width: 280,
@@ -1225,7 +1321,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         }
         case 'cinema-kit': {
           const n = countOfKind('style-dna');
-          const dna = extractStyleDnaFromPrompt('Neo-Tokyo 500T @Brand_Style');
+          const dna = extractStyleDnaFromPrompt(
+            'Mediterranean Limestone Daylight 35mm Kodak 250D @Limestone_Villa'
+          );
           newNode = {
             id,
             kind: 'style-dna',
@@ -1239,7 +1337,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             status: 'ready',
             seed: 410 + n,
             resolution: '4K',
-            elementHandles: ['@Brand_Style'],
+            elementHandles: ['@Limestone_Villa'],
             styleDna: dna,
             layers: [],
             providerUsed: 'Cinema Kit Optical Lock',
@@ -1252,21 +1350,21 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           newNode = {
             id,
             kind: 'contact-sheet',
-            title: `Images ${n} · 9-Grid Contact Sheet`,
+            title: `Images ${n} · 35mm Location Sheet`,
             prompt:
-              '/9-Grid Storyboard @Hero_Kael & @Cyber_Sneaker rain coverage across 9 lenses',
+              '/9-Grid Storyboard @Clara_Vidal & @Leica_M6 natural daylight coverage across 9 prime lenses',
             x,
             y,
             width: 480,
             height: 270,
             aspectRatio: '16:9',
             status: 'ready',
-            imageUrl: '/media/contact_sheet_9grid.png',
+            imageUrl: '/media/real_contact_9grid.jpg',
             seed: 512 + n,
             resolution: '4K',
-            elementHandles: ['@Hero_Kael', '@Cyber_Sneaker'],
+            elementHandles: ['@Clara_Vidal', '@Leica_M6'],
             gridSpec: { rows: 3, cols: 3, labels: NINE_GRID_LABELS },
-            layers: createDefaultLayers('/media/contact_sheet_9grid.png'),
+            layers: createDefaultLayers('/media/real_contact_9grid.jpg'),
             providerUsed: '9-Grid Slicer',
             createdAt: Date.now(),
           };
@@ -1280,7 +1378,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             kind: 'sticky',
             title: `Notes ${n}`,
             prompt:
-              'Director Note:\n• Keep 40mm anamorphic bokeh consistent\n• Cut on sneaker puddle impact at 00:06',
+              'Director Note:\n• Keep Cooke 35mm T2.0 natural daylight warm\n• Match cut courtyard arch to Atlantic cliff horizon at 00:06',
             x,
             y,
             width: 260,
@@ -1320,7 +1418,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       promptText: newNode.kind !== 'timeline' ? newNode.prompt : get().promptText,
     });
 
-    if (newNode.kind === 'timeline' && upstream && (upstream.kind === 'video' || upstream.kind === 'image')) {
+    if (
+      newNode.kind === 'timeline' &&
+      upstream &&
+      (upstream.kind === 'video' || upstream.kind === 'image' || upstream.kind === 'audio')
+    ) {
       get().sendNodeToTimeline(upstream.id);
     }
 
@@ -1334,6 +1436,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     get().pushHistory();
 
     const id = `node_upload_${Date.now()}`;
+    const seed = Math.floor(Math.random() * 9000);
     const newNode: CanvasNode = {
       id,
       kind: isVideo ? 'video' : isAudio ? 'audio' : 'image',
@@ -1341,16 +1444,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       prompt: `Uploaded media: ${file.name}`,
       x: Math.round(worldX / 10) * 10,
       y: Math.round(worldY / 10) * 10,
-      width: isVideo ? 568 : isAudio ? 340 : 340,
+      width: isVideo ? 568 : isAudio ? 360 : 340,
       height: isVideo ? 320 : isAudio ? 150 : 340,
-      aspectRatio: isVideo ? '16:9' : '1:1',
+      aspectRatio: isVideo || isAudio ? '16:9' : '1:1',
       status: 'ready',
       editBadge: 'Uploading…',
       imageUrl: !isVideo && !isAudio ? objectUrl : undefined,
       videoUrl: isVideo ? objectUrl : undefined,
       audioUrl: isAudio ? objectUrl : undefined,
+      audioMode: isAudio ? 'ambient' : undefined,
+      waveform: isAudio ? createDefaultWaveform(seed, 64) : undefined,
       durationSec: isVideo || isAudio ? 8 : undefined,
-      seed: Math.floor(Math.random() * 9000),
+      seed,
       resolution: '1080p',
       elementHandles: [],
       layers: !isVideo && !isAudio ? createDefaultLayers(objectUrl) : [],
@@ -1469,6 +1574,26 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const effectivePrompt = (promptText || anchorNode?.prompt || '').trim();
     if (!effectivePrompt) return;
 
+    if (anchorNode?.kind === 'audio') {
+      await get().generateAudioForNode(anchorNode.id, {
+        prompt: effectivePrompt,
+        mode: anchorNode.audioMode || 'ambient',
+        durationSec: promptDurationSec,
+      });
+      return;
+    }
+
+    if (
+      anchorNode?.kind === 'video' &&
+      (promptSubMode === 'keyframe-bridge' || anchorNode.bridgeMode)
+    ) {
+      await get().generateKeyframeBridgeForNode(anchorNode.id, {
+        prompt: effectivePrompt,
+        durationSec: promptDurationSec,
+      });
+      return;
+    }
+
     if (
       (promptMode === 'multi-turn' || promptSubMode === 'multi-turn') &&
       anchorNode
@@ -1506,8 +1631,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const height = isVideo ? 320 : isGrid9 || isGrid4 ? 270 : 320;
 
     const defaultSourceImg = isGrid9
-      ? '/media/contact_sheet_9grid.png'
-      : anchorNode?.imageUrl || refImages[0] || '/media/shot01_rooftop.png';
+      ? '/media/real_contact_9grid.jpg'
+      : anchorNode?.imageUrl || refImages[0] || '/media/real_courtyard_sun.jpg';
 
     const placeholderNode: CanvasNode = {
       id: tempId,
@@ -1571,7 +1696,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     if (!imageUrl) {
       if (isGrid9) {
-        imageUrl = '/media/contact_sheet_9grid.png';
+        imageUrl = '/media/real_contact_9grid.jpg';
         gridSpec = { rows: 3, cols: 3, labels: NINE_GRID_LABELS };
       } else if (isGrid4) {
         const sheet = renderContactSheetDataUrl(2, 2, effectivePrompt, seed);
@@ -1632,12 +1757,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   applyInpaintToNode: async (nodeId, maskDataUrl, regionalPrompt) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
-    const sourceImage = node.imageUrl || '/media/shot01_rooftop.png';
+    const sourceImage = node.imageUrl || '/media/real_courtyard_sun.jpg';
     get().pushHistory();
 
     const { activeProvider, byok } = get();
     const apiKey = getActiveApiKeyForProvider(activeProvider, byok);
-    const promptToUse = regionalPrompt || 'Cinema lighting & texture detail redraw';
+    const promptToUse = regionalPrompt || 'Natural daylight limestone & foliage detail redraw';
 
     const childId = `node_inpaint_${Date.now()}`;
     const childNode: CanvasNode = {
@@ -1717,7 +1842,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   expandOutpaintNode: async (nodeId, targetAspect, customPrompt) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
-    const sourceImage = node.imageUrl || '/media/shot01_rooftop.png';
+    const sourceImage = node.imageUrl || '/media/real_courtyard_sun.jpg';
     get().pushHistory();
 
     const { activeProvider, byok } = get();
@@ -1799,7 +1924,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (!node) return;
     get().pushHistory();
 
-    const sourceImage = node.imageUrl || '/media/hero_kael_vault.png';
+    const sourceImage = node.imageUrl || '/media/real_portrait_clara.jpg';
     get().updateNodeFields(nodeId, { editBadge: 'Removing BG…' });
 
     const live = await removeBgViaBackend(sourceImage);
@@ -1872,7 +1997,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (!node) return;
     get().pushHistory();
 
-    const sourceImage = node.imageUrl || '/media/shot01_rooftop.png';
+    const sourceImage = node.imageUrl || '/media/real_courtyard_sun.jpg';
     get().updateNodeFields(nodeId, { editBadge: `Upscaling ${targetRes}…` });
 
     const live = await upscaleViaBackend(sourceImage);
@@ -1930,7 +2055,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (node.kind === 'video') {
       const ff = await renderVideoViaBackend({
         prompt: `${node.prompt} (seed ${nextSeed})`,
-        imageUrl: node.imageUrl || '/media/shot01_rooftop.png',
+        imageUrl: node.imageUrl || '/media/real_courtyard_sun.jpg',
         durationSec: node.durationSec || 6,
         aspectRatio: node.aspectRatio,
         mood: inferMoodFromPrompt(node.prompt),
@@ -1983,7 +2108,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       node.kind === 'contact-sheet' && node.imageUrl
         ? node.imageUrl
         : rows === 3 && cols === 3
-        ? '/media/contact_sheet_9grid.png'
+        ? '/media/real_contact_9grid.jpg'
         : node.imageUrl;
 
     get().showToast(`Slicing ${rows}×${cols} sheet via :3001 FFmpeg...`);
@@ -2078,7 +2203,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       durationSec,
       resolution: node.resolution,
       mode: 'video',
-      firstFrameDataUrl: node.imageUrl || '/media/shot01_rooftop.png',
+      firstFrameDataUrl: node.imageUrl || '/media/real_courtyard_sun.jpg',
       cameraMotion: 'Dolly In',
       mood: inferMoodFromPrompt(node.prompt),
       byok,
@@ -2096,8 +2221,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       height: 320,
       aspectRatio: '16:9',
       status: 'ready',
-      imageUrl: node.imageUrl || '/media/shot01_rooftop.png',
-      videoUrl: exec.videoUrl || '/media/shot01_rooftop.mp4',
+      imageUrl: node.imageUrl || '/media/real_courtyard_sun.jpg',
+      videoUrl: exec.videoUrl || '/media/real_shot01_courtyard.mp4',
       seed: node.seed,
       resolution: node.resolution,
       durationSec,
@@ -2135,9 +2260,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     const mood = inferMoodFromPrompt(deltaPrompt);
     const branchKeyframe =
-      mood === 'sunrise'
-        ? '/media/shot02b_sunrise_remix.png'
-        : parent.imageUrl || '/media/shot02_alley_chase.png';
+      mood === 'golden'
+        ? '/media/real_atelier_interior.jpg'
+        : parent.imageUrl || '/media/real_coastal_cliffs.jpg';
 
     get().showToast(`Branching Multi-Turn edit (${parentInteractionId.slice(0, 12)})...`);
 
@@ -2167,7 +2292,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       aspectRatio: '16:9',
       status: 'ready',
       imageUrl: branchKeyframe,
-      videoUrl: exec.videoUrl || '/media/shot02b_sunrise_remix.mp4',
+      videoUrl: exec.videoUrl || '/media/real_shot03_atelier.mp4',
       seed: parent.seed + 211,
       resolution: parent.resolution,
       durationSec: parent.durationSec || 6,
@@ -2199,6 +2324,252 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     get().showToast(`Branched stateful video`);
   },
 
+  generateKeyframeBridgeForNode: async (nodeId, opts) => {
+    const node = get().nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    get().pushHistory();
+
+    const { nodes, edges, activeProvider, byok } = get();
+    const apiKey = getActiveApiKeyForProvider(activeProvider, byok);
+
+    // Find any connected upstream image nodes if explicit URLs weren't provided
+    const upstreamImages = edges
+      .filter((e) => e.targetId === nodeId)
+      .map((e) => nodes.find((nn) => nn.id === e.sourceId))
+      .filter(
+        (nn): nn is CanvasNode =>
+          Boolean(nn && (nn.kind === 'image' || nn.kind === 'element') && nn.imageUrl)
+      );
+
+    const allCanvasImages = nodes.filter(
+      (nn) => (nn.kind === 'image' || nn.kind === 'element') && nn.imageUrl
+    );
+
+    const startNodeId =
+      opts?.startNodeId ??
+      node.startNodeId ??
+      upstreamImages[0]?.id ??
+      allCanvasImages[0]?.id;
+    const endNodeId =
+      opts?.endNodeId ??
+      node.endNodeId ??
+      upstreamImages[1]?.id ??
+      allCanvasImages[1]?.id;
+
+    const startImageUrl =
+      opts?.startImageUrl ||
+      (startNodeId ? nodes.find((nn) => nn.id === startNodeId)?.imageUrl : undefined) ||
+      node.startImageUrl ||
+      node.imageUrl ||
+      '/media/real_courtyard_sun.jpg';
+
+    const endImageUrl =
+      opts?.endImageUrl ||
+      (endNodeId ? nodes.find((nn) => nn.id === endNodeId)?.imageUrl : undefined) ||
+      node.endImageUrl ||
+      '/media/real_coastal_cliffs.jpg';
+
+    const motionCurve: KeyframeBridgeCurve =
+      opts?.motionCurve || node.motionCurve || 'ease-in-out';
+    const durationSec = opts?.durationSec || node.durationSec || 6;
+    const prompt =
+      opts?.prompt?.trim() ||
+      node.prompt ||
+      'First-Frame → Last-Frame smooth optical transition';
+
+    get().updateNodeFields(nodeId, {
+      status: 'generating',
+      editBadge: `Bridging (${motionCurve})…`,
+      bridgeMode: true,
+      startNodeId,
+      endNodeId,
+      startImageUrl,
+      endImageUrl,
+      motionCurve,
+    });
+    get().showToast(`Synthesizing A → B Keyframe Bridge (${motionCurve})...`);
+
+    const live = await keyframeBridgeViaBackend({
+      startImageUrl,
+      endImageUrl,
+      durationSec,
+      motionCurve,
+      prompt,
+      provider: activeProvider,
+      apiKey,
+    });
+
+    const finalVideoUrl =
+      live.fullUrl || live.videoUrl || '/media/real_shot02_bridge.mp4';
+
+    if (node.kind === 'video') {
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === nodeId
+            ? {
+                ...n,
+                status: 'ready',
+                editBadge: undefined,
+                bridgeMode: true,
+                startNodeId,
+                endNodeId,
+                startImageUrl,
+                endImageUrl,
+                motionCurve,
+                durationSec: live.durationSec || durationSec,
+                prompt,
+                imageUrl: endImageUrl,
+                videoUrl: finalVideoUrl,
+                cameraMotion: `Bridge · ${motionCurve}`,
+                providerUsed: live.ok
+                  ? `FFmpeg Keyframe Bridge (${motionCurve})`
+                  : 'Keyframe Bridge',
+              }
+            : n
+        ),
+        timelineClips: s.timelineClips.map((c) =>
+          c.sourceNodeId === nodeId
+            ? { ...c, videoUrl: finalVideoUrl, thumbnailUrl: endImageUrl }
+            : c
+        ),
+      }));
+    } else {
+      const childId = `node_bridge_vid_${Date.now()}`;
+      const bridgeNode: CanvasNode = {
+        id: childId,
+        kind: 'video',
+        title: `Videos · A → B Keyframe Bridge`,
+        prompt,
+        x: node.x + node.width + 110,
+        y: node.y,
+        width: 568,
+        height: 320,
+        aspectRatio: '16:9',
+        status: 'ready',
+        bridgeMode: true,
+        startNodeId,
+        endNodeId,
+        startImageUrl,
+        endImageUrl,
+        motionCurve,
+        imageUrl: endImageUrl,
+        videoUrl: finalVideoUrl,
+        durationSec: live.durationSec || durationSec,
+        cameraMotion: `Bridge · ${motionCurve}`,
+        seed: node.seed + 71,
+        resolution: '1080p',
+        elementHandles: node.elementHandles,
+        layers: createDefaultLayers(endImageUrl),
+        providerUsed: live.ok
+          ? `FFmpeg Keyframe Bridge (${motionCurve})`
+          : 'Keyframe Bridge',
+        createdAt: Date.now(),
+      };
+      set((s) => ({
+        nodes: [
+          ...s.nodes.map((n) =>
+            n.id === nodeId
+              ? { ...n, status: 'ready' as const, editBadge: undefined }
+              : n
+          ),
+          bridgeNode,
+        ],
+        edges: [
+          ...s.edges,
+          {
+            id: `edge_kfb_${Date.now()}`,
+            sourceId: nodeId,
+            targetId: childId,
+            kind: 'multiframe',
+          },
+        ],
+        selectedNodeIds: [childId],
+      }));
+    }
+
+    get().showToast(`Rendered A → B Keyframe Bridge (${motionCurve})`);
+  },
+
+  generateAudioForNode: async (nodeId, opts) => {
+    const node = get().nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    get().pushHistory();
+
+    const mode = opts?.mode || node.audioMode || 'ambient';
+    const durationSec = opts?.durationSec || node.durationSec || 8;
+    const prompt =
+      opts?.prompt?.trim() ||
+      node.prompt ||
+      'Natural Atlantic coastal breeze and warm open-air room tone';
+
+    get().updateNodeFields(nodeId, {
+      status: 'generating',
+      editBadge: mode === 'voiceover' ? 'Synthesizing TTS…' : 'Synthesizing Audio…',
+      audioMode: mode,
+      prompt,
+    });
+    get().showToast(
+      mode === 'voiceover'
+        ? 'Synthesizing spoken voiceover + 64-bar waveform...'
+        : 'Synthesizing stereo soundscape + 64-bar waveform...'
+    );
+
+    const live = await generateAudioViaBackend({
+      prompt,
+      mode,
+      voiceText: mode === 'voiceover' ? prompt : undefined,
+      durationSec,
+    });
+
+    const finalAudioUrl =
+      live.fullUrl || live.audioUrl || '/media/real_coastal_foley.mp3';
+    const nextSeed = node.seed + 23;
+    const finalWaveform =
+      live.waveform && live.waveform.length > 0
+        ? live.waveform
+        : createDefaultWaveform(nextSeed, 64);
+    const finalDuration = live.durationSec || durationSec;
+
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === nodeId
+          ? {
+              ...n,
+              status: 'ready',
+              editBadge: undefined,
+              prompt,
+              audioMode: mode,
+              audioUrl: finalAudioUrl,
+              waveform: finalWaveform,
+              durationSec: finalDuration,
+              seed: nextSeed,
+              providerUsed:
+                mode === 'voiceover'
+                  ? 'macOS TTS + FFmpeg (:3001)'
+                  : 'FFmpeg Acoustic Synth (:3001)',
+            }
+          : n
+      ),
+      timelineClips: s.timelineClips.map((c) =>
+        c.sourceNodeId === nodeId
+          ? {
+              ...c,
+              audioUrl: finalAudioUrl,
+              waveform: finalWaveform,
+              durationSec: finalDuration,
+              promptOrDialogue: prompt,
+            }
+          : c
+      ),
+    }));
+
+    get().showToast(
+      mode === 'voiceover'
+        ? 'Synthesized spoken voiceover MP3'
+        : 'Synthesized stereo acoustic MP3'
+    );
+  },
+
   executeMcpToolNode: async (nodeId) => {
     const mcpNode = get().nodes.find((n) => n.id === nodeId);
     if (!mcpNode || !mcpNode.mcpTool) return;
@@ -2213,13 +2584,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       aspectRatio: '16:9',
       durationSec: 6,
       mode: isVidTool ? 'video' : 'image',
-      firstFrameDataUrl: '/media/shot01_rooftop.png',
+      firstFrameDataUrl: '/media/real_courtyard_sun.jpg',
       mcpTool: mcpNode.mcpTool,
       byok: get().byok,
     });
 
     const outId = `node_mcp_out_${Date.now()}`;
-    const img = exec.imageUrl || '/media/shot01_rooftop.png';
+    const img = exec.imageUrl || '/media/real_courtyard_sun.jpg';
 
     const outNode: CanvasNode = {
       id: outId,
@@ -2233,7 +2604,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       aspectRatio: isVidTool ? '16:9' : '1:1',
       status: 'ready',
       imageUrl: img,
-      videoUrl: exec.videoUrl || (isVidTool ? '/media/shot01_rooftop.mp4' : undefined),
+      videoUrl: exec.videoUrl || (isVidTool ? '/media/real_shot01_courtyard.mp4' : undefined),
       seed: mcpNode.seed + 83,
       resolution: '1080p',
       durationSec: isVidTool ? 6 : undefined,
@@ -2329,8 +2700,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const idx = multiframes.length + 1;
     const prompt =
       srcNode?.prompt ||
-      `Keyframe 0${idx} · @Hero_Kael & @Cyber_Sneaker camera progression`;
-    const imageUrl = srcNode?.imageUrl || '/media/shot01_rooftop.png';
+      `Keyframe 0${idx} · @Clara_Vidal & @Leica_M6 natural daylight camera progression`;
+    const imageUrl = srcNode?.imageUrl || '/media/real_courtyard_sun.jpg';
 
     const newCard: MultiframeCard = {
       id: `mf_${Date.now()}`,
@@ -2439,7 +2810,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         mood: inferMoodFromPrompt(toCard.prompt),
       });
 
-      const resolvedVideoUrl = ff.videoUrl || fromCard.videoUrl || '/media/shot01_rooftop.mp4';
+      const resolvedVideoUrl =
+        ff.videoUrl || fromCard.videoUrl || '/media/real_shot02_bridge.mp4';
       const nodeId = `node_mf_seq_${Date.now()}_${idx}`;
       const interactionId = ff.interactionId || `int_mf_${idx + 1}`;
 
@@ -2527,13 +2899,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         category: 'MCP Tool' as const,
         badge: 'MCP',
         description: t.description,
-        promptTemplate: `Execute MCP ${t.name}: @Hero_Kael & @Cyber_Sneaker`,
+        promptTemplate: `Execute MCP ${t.name}: @Clara_Vidal & @Leica_M6 natural 35mm daylight`,
         recommendedMode: t.name.includes('video') ? ('video' as const) : ('image' as const),
         mcpToolName: t.name,
       }));
 
       const masterFile = health.mediaFiles.find(
-        (f) => f === 'protocol_rain_master.mp4' || f.startsWith('master_cut_')
+        (f) => f === 'real_salt_terracotta_master.mp4' || f.startsWith('master_cut_')
       );
       const nextMaster = masterFile
         ? normalizeBackendMediaUrl(`/media/${masterFile}`, true) || s.masterRenderUrl
@@ -2708,6 +3080,51 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (!node) return;
     get().pushHistory();
 
+    const timelineNode = get().nodes.find((n) => n.kind === 'timeline');
+
+    if (node.kind === 'audio') {
+      const track: 'voice' | 'sfx' =
+        node.audioMode === 'voiceover' ? 'voice' : 'sfx';
+      const audioClip: TimelineClip = {
+        id: `clip_audio_${Date.now()}`,
+        track,
+        title: `${node.title} (A1)`,
+        sourceNodeId: node.id,
+        startSec: 0,
+        durationSec: node.durationSec || 12,
+        audioUrl: node.audioUrl || '/media/real_coastal_foley.mp3',
+        waveform: node.waveform || createDefaultWaveform(node.seed, 64),
+        promptOrDialogue: node.prompt,
+        lipSyncCharacter: track === 'voice' ? '@Clara_Vidal' : undefined,
+        sfxKind: track === 'sfx' ? 'coastal-surf' : undefined,
+        color: '#252525',
+      };
+
+      set((s) => ({
+        timelineClips: [
+          ...s.timelineClips.filter((c) => c.sourceNodeId !== node.id),
+          audioClip,
+        ],
+        edges:
+          timelineNode &&
+          !s.edges.some(
+            (e) => e.sourceId === node.id && e.targetId === timelineNode.id
+          )
+            ? [
+                ...s.edges,
+                {
+                  id: `edge_tl_aud_${Date.now()}`,
+                  sourceId: node.id,
+                  targetId: timelineNode.id,
+                  kind: 'lineage',
+                },
+              ]
+            : s.edges,
+      }));
+      get().showToast(`Attached "${node.title}" to Timelines 1 A1 lane`);
+      return;
+    }
+
     const endV1 = get()
       .timelineClips.filter((c) => c.track === 'video')
       .reduce((acc, c) => Math.max(acc, c.startSec + c.durationSec), 0);
@@ -2727,7 +3144,6 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       color: '#252525',
     };
 
-    const timelineNode = get().nodes.find((n) => n.kind === 'timeline');
     set((s) => ({
       timelineClips: [...s.timelineClips, newClip],
       edges:
@@ -2805,9 +3221,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       startSec: endTrack,
       durationSec,
       promptOrDialogue: dialogueOrSfx,
-      lipSyncCharacter: track === 'voice' ? '@Hero_Kael' : undefined,
-      audioFreqHz: track === 'voice' ? 185 : undefined,
-      sfxKind: track === 'sfx' ? 'cyber-synth' : undefined,
+      audioUrl: track === 'sfx' ? '/media/real_coastal_foley.mp3' : undefined,
+      waveform: createDefaultWaveform(Math.floor(Math.random() * 900) + 100, 64),
+      lipSyncCharacter: track === 'voice' ? '@Clara_Vidal' : undefined,
+      audioFreqHz: track === 'voice' ? 196 : undefined,
+      sfxKind: track === 'sfx' ? 'coastal-surf' : undefined,
       color: '#252525',
     };
     set((s) => ({ timelineClips: [...s.timelineClips, clip] }));
@@ -2840,7 +3258,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const sourceVideoUrl = directNode?.videoUrl || targetClip?.videoUrl;
     const sourceTitle = directNode?.title || targetClip?.title || 'Shot';
     const sourcePrompt =
-      directNode?.prompt || targetClip?.promptOrDialogue || '@Hero_Kael rooftop';
+      directNode?.prompt || targetClip?.promptOrDialogue || '@Clara_Vidal sunlit courtyard';
     const sourceNodeId = directNode?.id || targetClip?.sourceNodeId;
 
     get().pushHistory();
@@ -2857,7 +3275,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
 
     if (!lastFrameUrl) {
-      lastFrameUrl = '/media/lastframe_shot02.png';
+      lastFrameUrl = '/media/real_coastal_cliffs.jpg';
     }
 
     const parentNode = sourceNodeId ? nodes.find((n) => n.id === sourceNodeId) : undefined;
@@ -2929,7 +3347,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         } else {
           const rendered = await renderVideoViaBackend({
             prompt: clip.promptOrDialogue,
-            imageUrl: clip.thumbnailUrl || '/media/shot01_rooftop.png',
+            imageUrl: clip.thumbnailUrl || '/media/real_courtyard_sun.jpg',
             durationSec: clip.durationSec,
           });
           if (rendered.ok && rendered.videoUrl) {
@@ -2938,10 +3356,28 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         }
       }
 
+      const audioTracks = timelineClips
+        .filter((c) => c.track !== 'video' && Boolean(c.audioUrl))
+        .map((c) => ({
+          audioUrl: c.audioUrl!,
+          volume: c.track === 'voice' ? 0.95 : 0.6,
+        }));
+
+      if (audioTracks.length === 0) {
+        const audioNode = get().nodes.find((n) => n.kind === 'audio' && n.audioUrl);
+        if (audioNode?.audioUrl) {
+          audioTracks.push({
+            audioUrl: audioNode.audioUrl,
+            volume: audioNode.audioMode === 'voiceover' ? 0.95 : 0.6,
+          });
+        }
+      }
+
       if (clipUrls.length > 0) {
         const compiled = await compileTimelineViaBackend({
           clips: clipUrls,
           title: projectTitle,
+          audioTracks,
         });
 
         if (compiled.ok && compiled.masterUrl) {
@@ -2992,7 +3428,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     set({
       projectTitle: title,
       appSynthesizing: true,
-      appRenderLog: [`Locking continuity (${selectedHandles.join(', ') || '@Hero_Kael'})...`],
+      appRenderLog: [`Locking continuity (${selectedHandles.join(', ') || '@Clara_Vidal'})...`],
     });
 
     const renderedClipUrls: string[] = [];
@@ -3061,7 +3497,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
 
     if (!finalMasterUrl) {
-      finalMasterUrl = '/media/protocol_rain_master.mp4';
+      finalMasterUrl = '/media/real_salt_terracotta_master.mp4';
     }
 
     set((s) => ({
@@ -3160,7 +3596,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   runChatQuickAction: async (action) => {
     if (action === 'sequence-3') {
       await get().sendChatAssistantPrompt(
-        'Build a 3-shot @Hero_Kael & @Cyber_Sneaker rooftop rain pursuit sequence'
+        'Build a 3-shot @Clara_Vidal & @Leica_M6 sunlit coastal courtyard documentary sequence'
       );
       return;
     }
@@ -3177,7 +3613,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const userMsg: ChatMessageItem = {
         id: `msg_u_${Date.now()}`,
         role: 'user',
-        text: `Branch Multi-Turn Remix on "${target.title}" -> Golden dawn weather shift`,
+        text: `Branch Multi-Turn Remix on "${target.title}" -> Warm golden-hour dusk shift`,
         timestamp: Date.now(),
       };
       set((s) => ({ chatMessages: [...s.chatMessages, userMsg] }));
@@ -3185,7 +3621,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const beforeIds = new Set(get().nodes.map((n) => n.id));
       await get().branchVideoMultiTurn(
         target.id,
-        'Shift weather from neon midnight rain to golden sunrise dawn over @Hero_Kael'
+        'Shift midday daylight to warm late-afternoon amber dusk over @Clara_Vidal and limestone arches'
       );
       const created = get().nodes.find((n) => !beforeIds.has(n.id));
       set((s) => ({
@@ -3196,7 +3632,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             role: 'assistant',
             text: `Rendered stateful Multi-Turn remix branch from "${target.title}":`,
             timestamp: Date.now(),
-            videoUrl: created?.videoUrl || '/media/shot02b_sunrise_remix.mp4',
+            videoUrl: created?.videoUrl || '/media/real_shot03_atelier.mp4',
             nodeFocusPills: created
               ? [{ nodeId: created.id, title: created.title }]
               : undefined,
@@ -3259,7 +3695,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               ? 'Compiled H.264 + AAC Master .mp4 from Timelines 1:'
               : 'Add clips to Timelines 1 to compile a master cut.',
             timestamp: Date.now(),
-            videoUrl: masterUrl || '/media/protocol_rain_master.mp4',
+            videoUrl: masterUrl || '/media/real_salt_terracotta_master.mp4',
           },
         ],
       }));
@@ -3269,6 +3705,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   bootDiskPersistence: async () => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('recipe')) return;
+
+    const isLegacySlopId = (id?: string | null) =>
+      !id || id.toLowerCase().startsWith('proto');
 
     const listing = await listDiskProjects();
     if (!listing.ok) {
@@ -3283,10 +3722,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             edges?: CanvasEdge[];
             timelineClips?: TimelineClip[];
           };
-          if (Array.isArray(parsed.nodes) && parsed.nodes.length > 0) {
+          if (
+            !isLegacySlopId(parsed.id) &&
+            Array.isArray(parsed.nodes) &&
+            parsed.nodes.length > 0
+          ) {
             set({
-              activeProjectId: parsed.id || 'protocol-rain',
-              projectTitle: parsed.name || 'Protocol: Rain',
+              activeProjectId: parsed.id || 'salt-terracotta',
+              projectTitle: parsed.name || 'Salt & Terracotta — Coastal Short',
               nodes: parsed.nodes,
               edges: Array.isArray(parsed.edges) ? parsed.edges : get().edges,
               timelineClips: Array.isArray(parsed.timelineClips)
@@ -3303,18 +3746,21 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       return;
     }
 
-    set({ diskProjects: listing.projects });
+    const cleanProjects = listing.projects.filter((p) => !isLegacySlopId(p.id));
+    set({ diskProjects: cleanProjects });
 
-    const preferredId =
-      (() => {
-        try {
-          return localStorage.getItem(ACTIVE_PROJECT_KEY);
-        } catch {
-          return null;
-        }
-      })() || listing.projects[0]?.id;
+    const storedId = (() => {
+      try {
+        const v = localStorage.getItem(ACTIVE_PROJECT_KEY);
+        return isLegacySlopId(v) ? null : v;
+      } catch {
+        return null;
+      }
+    })();
 
-    if (preferredId && listing.projects.some((p) => p.id === preferredId)) {
+    const preferredId = storedId || cleanProjects[0]?.id;
+
+    if (preferredId && cleanProjects.some((p) => p.id === preferredId)) {
       const loaded = await getDiskProject(preferredId);
       const st = loaded.project?.state as
         | {
@@ -3329,7 +3775,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       if (loaded.ok && loaded.project && st && Array.isArray(st.nodes)) {
         set({
           activeProjectId: loaded.project.id,
-          projectTitle: loaded.project.name || 'Protocol: Rain',
+          projectTitle: loaded.project.name || 'Salt & Terracotta — Coastal Short',
           nodes: st.nodes,
           edges: Array.isArray(st.edges) ? st.edges : [],
           elements: Array.isArray(st.elements) ? st.elements : get().elements,
@@ -3350,10 +3796,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
     }
 
-    // Seed initial Protocol: Rain project onto disk
+    // Seed initial Salt & Terracotta project onto disk
     await get().persistActiveProjectToDisk({
       createSnapshot: true,
-      snapshotLabel: 'Initial Protocol: Rain',
+      snapshotLabel: 'Initial Salt & Terracotta',
     });
   },
 
@@ -3507,8 +3953,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       if (listing.projects.length > 0) {
         await get().switchDiskProject(listing.projects[0].id);
       } else {
-        get().loadPresetProject('protocol-rain');
-        set({ activeProjectId: 'protocol-rain' });
+        get().loadPresetProject('salt-terracotta');
+        set({ activeProjectId: 'salt-terracotta' });
         await get().persistActiveProjectToDisk();
       }
     } else {
@@ -3725,7 +4171,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       height: isVideo ? 320 : isTextOnly ? 210 : 240,
       aspectRatio: '16:9',
       status: 'ready',
-      imageUrl: !isTextOnly && !isVideo ? mediaUrl || '/media/shot01_rooftop.png' : '/media/shot01_rooftop.png',
+      imageUrl:
+        !isTextOnly && !isVideo
+          ? mediaUrl || '/media/real_alpine_road.jpg'
+          : '/media/real_alpine_road.jpg',
       videoUrl: isVideo ? mediaUrl : undefined,
       durationSec: isVideo ? 6 : undefined,
       seed: Math.floor(Math.random() * 9000),
@@ -3733,7 +4182,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       elementHandles: extractHandles(ev.prompt || ''),
       layers:
         !isTextOnly && !isVideo
-          ? createDefaultLayers(mediaUrl || '/media/shot01_rooftop.png')
+          ? createDefaultLayers(mediaUrl || '/media/real_alpine_road.jpg')
           : [],
       providerUsed: `Bridge · ${sourceLabel}`,
       createdAt: Date.now(),
@@ -3764,16 +4213,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       source,
       title:
         source === 'flow'
-          ? 'Bridge · Flow Scene Capture'
-          : 'Bridge · Dreamina Keyframe',
+          ? 'Bridge · Flow Coastal Sequence'
+          : 'Bridge · 35mm Alpine Location Frame',
       mediaUrl:
         source === 'flow'
-          ? '/media/shot02_alley_chase.mp4'
-          : '/media/shot02b_sunrise_remix.png',
+          ? '/media/real_shot02_bridge.mp4'
+          : '/media/real_alpine_road.jpg',
       prompt:
         source === 'flow'
-          ? 'Captured live 6s tracking shot from Google Flow via ws://localhost:3001/bridge'
-          : 'Captured live sunrise keyframe from Dreamina Canvas via ws://localhost:3001/bridge',
+          ? 'Natural daylight optical glide from limestone courtyard out over Atlantic cliffs'
+          : 'Morning mist clearing over timber mountain pass, natural 35mm daylight',
     };
 
     const pushed = await pushBridgeEventViaBackend(testEvent);
@@ -3802,28 +4251,28 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     await sleep(180);
     const beatDefs = [
       {
-        title: 'Videos · Beat 01 Hook',
-        prompt: `${creativeBrief} — Wide establishing shot, @Hero_Kael & @Cyber_Sneaker`,
+        title: 'Videos · Beat 01 Courtyard',
+        prompt: `${creativeBrief} — Wide 35mm daylight establishing frame, @Clara_Vidal & @Leica_M6`,
         dur: 6,
         curve: 'Dolly In',
-        img: '/media/shot01_rooftop.png',
-        vid: '/media/shot01_rooftop.mp4',
+        img: '/media/real_courtyard_sun.jpg',
+        vid: '/media/real_shot01_courtyard.mp4',
       },
       {
-        title: 'Videos · Beat 02 Action',
-        prompt: `${creativeBrief} — Dynamic tracking pursuit`,
+        title: 'Videos · Beat 02 Headland Bridge',
+        prompt: `${creativeBrief} — Optical camera glide out toward sunlit Atlantic limestone cliffs`,
         dur: 6,
         curve: 'Orbit 180°',
-        img: '/media/shot02_alley_chase.png',
-        vid: '/media/shot02_alley_chase.mp4',
+        img: '/media/real_coastal_cliffs.jpg',
+        vid: '/media/real_shot02_bridge.mp4',
       },
       {
-        title: 'Videos · Beat 03 Dawn Climax',
-        prompt: `${creativeBrief} — Golden dawn reveal`,
+        title: 'Videos · Beat 03 Sunlit Atelier',
+        prompt: `${creativeBrief} — Quiet architectural studio table reveal in north window light`,
         dur: 6,
         curve: 'Crane Up',
-        img: '/media/shot02b_sunrise_remix.png',
-        vid: '/media/shot02b_sunrise_remix.mp4',
+        img: '/media/real_atelier_interior.jpg',
+        vid: '/media/real_shot03_atelier.mp4',
       },
     ];
 

@@ -71,6 +71,18 @@ export interface McpBackendHealth {
   bridgeClients?: number;
 }
 
+export type KeyframeBridgeCurve =
+  | 'ease-in-out'
+  | 'linear'
+  | 'match-dissolve'
+  | 'whip-pan';
+
+export type StudioPresetId =
+  | 'salt-terracotta'
+  | 'kyoto-joinery'
+  | 'alpine-pass'
+  | 'blank';
+
 export interface CanvasNode {
   id: string;
   kind: NodeKind;
@@ -87,17 +99,25 @@ export interface CanvasNode {
   videoUrl?: string;
   audioUrl?: string;
   videoTheme?:
-    | 'cyberpunk-rain'
-    | 'sneaker-macro'
-    | 'drone-canyon'
-    | 'neon-orbit'
+    | 'coastal-daylight'
+    | 'craft-macro'
+    | 'alpine-aerial'
+    | 'architectural-pan'
     | 'product-ugc'
-    | 'night-remix';
+    | 'golden-hour';
   seed: number;
   resolution: ResolutionTier;
   durationSec?: number;
   cameraAngle?: string;
   cameraMotion?: string;
+  bridgeMode?: boolean;
+  startImageUrl?: string;
+  endImageUrl?: string;
+  startNodeId?: string;
+  endNodeId?: string;
+  motionCurve?: KeyframeBridgeCurve;
+  audioMode?: 'ambient' | 'voiceover' | 'sfx';
+  waveform?: number[];
   interactionId?: string;
   previousInteractionId?: string;
   elementHandles: string[];
@@ -256,12 +276,14 @@ export interface TimelineClip {
   durationSec: number;
   thumbnailUrl?: string;
   videoUrl?: string;
+  audioUrl?: string;
+  waveform?: number[];
   videoTheme?: CanvasNode['videoTheme'];
   seed?: number;
   promptOrDialogue: string;
   lipSyncCharacter?: string;
   audioFreqHz?: number;
-  sfxKind?: 'rain-ambience' | 'whoosh-transition' | 'sub-impact' | 'cyber-synth';
+  sfxKind?: 'coastal-surf' | 'room-tone' | 'shutter-foley' | 'acoustic-stem';
   color: string;
 }
 

@@ -1,4 +1,4 @@
-import type { AspectRatio, StyleDNAPayload } from '../types/studio';
+import type { AspectRatio, CanvasNode, StyleDNAPayload } from '../types/studio';
 
 export function getDimensionsForAspect(
   aspect: AspectRatio,
@@ -24,12 +24,28 @@ function seededRandom(seed: number): () => number {
   };
 }
 
+export function createDefaultWaveform(seed = 101, barCount = 64): number[] {
+  const rand = seededRandom(seed);
+  const out: number[] = [];
+  for (let i = 0; i < barCount; i++) {
+    const t = i / Math.max(1, barCount - 1);
+    const envelope =
+      0.38 +
+      0.28 * Math.sin(t * Math.PI * 3.2 + seed * 0.1) +
+      0.18 * Math.cos(t * Math.PI * 7.5);
+    const jitter = (rand() - 0.5) * 0.26;
+    const val = Math.max(0.1, Math.min(0.96, Number((envelope + jitter).toFixed(3))));
+    out.push(val);
+  }
+  return out;
+}
+
 export interface ShotRenderOptions {
   prompt: string;
   seed: number;
   palette?: string[];
   cameraLabel?: string;
-  theme?: 'cyberpunk-rain' | 'sneaker-macro' | 'drone-canyon' | 'neon-orbit' | 'product-ugc' | 'night-remix';
+  theme?: CanvasNode['videoTheme'];
   isolatedSubjectOnly?: boolean;
   backgroundOnly?: boolean;
   hudBadge?: string;
@@ -44,261 +60,133 @@ export function drawCinemaShotFrame(
 ): void {
   const rand = seededRandom(opts.seed);
   const pLower = opts.prompt.toLowerCase();
-  const isSneaker =
-    opts.theme === 'sneaker-macro' ||
+  const isCraft =
+    opts.theme === 'craft-macro' ||
     opts.theme === 'product-ugc' ||
-    pLower.includes('sneaker') ||
-    pLower.includes('shoe') ||
-    pLower.includes('product');
-  const isDrone =
-    opts.theme === 'drone-canyon' ||
-    pLower.includes('drone') ||
-    pLower.includes('fpv') ||
-    pLower.includes('establishing') ||
-    pLower.includes('aerial');
-  const isNightRemix =
-    opts.theme === 'night-remix' || pLower.includes('night remix') || pLower.includes('crimson');
+    pLower.includes('leica') ||
+    pLower.includes('ceramic') ||
+    pLower.includes('timber') ||
+    pLower.includes('joinery');
+  const isAlpine =
+    opts.theme === 'alpine-aerial' ||
+    pLower.includes('alpine') ||
+    pLower.includes('mountain') ||
+    pLower.includes('cliff');
+  const isGolden =
+    opts.theme === 'golden-hour' ||
+    pLower.includes('sunset') ||
+    pLower.includes('golden') ||
+    pLower.includes('terracotta');
 
-  const defaultPalette = isSneaker
-    ? ['#090D16', '#1E1B4B', '#06B6D4', '#A855F7', '#F43F5E']
-    : isDrone
-    ? ['#0B1320', '#162A3A', '#38BDF8', '#F59E0B', '#E2E8F0']
-    : isNightRemix
-    ? ['#09050F', '#2B0A2F', '#EC4899', '#8B5CF6', '#22D3EE']
-    : ['#070A14', '#131C31', '#0EA5E9', '#8B5CF6', '#F43F5E'];
+  const defaultPalette = isCraft
+    ? ['#1A1714', '#2E261F', '#C49A6C', '#8C6D4F', '#EDE6DC']
+    : isAlpine
+      ? ['#161D22', '#26353F', '#6B8E9B', '#9DB4BD', '#EEF2F3']
+      : isGolden
+        ? ['#1F1915', '#3B2B20', '#D49B6A', '#9E6B49', '#F4ECE1']
+        : ['#181B1E', '#2A333B', '#7A96A4', '#C8A987', '#F2EFE9'];
 
-  const palette = opts.palette && opts.palette.length >= 4 ? opts.palette : defaultPalette;
+  const palette =
+    opts.palette && opts.palette.length >= 4 ? opts.palette : defaultPalette;
 
   ctx.save();
   ctx.clearRect(0, 0, w, h);
 
-  const camZoom = 1 + Math.sin(timeSec * 0.45) * 0.035;
-  const camShiftX = Math.cos(timeSec * 0.6) * (w * 0.02);
-  const camShiftY = Math.sin(timeSec * 0.4) * (h * 0.012);
+  const camZoom = 1 + Math.sin(timeSec * 0.32) * 0.024;
+  const camShiftX = Math.cos(timeSec * 0.4) * (w * 0.015);
+  const camShiftY = Math.sin(timeSec * 0.28) * (h * 0.01);
 
   ctx.translate(w / 2 + camShiftX, h / 2 + camShiftY);
   ctx.scale(camZoom, camZoom);
   ctx.translate(-w / 2, -h / 2);
 
   if (!opts.isolatedSubjectOnly) {
-    const skyGrad = ctx.createLinearGradient(0, 0, w * 0.3, h);
-    skyGrad.addColorStop(0, palette[0]);
-    skyGrad.addColorStop(0.55, palette[1]);
-    skyGrad.addColorStop(1, '#05070D');
+    // Natural daylight sky / architectural plaster wash
+    const skyGrad = ctx.createLinearGradient(0, 0, w * 0.25, h);
+    skyGrad.addColorStop(0, palette[4] + '22');
+    skyGrad.addColorStop(0.48, palette[1]);
+    skyGrad.addColorStop(1, palette[0]);
     ctx.fillStyle = skyGrad;
     ctx.fillRect(-40, -40, w + 80, h + 80);
 
-    const glow1 = ctx.createRadialGradient(
-      w * (0.28 + Math.sin(timeSec * 0.7) * 0.05),
-      h * 0.34,
-      8,
-      w * 0.28,
-      h * 0.34,
-      w * 0.55
+    // Warm window / coastal sun diffusion
+    const sunGlow = ctx.createRadialGradient(
+      w * (0.72 + Math.sin(timeSec * 0.35) * 0.03),
+      h * 0.26,
+      12,
+      w * 0.72,
+      h * 0.26,
+      w * 0.62
     );
-    glow1.addColorStop(0, palette[2] + '66');
-    glow1.addColorStop(1, 'transparent');
-    ctx.fillStyle = glow1;
+    sunGlow.addColorStop(0, palette[2] + '55');
+    sunGlow.addColorStop(0.6, palette[3] + '22');
+    sunGlow.addColorStop(1, 'transparent');
+    ctx.fillStyle = sunGlow;
     ctx.fillRect(0, 0, w, h);
 
-    const glow2 = ctx.createRadialGradient(
-      w * (0.74 - Math.cos(timeSec * 0.5) * 0.05),
-      h * 0.42,
-      8,
-      w * 0.74,
-      h * 0.42,
-      w * 0.48
-    );
-    glow2.addColorStop(0, palette[3] + '58');
-    glow2.addColorStop(1, 'transparent');
-    ctx.fillStyle = glow2;
-    ctx.fillRect(0, 0, w, h);
-
-    const horizonY = h * 0.68;
-    const buildingCount = 14;
-    for (let i = 0; i < buildingCount; i++) {
-      const bw = (w / buildingCount) * (0.8 + rand() * 0.65);
-      const bh = h * (0.18 + rand() * 0.42);
-      const bx = (i / buildingCount) * w - 10 + (i % 2 === 0 ? -timeSec * 2 : timeSec * 1.2);
-      const by = horizonY - bh;
-
-      ctx.fillStyle = i % 2 === 0 ? 'rgba(9, 13, 24, 0.92)' : 'rgba(15, 22, 38, 0.85)';
-      ctx.fillRect(bx, by, bw, bh + h * 0.35);
-
-      if (rand() > 0.35) {
-        ctx.fillStyle = (i % 3 === 0 ? palette[2] : palette[3]) + '99';
-        ctx.fillRect(bx + 4, by + 8 + rand() * 24, Math.max(6, bw * 0.55), 3);
-      }
-
-      ctx.fillStyle = 'rgba(226, 232, 240, 0.24)';
-      for (let wy = by + 18; wy < horizonY - 8; wy += 11) {
-        for (let wx = bx + 5; wx < bx + bw - 6; wx += 9) {
-          if (rand() > 0.55) {
-            ctx.fillRect(wx, wy, 3, 4);
-          }
-        }
-      }
+    // Organic coastal / alpine ridge & limestone horizon
+    const horizonY = h * 0.64;
+    ctx.beginPath();
+    ctx.moveTo(-20, horizonY);
+    for (let x = 0; x <= w + 40; x += 40) {
+      const ridge =
+        Math.sin(x * 0.009 + opts.seed * 0.1) * (h * 0.06) +
+        Math.cos(x * 0.021) * (h * 0.025);
+      ctx.lineTo(x, horizonY - ridge);
     }
+    ctx.lineTo(w + 40, h + 40);
+    ctx.lineTo(-20, h + 40);
+    ctx.closePath();
+    ctx.fillStyle = palette[1];
+    ctx.fill();
 
-    const floorGrad = ctx.createLinearGradient(0, horizonY, 0, h);
-    floorGrad.addColorStop(0, 'rgba(12, 18, 32, 0.85)');
-    floorGrad.addColorStop(0.4, palette[1] + 'AA');
-    floorGrad.addColorStop(1, '#04060B');
-    ctx.fillStyle = floorGrad;
-    ctx.fillRect(-40, horizonY, w + 80, h - horizonY + 40);
-
-    ctx.strokeStyle = palette[2] + '38';
-    ctx.lineWidth = 1;
-    for (let i = -6; i <= 6; i++) {
-      ctx.beginPath();
-      ctx.moveTo(w / 2 + i * (w * 0.03), horizonY);
-      ctx.lineTo(w / 2 + i * (w * 0.22), h + 20);
-      ctx.stroke();
-    }
-
-    ctx.fillStyle = palette[2] + '33';
-    ctx.fillRect(w * 0.14, horizonY + h * 0.08, w * 0.28, 3);
-    ctx.fillStyle = palette[3] + '38';
-    ctx.fillRect(w * 0.55, horizonY + h * 0.14, w * 0.3, 4);
+    // Calm water / courtyard stone plane
+    const groundGrad = ctx.createLinearGradient(0, horizonY, 0, h);
+    groundGrad.addColorStop(0, palette[2] + '30');
+    groundGrad.addColorStop(1, palette[0]);
+    ctx.fillStyle = groundGrad;
+    ctx.fillRect(-20, horizonY, w + 40, h - horizonY + 20);
   }
 
   if (!opts.backgroundOnly) {
-    const floatY = Math.sin(timeSec * 2.1) * (h * 0.018);
-
-    if (isSneaker) {
-      ctx.save();
-      ctx.translate(w * 0.5, h * 0.54 + floatY);
-      ctx.rotate(-0.14 + Math.sin(timeSec * 0.9) * 0.04);
-
-      const sw = w * 0.46;
-      const sh = h * 0.28;
-
-      const soleGlow = ctx.createRadialGradient(0, sh * 0.45, 4, 0, sh * 0.45, sw * 0.65);
-      soleGlow.addColorStop(0, palette[2] + 'BB');
-      soleGlow.addColorStop(1, 'transparent');
-      ctx.fillStyle = soleGlow;
+    // Minimal architectural archway / tactile 35mm composition subject
+    const cx = w * 0.5 + Math.sin(timeSec * 0.5) * 3;
+    const cy = h * 0.54;
+    ctx.save();
+    ctx.strokeStyle = palette[4] + '55';
+    ctx.lineWidth = 1.5;
+    if (isCraft) {
+      const rw = w * 0.32;
+      const rh = h * 0.28;
+      ctx.fillStyle = palette[0] + 'CC';
+      ctx.fillRect(cx - rw / 2, cy - rh / 2, rw, rh);
+      ctx.strokeRect(cx - rw / 2, cy - rh / 2, rw, rh);
       ctx.beginPath();
-      ctx.ellipse(0, sh * 0.5, sw * 0.58, sh * 0.25, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.moveTo(-sw * 0.48, sh * 0.22);
-      ctx.quadraticCurveTo(0, sh * 0.38, sw * 0.5, sh * 0.16);
-      ctx.lineTo(sw * 0.46, sh * 0.34);
-      ctx.quadraticCurveTo(0, sh * 0.48, -sw * 0.45, sh * 0.34);
-      ctx.closePath();
-      const soleGrad = ctx.createLinearGradient(-sw * 0.5, 0, sw * 0.5, 0);
-      soleGrad.addColorStop(0, palette[2]);
-      soleGrad.addColorStop(0.5, '#F8FAFC');
-      soleGrad.addColorStop(1, palette[3]);
-      ctx.fillStyle = soleGrad;
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.moveTo(-sw * 0.46, sh * 0.22);
-      ctx.lineTo(-sw * 0.38, -sh * 0.36);
-      ctx.quadraticCurveTo(-sw * 0.12, -sh * 0.44, sw * 0.05, -sh * 0.12);
-      ctx.quadraticCurveTo(sw * 0.28, -sh * 0.02, sw * 0.5, sh * 0.16);
-      ctx.closePath();
-      const upperGrad = ctx.createLinearGradient(-sw * 0.4, -sh * 0.4, sw * 0.4, sh * 0.2);
-      upperGrad.addColorStop(0, '#1E293B');
-      upperGrad.addColorStop(0.6, '#0F172A');
-      upperGrad.addColorStop(1, palette[3]);
-      ctx.fillStyle = upperGrad;
-      ctx.fill();
+      ctx.arc(cx + rw * 0.08, cy, Math.min(rw, rh) * 0.28, 0, Math.PI * 2);
+      ctx.strokeStyle = palette[2];
       ctx.lineWidth = 2;
-      ctx.strokeStyle = palette[2];
       ctx.stroke();
-
-      ctx.beginPath();
-      ctx.moveTo(-sw * 0.28, sh * 0.04);
-      ctx.quadraticCurveTo(0, -sh * 0.08, sw * 0.32, sh * 0.12);
-      ctx.strokeStyle = '#38BDF8';
-      ctx.lineWidth = 3.5;
-      ctx.stroke();
-
-      ctx.restore();
-    } else if (isDrone) {
-      ctx.save();
-      ctx.translate(w * 0.5, h * 0.48 + floatY);
-      ctx.strokeStyle = palette[2];
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(0, 0, Math.min(w, h) * 0.24, 0, Math.PI * 2);
-      ctx.stroke();
-
-      ctx.strokeStyle = palette[3] + 'AA';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(0, 0, Math.min(w, h) * 0.17, timeSec, timeSec + Math.PI * 1.4);
-      ctx.stroke();
-
-      ctx.fillStyle = '#F8FAFC';
-      ctx.beginPath();
-      ctx.moveTo(0, -14);
-      ctx.lineTo(28, 12);
-      ctx.lineTo(0, 5);
-      ctx.lineTo(-28, 12);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
     } else {
-      const cx = w * 0.5 + Math.sin(timeSec * 1.1) * 4;
-      const baseY = h * 0.86;
-      const charH = h * 0.52;
-
-      ctx.save();
-      const rim = ctx.createRadialGradient(cx, baseY - charH * 0.65, 4, cx, baseY - charH * 0.6, charH * 0.65);
-      rim.addColorStop(0, palette[2] + '75');
-      rim.addColorStop(1, 'transparent');
-      ctx.fillStyle = rim;
+      const aw = w * 0.22;
+      const ah = h * 0.44;
+      ctx.fillStyle = palette[2] + '26';
       ctx.beginPath();
-      ctx.arc(cx, baseY - charH * 0.6, charH * 0.65, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.moveTo(cx - charH * 0.26, baseY);
-      ctx.lineTo(cx - charH * 0.21, baseY - charH * 0.58);
-      ctx.quadraticCurveTo(cx, baseY - charH * 0.68, cx + charH * 0.21, baseY - charH * 0.58);
-      ctx.lineTo(cx + charH * 0.28 + Math.sin(timeSec * 2.5) * 4, baseY);
+      ctx.arc(cx, cy - ah * 0.12, aw * 0.5, Math.PI, 0);
+      ctx.lineTo(cx + aw * 0.5, cy + ah * 0.45);
+      ctx.lineTo(cx - aw * 0.5, cy + ah * 0.45);
       ctx.closePath();
-      const coatGrad = ctx.createLinearGradient(cx - 30, baseY - charH, cx + 30, baseY);
-      coatGrad.addColorStop(0, '#1E293B');
-      coatGrad.addColorStop(1, '#090D16');
-      ctx.fillStyle = coatGrad;
       ctx.fill();
-      ctx.strokeStyle = palette[2] + 'CC';
-      ctx.lineWidth = 1.8;
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.arc(cx, baseY - charH * 0.75, charH * 0.12, 0, Math.PI * 2);
-      ctx.fillStyle = '#0F172A';
-      ctx.fill();
-      ctx.strokeStyle = palette[3];
-      ctx.lineWidth = 1.6;
-      ctx.stroke();
-
-      ctx.fillStyle = '#38BDF8';
-      ctx.shadowColor = '#38BDF8';
-      ctx.shadowBlur = 8;
-      ctx.fillRect(cx - charH * 0.07, baseY - charH * 0.76, charH * 0.14, 3);
-      ctx.shadowBlur = 0;
-      ctx.restore();
-    }
-  }
-
-  if (!opts.isolatedSubjectOnly) {
-    ctx.strokeStyle = 'rgba(186, 230, 253, 0.22)';
-    ctx.lineWidth = 1;
-    for (let i = 0; i < 34; i++) {
-      const rx = ((rand() * w + timeSec * 45) % (w + 20)) - 10;
-      const ry = ((rand() * h + timeSec * 210) % (h + 20)) - 10;
-      ctx.beginPath();
-      ctx.moveTo(rx, ry);
-      ctx.lineTo(rx - 3, ry + 13);
       ctx.stroke();
     }
+
+    // Subtle film grain specks (Kodak 250D texture)
+    ctx.fillStyle = 'rgba(245, 239, 230, 0.06)';
+    for (let i = 0; i < 28; i++) {
+      const gx = rand() * w;
+      const gy = rand() * h;
+      ctx.fillRect(gx, gy, 1.5, 1.5);
+    }
+    ctx.restore();
   }
 
   ctx.restore();
@@ -306,17 +194,22 @@ export function drawCinemaShotFrame(
   if (opts.cameraLabel || opts.hudBadge) {
     ctx.save();
     if (opts.cameraLabel) {
-      ctx.fillStyle = 'rgba(7, 8, 12, 0.72)';
-      ctx.fillRect(10, h - 28, Math.min(w - 20, opts.cameraLabel.length * 6.8 + 18), 20);
-      ctx.fillStyle = '#E2E8F0';
+      ctx.fillStyle = 'rgba(14, 14, 14, 0.72)';
+      ctx.fillRect(
+        10,
+        h - 28,
+        Math.min(w - 20, opts.cameraLabel.length * 6.8 + 18),
+        20
+      );
+      ctx.fillStyle = '#F5F5F5';
       ctx.font = '600 10px "JetBrains Mono", monospace';
       ctx.fillText(opts.cameraLabel, 17, h - 14);
     }
     if (opts.hudBadge) {
       const bw = opts.hudBadge.length * 6.6 + 16;
-      ctx.fillStyle = 'rgba(139, 92, 246, 0.82)';
+      ctx.fillStyle = 'rgba(25, 25, 25, 0.88)';
       ctx.fillRect(w - bw - 10, 10, bw, 19);
-      ctx.fillStyle = '#FFFFFF';
+      ctx.fillStyle = '#F5F5F5';
       ctx.font = '600 10px "JetBrains Mono", monospace';
       ctx.fillText(opts.hudBadge, w - bw - 2, 23);
     }
@@ -341,22 +234,22 @@ export function renderShotDataUrl(
 }
 
 export const NINE_GRID_LABELS = [
-  '01 · EXTREME WIDE 14mm',
-  '02 · ESTABLISHING ANAMORPHIC',
-  '03 · MEDIUM TRACKING 35mm',
-  '04 · OVER-THE-SHOULDER 50mm',
-  '05 · HERO CLOSE-UP 85mm',
-  '06 · MACRO INSERT 100mm',
-  '07 · LOW DUTCH ANGLE 24mm',
-  '08 · HIGH CRANE ORBIT',
-  '09 · SILHOUETTE CLIMAX',
+  '01 · WIDE COURTYARD 24mm',
+  '02 · COASTAL CLIFF HORIZON',
+  '03 · MEDIUM WALKING 35mm',
+  '04 · ATELIER WINDOW LIGHT 50mm',
+  '05 · NATURAL PORTRAIT 85mm',
+  '06 · LEICA CRAFT MACRO 90mm',
+  '07 · ALPINE PASS ESTABLISHING',
+  '08 · KYOTO CEDAR PAVILION',
+  '09 · GOLDEN HOUR SURF',
 ];
 
 export const FOUR_ANGLE_LABELS = [
   'CAM A · WIDE MASTER 24mm',
   'CAM B · MEDIUM TWO-SHOT 50mm',
-  'CAM C · HERO CLOSE-UP 85mm',
-  'CAM D · LOW HERO TRACK 18mm',
+  'CAM C · PORTRAIT CLOSE-UP 85mm',
+  'CAM D · LOW ARCHITECTURAL 21mm',
 ];
 
 export function renderContactSheetDataUrl(
@@ -377,12 +270,12 @@ export function renderContactSheetDataUrl(
   if (!ctx) return { dataUrl: '', labels };
 
   const themes: Array<ShotRenderOptions['theme']> = [
-    'cyberpunk-rain',
-    'drone-canyon',
-    'sneaker-macro',
-    'neon-orbit',
-    'night-remix',
-    'cyberpunk-rain',
+    'coastal-daylight',
+    'architectural-pan',
+    'craft-macro',
+    'alpine-aerial',
+    'golden-hour',
+    'coastal-daylight',
   ];
 
   let idx = 0;
@@ -398,16 +291,12 @@ export function renderContactSheetDataUrl(
           prompt,
           seed: baseSeed + idx * 97,
           palette,
-          theme: prompt.toLowerCase().includes('sneaker')
-            ? idx % 3 === 1
-              ? 'product-ugc'
-              : 'sneaker-macro'
-            : themes[idx % themes.length],
+          theme: themes[idx % themes.length],
           cameraLabel: label,
         });
         ctx.drawImage(cellCanvas, c * cellW, r * cellH);
       }
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
       ctx.lineWidth = 2;
       ctx.strokeRect(c * cellW, r * cellH, cellW, cellH);
       idx++;
@@ -461,26 +350,21 @@ export async function compositeInpaintRedraw(
   generatedCanvas.width = w;
   generatedCanvas.height = h;
   const genCtx = generatedCanvas.getContext('2d')!;
-  drawCinemaShotFrame(genCtx, w, h, 1.8, {
+  drawCinemaShotFrame(genCtx, w, h, 1.4, {
     prompt: regionalPrompt,
     seed: seed + 409,
-    palette: palette || ['#090D16', '#311042', '#22D3EE', '#F43F5E', '#FACC15'],
-    theme: regionalPrompt.toLowerCase().includes('sneaker') ? 'sneaker-macro' : 'night-remix',
+    palette: palette || ['#1F1915', '#3B2B20', '#D49B6A', '#7A96A4', '#F4ECE1'],
+    theme: 'golden-hour',
   });
-
-  const glowGrad = genCtx.createLinearGradient(0, 0, w, h);
-  glowGrad.addColorStop(0, 'rgba(56, 189, 248, 0.36)');
-  glowGrad.addColorStop(0.5, 'rgba(244, 63, 94, 0.34)');
-  glowGrad.addColorStop(1, 'rgba(168, 85, 247, 0.38)');
-  genCtx.fillStyle = glowGrad;
-  genCtx.fillRect(0, 0, w, h);
 
   const patchCanvas = document.createElement('canvas');
   patchCanvas.width = w;
   patchCanvas.height = h;
   const patchCtx = patchCanvas.getContext('2d')!;
-  patchCtx.drawImage(maskImg, 0, 0, w, h);
-  patchCtx.globalCompositeOperation = 'source-in';
+  if (maskDataUrl) {
+    patchCtx.drawImage(maskImg, 0, 0, w, h);
+    patchCtx.globalCompositeOperation = 'source-in';
+  }
   patchCtx.drawImage(generatedCanvas, 0, 0, w, h);
 
   const outCanvas = document.createElement('canvas');
@@ -515,28 +399,25 @@ export async function expandOutpaintDataUrl(
   const ctx = canvas.getContext('2d')!;
 
   drawCinemaShotFrame(ctx, outW, outH, 0.25, {
-    prompt: `${prompt} — expanded ${targetAspect} anamorphic periphery`,
+    prompt: `${prompt} — expanded ${targetAspect} natural periphery`,
     seed: seed + 77,
     palette,
   });
 
-  const fitRatio = Math.min((outW * 0.74) / baseImg.naturalWidth, (outH * 0.74) / baseImg.naturalHeight);
+  const fitRatio = Math.min(
+    (outW * 0.74) / Math.max(1, baseImg.naturalWidth),
+    (outH * 0.74) / Math.max(1, baseImg.naturalHeight)
+  );
   const drawW = baseImg.naturalWidth * fitRatio;
   const drawH = baseImg.naturalHeight * fitRatio;
   const dx = (outW - drawW) / 2;
   const dy = (outH - drawH) / 2;
 
   ctx.save();
-  ctx.shadowColor = 'rgba(7, 8, 12, 0.85)';
+  ctx.shadowColor = 'rgba(14, 14, 14, 0.8)';
   ctx.shadowBlur = 24;
   ctx.drawImage(baseImg, dx, dy, drawW, drawH);
   ctx.restore();
-
-  ctx.fillStyle = 'rgba(14, 165, 233, 0.82)';
-  ctx.fillRect(14, 14, 148, 24);
-  ctx.fillStyle = '#FFFFFF';
-  ctx.font = '600 12px "JetBrains Mono", monospace';
-  ctx.fillText(`OUTPAINT · ${targetAspect}`, 24, 30);
 
   return canvas.toDataURL('image/png');
 }
@@ -564,24 +445,35 @@ export function decomposeSubjectAndBackground(
 
 export function extractStyleDnaFromPrompt(prompt: string): StyleDNAPayload {
   const lower = prompt.toLowerCase();
-  if (lower.includes('sneaker') || lower.includes('product') || lower.includes('commercial')) {
+  if (lower.includes('kyoto') || lower.includes('timber') || lower.includes('craft')) {
     return {
-      presetName: 'Hyper-Studio Product Anamorphic',
-      palette: ['#090D16', '#1E1B4B', '#06B6D4', '#A855F7', '#F43F5E'],
-      lighting: 'Dual Volumetric Cyan/Magenta Rim + Top Softbox',
-      lens: 'Cooke Anamorphic/i 65mm Macro T2.6',
-      filmStock: 'Kodak Vision3 500T 5219 (Clean DI)',
-      motionCadence: '24fps · 180° Shutter · High-Speed 120fps Ramp',
+      presetName: 'Kyoto Cedar & Warm Window Daylight',
+      palette: ['#1A1714', '#2E261F', '#C49A6C', '#8C6D4F', '#EDE6DC'],
+      lighting: 'Diffused Shoji Morning Window Light + Warm Cedar Bounce',
+      lens: 'Leica Summilux-M 50mm f/1.4 ASPH',
+      filmStock: 'Kodak Portra 400 (Medium Format 6×7)',
+      motionCadence: '24fps · 180° Shutter · Slow Slider Track',
+      locked: true,
+    };
+  }
+  if (lower.includes('alpine') || lower.includes('mountain') || lower.includes('mist')) {
+    return {
+      presetName: 'Alpine Overcast & Architectural Concrete',
+      palette: ['#161D22', '#26353F', '#6B8E9B', '#9DB4BD', '#EEF2F3'],
+      lighting: 'Soft High-Altitude Overcast + Atmospheric Mist',
+      lens: 'Zeiss Master Prime 27mm T1.3',
+      filmStock: 'Kodak Vision3 250D 5207',
+      motionCadence: '24fps · Stabilized Aerial Drift',
       locked: true,
     };
   }
   return {
-    presetName: 'Neo-Tokyo Rain & Teal/Violet Specular',
-    palette: ['#070A14', '#131C31', '#0EA5E9', '#8B5CF6', '#F43F5E'],
-    lighting: 'Wet Sodium-Vapor Crosslight + Volumetric Fog',
-    lens: 'Panavision C-Series 40mm Anamorphic T2.0',
-    filmStock: 'Kodak Vision3 500T + Halation Bloom',
-    motionCadence: '24fps · Smooth Gimbal Steadicam',
+    presetName: 'Mediterranean Kodak 250D Daylight',
+    palette: ['#1C1916', '#332C25', '#C89B6E', '#698996', '#F3EDE2'],
+    lighting: 'Natural Afternoon Sun + Limestone Courtyard Shadow',
+    lens: 'Leica Summilux-C 35mm T1.4',
+    filmStock: 'Kodak Vision3 250D 5207 (35mm)',
+    motionCadence: '24fps · Gentle Organic Handheld',
     locked: true,
   };
 }
@@ -598,38 +490,27 @@ export function renderElementAvatarDataUrl(
   drawCinemaShotFrame(ctx, 160, 160, variant * 0.9, {
     prompt: label,
     seed: 500 + variant * 131,
-    palette: ['#090D16', '#18182F', accent, '#8B5CF6', '#38BDF8'],
+    palette: ['#1A1714', '#2E261F', accent, '#698996', '#F3EDE2'],
     hudBadge: `REF #${variant + 1}`,
   });
   return canvas.toDataURL('image/png');
 }
 
-export function loadImageElement(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve) => {
-    const tryLoad = (url: string, onFail: () => void) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => resolve(img);
-      img.onerror = onFail;
-      img.src = url;
+function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => {
+      const fallback = renderShotDataUrl('16:9', {
+        prompt: 'Fallback Studio Frame',
+        seed: 42,
+      });
+      const fbImg = new Image();
+      fbImg.onload = () => resolve(fbImg);
+      fbImg.onerror = reject;
+      fbImg.src = fallback;
     };
-
-    tryLoad(src, () => {
-      if (src.startsWith('/media/')) {
-        tryLoad(`http://localhost:3001${src}`, () => {
-          const fallback = renderShotDataUrl('16:9', {
-            prompt: 'Fallback Procedural Frame',
-            seed: 404,
-          });
-          tryLoad(fallback, () => resolve(new Image()));
-        });
-      } else {
-        const fallback = renderShotDataUrl('16:9', {
-          prompt: 'Fallback Procedural Frame',
-          seed: 404,
-        });
-        tryLoad(fallback, () => resolve(new Image()));
-      }
-    });
+    img.src = src;
   });
 }

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  AudioLines,
   Download,
   Film,
   Loader2,
@@ -19,7 +20,8 @@ import {
 } from 'lucide-react';
 import type { CanvasNode } from '../types/studio';
 import { useStudioStore } from '../store/useStudioStore';
-import { SmartMediaImage } from './SmartMedia';
+import { createDefaultWaveform } from '../utils/proceduralMedia';
+import { SmartMediaImage, resolvePlayableAudioUrl } from './SmartMedia';
 import {
   compileTimelineToWebm,
   downloadTextFile,
@@ -88,12 +90,14 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
   const splitTimelineClipAtPlayhead = useStudioStore((s) => s.splitTimelineClipAtPlayhead);
   const removeTimelineClip = useStudioStore((s) => s.removeTimelineClip);
   const sendNodeToTimeline = useStudioStore((s) => s.sendNodeToTimeline);
+  const spawnDreaminaNodeAt = useStudioStore((s) => s.spawnDreaminaNodeAt);
   const setAssetDrawerOpen = useStudioStore((s) => s.setAssetDrawerOpen);
   const compileTimelineMasterMp4 = useStudioStore((s) => s.compileTimelineMasterMp4);
 
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const rulerRef = useRef<HTMLDivElement | null>(null);
+  const stemAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const videoClips = useMemo(
     () =>
@@ -102,6 +106,40 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
         .sort((a, b) => a.startSec - b.startSec),
     [timelineClips]
   );
+
+  const audioStems = useMemo(
+    () =>
+      timelineClips
+        .filter((c) => c.track === 'sfx' || c.track === 'voice')
+        .sort((a, b) => (b.audioUrl ? 1 : 0) - (a.audioUrl ? 1 : 0)),
+    [timelineClips]
+  );
+
+  const primaryAudioStem = audioStems[0] || null;
+  const playableStemUrl = useMemo(
+    () => resolvePlayableAudioUrl(primaryAudioStem?.audioUrl),
+    [primaryAudioStem?.audioUrl]
+  );
+  const stemWaveform = useMemo(() => {
+    if (
+      primaryAudioStem?.waveform &&
+      primaryAudioStem.waveform.length >= 32
+    ) {
+      return primaryAudioStem.waveform.slice(0, 64);
+    }
+    return createDefaultWaveform(node.seed || 305, 64);
+  }, [primaryAudioStem?.waveform, node.seed]);
+
+  useEffect(() => {
+    const el = stemAudioRef.current;
+    if (!el || !playableStemUrl) return;
+    el.muted = timelineMuted;
+    if (isPlaying && !timelineMuted) {
+      el.play().catch(() => undefined);
+    } else {
+      el.pause();
+    }
+  }, [isPlaying, timelineMuted, playableStemUrl]);
 
   const totalDurationSec = useMemo(() => {
     const end = timelineClips.reduce(
@@ -126,7 +164,10 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
     if (!el) return;
     const updateFromClientX = (clientX: number) => {
       const rect = el.getBoundingClientRect();
-      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+      const ratio = Math.max(
+        0,
+        Math.min(1, (clientX - rect.left) / Math.max(1, rect.width))
+      );
       setPlayheadSec(ratio * rulerSpanSec);
     };
     updateFromClientX(e.clientX);
@@ -150,7 +191,9 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
     if (candidate) {
       sendNodeToTimeline(candidate.id);
     } else {
-      const firstMedia = nodes.find((n) => n.kind === 'video' || n.kind === 'image');
+      const firstMedia = nodes.find(
+        (n) => n.kind === 'video' || n.kind === 'image'
+      );
       if (firstMedia) {
         sendNodeToTimeline(firstMedia.id);
       } else {
@@ -159,7 +202,34 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
     }
   };
 
-  const playheadLeftPct = Math.min(100, Math.max(0, (playheadSec / rulerSpanSec) * 100));
+  const handleAttachAudioStem = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const audioCandidate =
+      nodes.find(
+        (n) =>
+          n.kind === 'audio' &&
+          !audioStems.some((ac) => ac.sourceNodeId === n.id)
+      ) || nodes.find((n) => n.kind === 'audio');
+
+    if (audioCandidate) {
+      sendNodeToTimeline(audioCandidate.id);
+      return;
+    }
+
+    const spawnedId = spawnDreaminaNodeAt('audio', node.x + node.width + 110, node.y);
+    if (spawnedId) {
+      sendNodeToTimeline(spawnedId);
+    }
+  };
+
+  const playheadLeftPct = Math.min(
+    100,
+    Math.max(0, (playheadSec / rulerSpanSec) * 100)
+  );
+  const audioProgressRatio = Math.min(
+    1,
+    Math.max(0, playheadSec / Math.max(1, totalDurationSec))
+  );
 
   return (
     <div
@@ -180,6 +250,10 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
         }
       }}
     >
+      {playableStemUrl && (
+        <audio ref={stemAudioRef} src={playableStemUrl} loop preload="none" />
+      )}
+
       {/* Row 1: Header Bar (38px) */}
       <div
         className="h-[38px] px-3.5 border-b border-white/[0.06] flex items-center justify-between bg-[#191919] shrink-0"
@@ -238,7 +312,7 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
             type="button"
             disabled={isRenderingMasterMp4}
             onClick={() => void compileTimelineMasterMp4()}
-            title="Render & Download Master .mp4 via FFmpeg 8.0"
+            title="Render & Download Master .mp4 (V1 + A1 Audio Mix) via FFmpeg 8.0"
             className="w-7 h-7 rounded-[7px] flex items-center justify-center text-white/70 hover:text-white hover:bg-[#252525] transition-colors disabled:opacity-50"
           >
             {isRenderingMasterMp4 ? (
@@ -258,7 +332,7 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
         </div>
       </div>
 
-      {/* Row 2 + Row 3 Wrapper for continuous playhead */}
+      {/* Row 2 + Row 3 + Row 4 Wrapper for continuous playhead */}
       <div className="relative flex-1 flex flex-col min-h-0">
         {/* Row 2: Timecode Ruler (22px) */}
         <div
@@ -278,7 +352,7 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
           </div>
         </div>
 
-        {/* Row 3: Track Row */}
+        {/* Row 3: V1 Video Filmstrip Lane */}
         <div
           className={`flex-1 px-2.5 flex items-center gap-2.5 min-h-0 transition-colors ${
             dragOver ? 'bg-[#222222]' : 'bg-[#161616]'
@@ -295,14 +369,17 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
             {timelineMuted ? (
               <VolumeX className="w-4 h-4 text-white/40" strokeWidth={1.5} />
             ) : (
-              <Volume2 className="w-4 h-4" strokeWidth={1.5} />
+              <Volume2 className="w-4 h-4 text-[#20D5EC]" strokeWidth={1.5} />
             )}
           </button>
 
           {/* Horizontal Filmstrip Clips + Drop Slot */}
-          <div className="relative flex-1 h-[78px] flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
+          <div className="relative flex-1 h-[76px] flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
             {videoClips.map((clip) => {
-              const widthPx = Math.max(128, Math.round((clip.durationSec / rulerSpanSec) * 960));
+              const widthPx = Math.max(
+                128,
+                Math.round((clip.durationSec / rulerSpanSec) * 960)
+              );
               const isSelected = selectedClipId === clip.id;
               return (
                 <div
@@ -313,7 +390,7 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
                     setPlayheadSec(clip.startSec + 0.05);
                   }}
                   onDoubleClick={() => setFullscreenTimelineOpen(true)}
-                  className={`relative h-[68px] shrink-0 rounded-[8px] overflow-hidden bg-[#222222] cursor-pointer transition-all ${
+                  className={`relative h-[66px] shrink-0 rounded-[8px] overflow-hidden bg-[#222222] cursor-pointer transition-all ${
                     isSelected
                       ? 'ring-1 ring-white/75 shadow-[0_4px_14px_rgba(0,0,0,0.5)]'
                       : 'border border-white/[0.09] hover:border-white/[0.25]'
@@ -343,7 +420,7 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
             <button
               type="button"
               onClick={handleAppendAvailableMedia}
-              className="h-[68px] min-w-[210px] px-4 rounded-[8px] border border-dashed border-white/[0.14] hover:border-white/[0.3] bg-[#1b1b1b]/70 hover:bg-[#222222] flex items-center justify-center gap-2 text-[12px] text-white/50 hover:text-white/85 transition-colors shrink-0"
+              className="h-[66px] min-w-[200px] px-4 rounded-[8px] border border-dashed border-white/[0.14] hover:border-white/[0.3] bg-[#1b1b1b]/70 hover:bg-[#222222] flex items-center justify-center gap-2 text-[12px] text-white/50 hover:text-white/85 transition-colors shrink-0"
             >
               <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
               <span>Drag and drop media here</span>
@@ -352,11 +429,71 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
             {/* Playhead Line Overlay */}
             <div
               style={{ left: `${playheadLeftPct}%` }}
-              className="absolute top-[-22px] bottom-0 w-[1.5px] bg-white pointer-events-none z-10 shadow-[0_0_8px_rgba(255,255,255,0.6)]"
+              className="absolute top-[-22px] bottom-[-28px] w-[1.5px] bg-white pointer-events-none z-10 shadow-[0_0_8px_rgba(255,255,255,0.6)]"
             >
               <div className="w-2.5 h-2.5 rounded-full bg-white -ml-[4px] -mt-0.5" />
             </div>
           </div>
+        </div>
+
+        {/* Row 4: Stage 5 Compact A1 · Audio Waveform Strip (28px) */}
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          className="h-[28px] px-2.5 bg-[#141414] border-t border-white/[0.05] flex items-center gap-2.5 shrink-0"
+        >
+          <div className="w-7 shrink-0 flex items-center justify-center text-white/45" title="A1 Audio Lane">
+            <AudioLines className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.5} />
+          </div>
+
+          <span className="font-mono text-[10px] text-white/50 shrink-0">
+            A1 · Audio
+          </span>
+
+          {primaryAudioStem ? (
+            <div
+              onClick={() => setFullscreenTimelineOpen(true)}
+              className="flex-1 h-[20px] px-2 rounded-[5px] bg-[#1e1e1e] border border-white/[0.07] flex items-center gap-2.5 min-w-0 cursor-pointer hover:border-white/[0.18]"
+            >
+              <span className="text-[10.5px] text-white/80 truncate max-w-[180px] shrink-0">
+                {primaryAudioStem.title}
+              </span>
+              <div className="flex-1 h-[13px] flex items-center gap-[1.5px] min-w-0">
+                {stemWaveform.map((amp, idx) => {
+                  const played =
+                    (isPlaying || playheadSec > 0) &&
+                    (idx + 0.5) / stemWaveform.length <= audioProgressRatio;
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        height: `${Math.max(18, Math.round(amp * 100))}%`,
+                        backgroundColor: played
+                          ? '#20D5EC'
+                          : 'rgba(255, 255, 255, 0.22)',
+                      }}
+                      className="flex-1 rounded-full"
+                    />
+                  );
+                })}
+              </div>
+              <span className="font-mono text-[9.5px] text-white/45 shrink-0">
+                {formatTimecode(primaryAudioStem.durationSec)}
+              </span>
+            </div>
+          ) : (
+            <div className="flex-1 text-[10.5px] text-white/35 truncate">
+              No audio stem attached yet
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleAttachAudioStem}
+            className="h-[20px] px-2 rounded-[5px] bg-[#222222] hover:bg-[#2c2c2c] border border-white/[0.08] text-[10.5px] text-white/75 hover:text-white flex items-center gap-1 shrink-0 transition-colors"
+          >
+            <Plus className="w-3 h-3" strokeWidth={1.5} />
+            <span>Drop audio</span>
+          </button>
         </div>
       </div>
     </div>
@@ -429,7 +566,7 @@ export const FullscreenTimelineModal: React.FC = () => {
   if (!open) return null;
 
   const previewVideoSrc =
-    masterRenderUrl || activeClip?.videoUrl || '/media/protocol_rain_master.mp4';
+    masterRenderUrl || activeClip?.videoUrl || '/media/real_salt_terracotta_master.mp4';
 
   const handleExportFcpxml = () => {
     const xml = generateFcpxmlDocument(projectTitle, timelineClips);
@@ -541,7 +678,7 @@ export const FullscreenTimelineModal: React.FC = () => {
           <video
             key={previewVideoSrc}
             src={previewVideoSrc}
-            poster={activeClip?.thumbnailUrl || '/media/shot01_rooftop.png'}
+            poster={activeClip?.thumbnailUrl || '/media/real_courtyard_sun.jpg'}
             autoPlay
             loop
             playsInline
@@ -595,23 +732,23 @@ export const FullscreenTimelineModal: React.FC = () => {
               onClick={() =>
                 addVoiceOrSfxClip(
                   'voice',
-                  'Kael Dialogue',
-                  'Signal locked. Moving across sector four.',
-                  4
+                  'Clara Field Notes VO',
+                  'Light moves across limestone slower than memory.',
+                  5
                 )
               }
               className="h-7 px-2.5 rounded-[7px] bg-[#252525] hover:bg-[#2e2e2e] text-[12px] text-white/80 flex items-center gap-1.5"
             >
               <Mic className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
-              <span>+ Dialogue</span>
+              <span>+ Voiceover</span>
             </button>
             <button
               type="button"
               onClick={() =>
                 addVoiceOrSfxClip(
                   'sfx',
-                  'Rain & Sub Impact',
-                  'Heavy rain ambience + anamorphic sub-bass',
+                  'Coastal Wind & Surf',
+                  'Open-air Atlantic breeze and distant surf wash',
                   6
                 )
               }
@@ -655,13 +792,13 @@ export const FullscreenTimelineModal: React.FC = () => {
             {timelineMuted ? (
               <VolumeX className="w-3.5 h-3.5 text-white/50" strokeWidth={1.5} />
             ) : (
-              <Volume2 className="w-3.5 h-3.5" strokeWidth={1.5} />
+              <Volume2 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.5} />
             )}
             <span>{timelineMuted ? 'Muted' : 'Audio On'}</span>
           </button>
         </div>
 
-        {/* 3 Lanes: V1 Video, A1 Dialogue, A2 SFX */}
+        {/* 3 Lanes: V1 Video, A1 Voice, A2 SFX */}
         <div
           className="flex-1 px-4 py-3 space-y-2 overflow-x-auto relative"
           onClick={(e) => {
@@ -736,14 +873,14 @@ export const FullscreenTimelineModal: React.FC = () => {
                       ev.stopPropagation();
                       setSelectedClipId(clip.id);
                     }}
-                    className={`absolute top-1 bottom-1 rounded-[6px] px-2.5 flex items-center justify-between cursor-pointer bg-[#222222] ${
+                    className={`absolute top-1 bottom-1 rounded-[6px] px-2.5 flex items-center justify-between gap-2 cursor-pointer bg-[#222222] ${
                       selected ? 'ring-1 ring-white' : 'border border-white/[0.1]'
                     }`}
                   >
                     <span className="text-[11px] text-white/85 truncate">
                       {clip.title}: “{clip.promptOrDialogue}”
                     </span>
-                    <span className="font-mono text-[10px] text-white/50 ml-2">
+                    <span className="font-mono text-[10px] text-white/50 shrink-0">
                       {clip.durationSec}s
                     </span>
                   </div>
@@ -763,6 +900,7 @@ export const FullscreenTimelineModal: React.FC = () => {
                 const leftPct = (clip.startSec / totalSec) * 100;
                 const widthPct = Math.max(6, (clip.durationSec / totalSec) * 100);
                 const selected = selectedClipId === clip.id;
+                const wf = clip.waveform || createDefaultWaveform(512, 48);
                 return (
                   <div
                     key={clip.id}
@@ -771,14 +909,23 @@ export const FullscreenTimelineModal: React.FC = () => {
                       ev.stopPropagation();
                       setSelectedClipId(clip.id);
                     }}
-                    className={`absolute top-1 bottom-1 rounded-[6px] px-2.5 flex items-center justify-between cursor-pointer bg-[#1e1e1e] ${
+                    className={`absolute top-1 bottom-1 rounded-[6px] px-2.5 flex items-center justify-between gap-3 cursor-pointer bg-[#1e1e1e] ${
                       selected ? 'ring-1 ring-white' : 'border border-white/[0.09]'
                     }`}
                   >
-                    <span className="text-[11px] text-white/75 truncate">
+                    <span className="text-[11px] text-white/80 truncate shrink-0 max-w-[200px]">
                       {clip.title}
                     </span>
-                    <span className="font-mono text-[10px] text-white/45 ml-2">
+                    <div className="flex-1 h-4 flex items-center gap-[1.5px] opacity-80">
+                      {wf.slice(0, 48).map((amp, i) => (
+                        <div
+                          key={i}
+                          style={{ height: `${Math.max(20, Math.round(amp * 100))}%` }}
+                          className="flex-1 rounded-full bg-[#20D5EC]/65"
+                        />
+                      ))}
+                    </div>
+                    <span className="font-mono text-[10px] text-white/45 shrink-0">
                       {clip.durationSec}s
                     </span>
                   </div>

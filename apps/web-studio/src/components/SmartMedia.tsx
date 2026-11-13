@@ -1,20 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { AspectRatio, CanvasNode } from '../types/studio';
+import { LOCAL_MCP_BASE } from '../services/executionRouter';
 import {
   drawCinemaShotFrame,
   renderContactSheetDataUrl,
   renderShotDataUrl,
 } from '../utils/proceduralMedia';
 
-const BACKEND_ORIGIN = 'http://localhost:3001';
+const BACKEND_ORIGIN = LOCAL_MCP_BASE;
 
-function isRuntimeGeneratedMediaPath(relPath: string): boolean {
-  return /^\/media\/(inpaint_|outpaint_|cutout_|upscale4k_|upload_|slice_gen_|lastframe_gen_|render_|shot_|master_|bridge_)/.test(
+export function isRuntimeGeneratedMediaPath(relPath: string): boolean {
+  return /^\/media\/(inpaint_|outpaint_|cutout_|upscale4k_|upload_|slice_gen_|lastframe_gen_|render_|shot_|master_|bridge_|audio_)/.test(
     relPath
   );
 }
 
-function buildCandidateUrls(src?: string): string[] {
+export function buildCandidateUrls(src?: string): string[] {
   if (!src) return [];
   if (src.startsWith('data:') || src.startsWith('blob:')) return [src];
   if (src.startsWith('/media/')) {
@@ -27,7 +28,17 @@ function buildCandidateUrls(src?: string): string[] {
     const rel = src.slice(BACKEND_ORIGIN.length);
     return [src, rel];
   }
+  if (src.startsWith('http://localhost:3001/media/') || src.startsWith('http://127.0.0.1:3001/media/')) {
+    const idx = src.indexOf('/media/');
+    const rel = src.slice(idx);
+    return [`${BACKEND_ORIGIN}${rel}`, rel, src];
+  }
   return [src];
+}
+
+export function resolvePlayableAudioUrl(src?: string): string | undefined {
+  const list = buildCandidateUrls(src);
+  return list[0];
 }
 
 export const SmartMediaImage: React.FC<{

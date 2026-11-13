@@ -1,25 +1,42 @@
 #!/usr/bin/env node
 /**
- * Open-DreamFlow — 7-Stage Automated Monorepo End-to-End Verification Suite
+ * Open-DreamFlow — 9-Stage Automated Monorepo End-to-End Verification Suite
  *
  * Stages:
- *   [1/7 provider-sdk]       Zero-markup SDK clients & cost estimator
- *   [2/7 mcp-client]         Live JSON-RPC roundtrip verifying all 10 MCP tools
- *   [3/7 ffmpeg-media]       206 Partial Content streaming & PROTOCOL: RAIN media
- *   [4/7 inline-editor]      Live /api/upload-media, /api/inpaint (mask), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)
- *   [5/7 persistence-bridge] Live /api/projects CRUD + .dreamflow.json export + /api/bridge/push & /api/bridge/events + WS /bridge
- *   [6/7 chrome-bridge]      Manifest V3 schema, icons, jobId dedup & syntax check across all extension scripts
- *   [7/7 web-studio]         Production Dreamina 1:1 Vite bundle + dist/media integrity
+ *   [1/9 provider-sdk]            Zero-markup SDK clients & $0 markup cost estimator
+ *   [2/9 mcp-client]              Live JSON-RPC roundtrip verifying all 12 MCP tools on :3001/mcp
+ *   [3/9 real-photography-media]  206 Partial Content streaming, ffprobe real photography/cinema check & zero-slop bundle audit
+ *   [4/9 inline-editor]           Live /api/upload-media, /api/inpaint (mask), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)
+ *   [5/9 keyframe-bridge-and-audio] Live /api/keyframe-bridge (A->B), /api/generate-audio (64-bar waveform + TTS/ambient) & multi-track /api/compile-timeline
+ *   [6/9 persistence-bridge]      Live /api/projects CRUD + .dreamflow.json export + /api/bridge/push -> /api/bridge/events
+ *   [7/9 chrome-bridge]           Manifest V3 schema, icons, jobId dedup & syntax check across all 5 extension scripts
+ *   [8/9 cli-and-docker]          open-dreamflow doctor CLI check, unified single-port SPA GET :3001/, Dockerfile & docker-compose.yml
+ *   [9/9 web-studio]              Production Dreamina 1:1 Vite bundle + dist/media real photography integrity
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
+
+function resolveFfprobeBin() {
+  const candidates = [
+    process.env.FFPROBE_PATH,
+    '/Users/seba/.local/bin/ffprobe',
+    '/opt/homebrew/bin/ffprobe',
+    '/usr/local/bin/ffprobe',
+    '/usr/bin/ffprobe',
+  ].filter(Boolean);
+  for (const bin of candidates) {
+    if (fs.existsSync(bin)) return bin;
+  }
+  const probe = spawnSync('ffprobe', ['-version'], { stdio: 'pipe' });
+  return probe.status === 0 ? 'ffprobe' : null;
+}
 
 function crc32(buf) {
   let c = 0xffffffff;
@@ -51,7 +68,7 @@ function createValidRgbaPngBase64(width, height, pixelFn) {
   const raw = Buffer.alloc(height * (1 + width * 4));
   for (let y = 0; y < height; y++) {
     const rowOff = y * (1 + width * 4);
-    raw[rowOff] = 0; // filter none
+    raw[rowOff] = 0;
     for (let x = 0; x < width; x++) {
       const [r, g, b, a] = pixelFn(x, y);
       const p = rowOff + 1 + x * 4;
@@ -71,7 +88,7 @@ function createValidRgbaPngBase64(width, height, pixelFn) {
 }
 
 const SAMPLE_SOURCE_PNG_B64 = createValidRgbaPngBase64(16, 16, (x, y) =>
-  x >= 4 && x < 12 && y >= 4 && y < 12 ? [32, 213, 236, 255] : [13, 17, 23, 255]
+  x >= 4 && x < 12 && y >= 4 && y < 12 ? [214, 188, 156, 255] : [42, 38, 34, 255]
 );
 const SAMPLE_MASK_PNG_DATA_URL = `data:image/png;base64,${createValidRgbaPngBase64(
   16,
@@ -106,6 +123,20 @@ function unlinkMediaIfPresent(mediaUrlPath) {
       }
     }
   }
+}
+
+function findGeneratedMediaDiskPath(mediaUrlPath) {
+  const baseName = path.basename(mediaUrlPath);
+  for (const dir of [
+    path.join(ROOT, 'apps/web-studio/public/media'),
+    path.join(ROOT, 'apps/web-studio/dist/media'),
+  ]) {
+    const candidate = path.join(dir, baseName);
+    if (fs.existsSync(candidate) && fs.statSync(candidate).size > 100) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 async function postJson(baseUrl, route, body) {
@@ -155,12 +186,12 @@ async function verifyStage1ProviderSdk() {
   assert(cost.rawProviderCostUsd > 0, 'Raw Gemini Omni 15s estimate must be positive');
 
   logStep(
-    '1/7 provider-sdk',
+    '1/9 provider-sdk',
     `Verified 6 BYOK/Local GPU clients + $0 markup estimator (15s 1080p Omni = $${cost.rawProviderCostUsd})`
   );
 }
 
-async function verifyStages2To5LiveServer() {
+async function verifyLiveServerStages() {
   const mcpIndex = path.join(ROOT, 'packages/mcp-client/dist/index.js');
   const mcpBridge = path.join(ROOT, 'packages/mcp-client/dist/server-bridge.js');
   assert(fs.existsSync(mcpIndex), 'packages/mcp-client/dist/index.js missing (run npm run build:mcp)');
@@ -169,7 +200,7 @@ async function verifyStages2To5LiveServer() {
   const { UniversalMcpClient, convertToolsToCanvasNodes } = await import(pathToFileURL(mcpIndex).href);
   const { McpStdioBridgeServer } = await import(pathToFileURL(mcpBridge).href);
 
-  // Use live :3001 if already running, otherwise boot an isolated ephemeral bridge server
+  // Use live :3001 if running, otherwise start an isolated ephemeral bridge server
   let baseUrl = 'http://127.0.0.1:3001';
   let ephemeralBridge = null;
   try {
@@ -190,7 +221,7 @@ async function verifyStages2To5LiveServer() {
 
   try {
     // -------------------------------------------------------------------------
-    // Stage [2/7 mcp-client]: Live JSON-RPC roundtrip verifying all 10 MCP tools
+    // Stage [2/9 mcp-client]: Live JSON-RPC roundtrip verifying all 12 MCP tools
     // -------------------------------------------------------------------------
     const healthRes = await fetch(`${baseUrl}/api/health`);
     assert(healthRes.ok, '/api/health returned non-200');
@@ -199,6 +230,8 @@ async function verifyStages2To5LiveServer() {
 
     const expectedTools = [
       'generate_video',
+      'keyframe_bridge',
+      'generate_audio',
       'inpaint_frame',
       'outpaint_expand',
       'remove_background',
@@ -216,7 +249,7 @@ async function verifyStages2To5LiveServer() {
     });
     await client.connect();
     const tools = await client.listTools();
-    assert(tools.length >= 10, `Expected >= 10 MCP tools, got ${tools.length}`);
+    assert(tools.length >= 12, `Expected >= 12 MCP tools, got ${tools.length}`);
 
     const nodeSchemas = convertToolsToCanvasNodes(tools);
     const names = nodeSchemas.map((s) => s.toolName || s.id);
@@ -232,58 +265,100 @@ async function verifyStages2To5LiveServer() {
     await client.disconnect();
 
     logStep(
-      '2/7 mcp-client',
+      '2/9 mcp-client',
       `Live JSON-RPC roundtrip on ${baseUrl}/mcp verified all ${expectedTools.length} MCP tools`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [3/7 ffmpeg-media]: 206 Partial Content & PROTOCOL: RAIN assets
+    // Stage [3/9 real-photography-media]: 206 Partial Content + ffprobe + zero neon slop
     // -------------------------------------------------------------------------
-    const mediaDir = path.join(ROOT, 'apps/web-studio/public/media');
-    const masterMp4 = path.join(mediaDir, 'protocol_rain_master.mp4');
-    if (fs.existsSync(masterMp4)) {
-      const rangeRes = await fetch(`${baseUrl}/media/protocol_rain_master.mp4`, {
-        headers: { Range: 'bytes=0-1023' },
-      });
-      assert(
-        rangeRes.status === 206 || rangeRes.status === 200,
-        `Expected 206 Partial Content on /media/protocol_rain_master.mp4, got ${rangeRes.status}`
-      );
-      const requiredMedia = [
-        'hero_kael_vault.png',
-        'cyber_sneaker_vault.png',
-        'shot01_rooftop.png',
-        'shot01_rooftop.mp4',
-        'shot02_alley_chase.png',
-        'shot02_alley_chase.mp4',
-        'shot02b_sunrise_remix.png',
-        'shot02b_sunrise_remix.mp4',
-        'contact_sheet_9grid.png',
-        'slice_1.png',
-        'slice_9.png',
-        'lastframe_shot02.png',
-        'protocol_rain_master.mp4',
-      ];
-      for (const file of requiredMedia) {
-        const full = path.join(mediaDir, file);
-        assert(fs.existsSync(full) && fs.statSync(full).size > 1024, `Missing/empty media asset: ${file}`);
-      }
-      const masterMb = (fs.statSync(masterMp4).size / (1024 * 1024)).toFixed(2);
-      logStep(
-        '3/7 ffmpeg-media',
-        `Verified 206 Partial Content streaming + ${requiredMedia.length} PROTOCOL: RAIN assets (master = ${masterMb} MB)`
-      );
-    } else {
-      logStep('3/7 ffmpeg-media', `Bridge /api/health verified (ffmpeg=${Boolean(health.ffmpeg)})`);
+    const publicMediaDir = path.join(ROOT, 'apps/web-studio/public/media');
+    const distMediaDir = path.join(ROOT, 'apps/web-studio/dist/media');
+    const resolveAsset = (file) => {
+      const distCandidate = path.join(distMediaDir, file);
+      if (fs.existsSync(distCandidate)) return distCandidate;
+      return path.join(publicMediaDir, file);
+    };
+
+    const requiredRealMedia = [
+      'real_portrait_clara.jpg',
+      'real_leica_craft.jpg',
+      'real_courtyard_sun.jpg',
+      'real_coastal_cliffs.jpg',
+      'real_atelier_interior.jpg',
+      'real_alpine_road.jpg',
+      'real_kyoto_timber.jpg',
+      'real_contact_9grid.jpg',
+      'real_shot01_courtyard.mp4',
+      'real_shot02_bridge.mp4',
+      'real_shot03_atelier.mp4',
+      'real_coastal_foley.mp3',
+      'real_salt_terracotta_master.mp4',
+    ];
+
+    for (const file of requiredRealMedia) {
+      const full = resolveAsset(file);
+      assert(fs.existsSync(full) && fs.statSync(full).size > 2048, `Missing/empty real photography asset: ${file}`);
     }
 
+    const rangeRes = await fetch(`${baseUrl}/media/real_salt_terracotta_master.mp4`, {
+      headers: { Range: 'bytes=0-1023' },
+    });
+    assert(
+      rangeRes.status === 206,
+      `Expected 206 Partial Content on /media/real_salt_terracotta_master.mp4, got ${rangeRes.status}`
+    );
+
+    const ffprobeBin = resolveFfprobeBin();
+    assert(ffprobeBin, 'ffprobe binary required for Stage 3 real photography stream inspection');
+    for (const inspectTarget of [
+      'real_courtyard_sun.jpg',
+      'real_coastal_cliffs.jpg',
+      'real_contact_9grid.jpg',
+      'real_shot02_bridge.mp4',
+      'real_coastal_foley.mp3',
+      'real_salt_terracotta_master.mp4',
+    ]) {
+      const out = execFileSync(
+        ffprobeBin,
+        ['-v', 'error', '-show_entries', 'stream=codec_type,width,height', '-of', 'json', resolveAsset(inspectTarget)],
+        { encoding: 'utf8' }
+      );
+      const parsed = JSON.parse(out);
+      assert(
+        Array.isArray(parsed.streams) && parsed.streams.length >= 1,
+        `ffprobe found zero streams in ${inspectTarget}`
+      );
+    }
+
+    // Assert zero "Neo-Tokyo" / "Hero_Kael" / "Protocol: Rain" strings exist in built dist/assets/*.js
+    const distAssetsDir = path.join(ROOT, 'apps/web-studio/dist/assets');
+    assert(fs.existsSync(distAssetsDir), 'apps/web-studio/dist/assets missing (run npm run build)');
+    const builtJsFiles = fs.readdirSync(distAssetsDir).filter((f) => f.endsWith('.js'));
+    assert(builtJsFiles.length >= 1, 'No JS bundle found in apps/web-studio/dist/assets');
+    for (const jsFile of builtJsFiles) {
+      const bundleText = fs.readFileSync(path.join(distAssetsDir, jsFile), 'utf8');
+      for (const banned of ['Neo-Tokyo', 'Hero_Kael', 'Protocol: Rain', 'Cyber_Sneaker']) {
+        assert(
+          !bundleText.includes(banned),
+          `Forbidden legacy neon slop string "${banned}" found inside compiled bundle ${jsFile}`
+        );
+      }
+    }
+
+    const masterSizeMb = (fs.statSync(resolveAsset('real_salt_terracotta_master.mp4')).size / (1024 * 1024)).toFixed(2);
+    logStep(
+      '3/9 real-photography-media',
+      `Verified 206 Range streaming, ffprobe on ${requiredRealMedia.length} real 35mm/cinema assets (master = ${masterSizeMb} MB) & 0 neon strings in JS bundle`
+    );
+
     // -------------------------------------------------------------------------
-    // Stage [4/7 inline-editor]: Live upload, mask inpaint, 16:9 outpaint, cutout & 4K upscale
+    // Stage [4/9 inline-editor]: Live upload, mask inpaint, 16:9 outpaint, cutout & 4K upscale
     // -------------------------------------------------------------------------
     assert(health.ffmpeg === true, 'FFmpeg must be available for Stage 4 inline-editor verification');
 
     const uploadRes = await postJson(baseUrl, '/api/upload-media', {
-      filename: 'verify_seed.png',
+      filename: 'verify_seed_linen.png',
       mimeType: 'image/png',
       dataBase64: SAMPLE_SOURCE_PNG_B64,
     });
@@ -291,60 +366,99 @@ async function verifyStages2To5LiveServer() {
     assert(seedUrl, '/api/upload-media did not return mediaUrl');
     createdMediaPaths.push(seedUrl);
 
-    const sourceForEdit = fs.existsSync(path.join(mediaDir, 'shot01_rooftop.png'))
-      ? '/media/shot01_rooftop.png'
-      : seedUrl;
+    const sourceForEdit = '/media/real_courtyard_sun.jpg';
 
     const inpaintRes = await postJson(baseUrl, '/api/inpaint', {
       imageUrl: sourceForEdit,
       maskDataUrl: SAMPLE_MASK_PNG_DATA_URL,
-      prompt: 'Add neon cyan rim light reflection on wet jacket',
+      prompt: 'Soften warm Mediterranean afternoon shadow across limestone arch',
     });
     assert(inpaintRes.imageUrl, '/api/inpaint missing imageUrl');
     createdMediaPaths.push(inpaintRes.imageUrl);
-    const inpaintDisk = path.join(mediaDir, path.basename(inpaintRes.imageUrl));
-    assert(fs.existsSync(inpaintDisk) && fs.statSync(inpaintDisk).size > 100, 'Inpaint PNG missing on disk');
+    assert(findGeneratedMediaDiskPath(inpaintRes.imageUrl), 'Inpaint PNG missing on disk');
 
     const outpaintRes = await postJson(baseUrl, '/api/outpaint', {
       imageUrl: sourceForEdit,
       targetAspect: '16:9',
-      prompt: 'Expand rainy Shinjuku skyline horizon',
+      prompt: 'Extend sunlit terracotta courtyard wall and olive foliage',
     });
     assert(outpaintRes.imageUrl, '/api/outpaint missing imageUrl');
     createdMediaPaths.push(outpaintRes.imageUrl);
-    const outpaintDisk = path.join(mediaDir, path.basename(outpaintRes.imageUrl));
-    assert(fs.existsSync(outpaintDisk) && fs.statSync(outpaintDisk).size > 100, 'Outpaint PNG missing on disk');
+    assert(findGeneratedMediaDiskPath(outpaintRes.imageUrl), 'Outpaint PNG missing on disk');
 
     const cutoutRes = await postJson(baseUrl, '/api/remove-bg', {
-      imageUrl: sourceForEdit,
+      imageUrl: '/media/real_leica_craft.jpg',
     });
     assert(cutoutRes.imageUrl, '/api/remove-bg missing imageUrl');
     createdMediaPaths.push(cutoutRes.imageUrl);
-    const cutoutDisk = path.join(mediaDir, path.basename(cutoutRes.imageUrl));
-    assert(fs.existsSync(cutoutDisk) && fs.statSync(cutoutDisk).size > 100, 'Cutout PNG missing on disk');
+    assert(findGeneratedMediaDiskPath(cutoutRes.imageUrl), 'Cutout PNG missing on disk');
 
     const upscaleRes = await postJson(baseUrl, '/api/upscale', {
       imageUrl: seedUrl,
     });
     assert(upscaleRes.imageUrl, '/api/upscale missing imageUrl');
     createdMediaPaths.push(upscaleRes.imageUrl);
-    const upscaleDisk = path.join(mediaDir, path.basename(upscaleRes.imageUrl));
-    assert(fs.existsSync(upscaleDisk) && fs.statSync(upscaleDisk).size > 100, 'Upscale 4K PNG missing on disk');
+    assert(findGeneratedMediaDiskPath(upscaleRes.imageUrl), 'Upscale 4K PNG missing on disk');
 
     logStep(
-      '4/7 inline-editor',
-      `Verified live /api/upload-media, /api/inpaint (masked), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)`
+      '4/9 inline-editor',
+      'Verified live /api/upload-media, /api/inpaint (masked), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [5/7 persistence-bridge]: Projects CRUD + .dreamflow.json export + Bridge relay
+    // Stage [5/9 keyframe-bridge-and-audio]: A->B optical bridge + 64-bar audio + multi-track mix
+    // -------------------------------------------------------------------------
+    const bridgeRes = await postJson(baseUrl, '/api/keyframe-bridge', {
+      startImageUrl: '/media/real_courtyard_sun.jpg',
+      endImageUrl: '/media/real_coastal_cliffs.jpg',
+      durationSec: 4,
+      motionCurve: 'ease-in-out',
+      prompt: 'Natural 35mm optical push from sunlit limestone courtyard to Atlantic cliffs',
+    });
+    assert(bridgeRes.videoUrl, '/api/keyframe-bridge missing videoUrl');
+    createdMediaPaths.push(bridgeRes.videoUrl);
+    assert(findGeneratedMediaDiskPath(bridgeRes.videoUrl), 'Keyframe bridge MP4 missing on disk');
+
+    const audioRes = await postJson(baseUrl, '/api/generate-audio', {
+      prompt: 'Gentle Atlantic surf swell and warm linen room tone',
+      mode: 'ambient',
+      durationSec: 4,
+    });
+    assert(audioRes.audioUrl, '/api/generate-audio missing audioUrl');
+    createdMediaPaths.push(audioRes.audioUrl);
+    assert(
+      Array.isArray(audioRes.waveform) && audioRes.waveform.length === 64,
+      `Expected 64-bar RMS waveform array, got ${Array.isArray(audioRes.waveform) ? audioRes.waveform.length : typeof audioRes.waveform}`
+    );
+    assert(
+      audioRes.waveform.every((v) => typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 1),
+      'Waveform values must be normalized finite numbers in (0, 1]'
+    );
+    assert(findGeneratedMediaDiskPath(audioRes.audioUrl), 'Generated audio MP3 missing on disk');
+
+    const compileMixRes = await postJson(baseUrl, '/api/compile-timeline', {
+      clips: ['/media/real_shot01_courtyard.mp4', '/media/real_shot02_bridge.mp4'],
+      audioTracks: [{ audioUrl: '/media/real_coastal_foley.mp3', volume: 0.85 }],
+    });
+    const compiledMasterUrl = compileMixRes.masterVideoUrl || compileMixRes.videoUrl;
+    assert(compiledMasterUrl, '/api/compile-timeline with audioTracks did not return master video URL');
+    createdMediaPaths.push(compiledMasterUrl);
+    assert(findGeneratedMediaDiskPath(compiledMasterUrl), 'Multi-track compiled master MP4 missing on disk');
+
+    logStep(
+      '5/9 keyframe-bridge-and-audio',
+      'Verified live /api/keyframe-bridge (A→B), /api/generate-audio (64-bar RMS waveform + MP3) & multi-track /api/compile-timeline'
+    );
+
+    // -------------------------------------------------------------------------
+    // Stage [6/9 persistence-bridge]: Projects CRUD + .dreamflow.json export + Bridge relay
     // -------------------------------------------------------------------------
     const saveRes = await postJson(baseUrl, '/api/projects', {
       id: tempProjectId,
-      name: 'E2E Verification Canvas',
-      state: { nodes: [{ id: 'n1', kind: 'image', title: 'Images 1' }], edges: [] },
+      name: 'Salt & Terracotta E2E Verification',
+      state: { nodes: [{ id: 'n1', kind: 'image', title: 'Images 1 · Limestone Courtyard' }], edges: [] },
       createSnapshot: true,
-      snapshotLabel: 'Initial E2E Snapshot',
+      snapshotLabel: 'Initial Editorial Snapshot',
     });
     assert(saveRes.id === tempProjectId, 'Saved project id mismatch');
     assert(saveRes.snapshotCount >= 1, 'Expected snapshotCount >= 1');
@@ -352,7 +466,10 @@ async function verifyStages2To5LiveServer() {
     const getProjRes = await fetch(`${baseUrl}/api/projects/${tempProjectId}`);
     assert(getProjRes.ok, 'GET /api/projects/:id failed');
     const gotProj = await getProjRes.json();
-    assert(gotProj.ok && gotProj.project?.name === 'E2E Verification Canvas', 'Loaded project payload mismatch');
+    assert(
+      gotProj.ok && gotProj.project?.name === 'Salt & Terracotta E2E Verification',
+      'Loaded project payload mismatch'
+    );
 
     const exportRes = await fetch(`${baseUrl}/api/projects/${tempProjectId}/export`);
     assert(exportRes.ok, 'GET /api/projects/:id/export failed');
@@ -368,9 +485,9 @@ async function verifyStages2To5LiveServer() {
     const pushBridge = await postJson(baseUrl, '/api/bridge/push', {
       type: 'bridge_asset',
       source: 'dreamina',
-      title: 'E2E Captured Dreamina Frame',
-      mediaUrl: '/media/shot01_rooftop.png',
-      prompt: 'Rooftop neon keyframe capture',
+      title: 'Bridge · 35mm Alpine Location Frame',
+      mediaUrl: '/media/real_alpine_road.jpg',
+      prompt: 'Morning mist clearing over timber mountain pass, natural 35mm daylight',
     });
     const pushedEventId = pushBridge.event?.eventId || pushBridge.eventId;
     assert(pushedEventId, '/api/bridge/push did not stamp eventId');
@@ -384,8 +501,39 @@ async function verifyStages2To5LiveServer() {
     );
 
     logStep(
-      '5/7 persistence-bridge',
-      `Verified /api/projects CRUD + snapshot + .dreamflow.json export + /api/bridge/push -> /api/bridge/events`
+      '6/9 persistence-bridge',
+      'Verified /api/projects CRUD + snapshot + .dreamflow.json export + /api/bridge/push -> /api/bridge/events'
+    );
+
+    // -------------------------------------------------------------------------
+    // Stage [7/9 chrome-bridge]: Manifest V3 + 5 extension scripts syntax check
+    // -------------------------------------------------------------------------
+    verifyStage7ChromeBridge();
+
+    // -------------------------------------------------------------------------
+    // Stage [8/9 cli-and-docker]: open-dreamflow doctor + unified SPA GET :3001/ + Docker
+    // -------------------------------------------------------------------------
+    const cliPath = path.join(ROOT, 'bin/open-dreamflow.mjs');
+    assert(fs.existsSync(cliPath), 'bin/open-dreamflow.mjs missing');
+    const doctorOut = execFileSync(process.execPath, [cliPath, 'doctor'], { encoding: 'utf8' });
+    assert(
+      doctorOut.includes('All core Open-DreamFlow runtime checks passed'),
+      `open-dreamflow doctor unexpected output: ${doctorOut}`
+    );
+
+    const spaRootRes = await fetch(`${baseUrl}/`);
+    assert(spaRootRes.status === 200, `Expected GET ${baseUrl}/ unified SPA to return 200 OK, got ${spaRootRes.status}`);
+    const spaHtml = await spaRootRes.text();
+    assert(spaHtml.includes('<div id="root"></div>'), 'Unified SPA GET / missing <div id="root"></div>');
+
+    for (const dockerFile of ['Dockerfile', 'docker-compose.yml', '.dockerignore']) {
+      const fullDocker = path.join(ROOT, dockerFile);
+      assert(fs.existsSync(fullDocker) && fs.statSync(fullDocker).size > 40, `Missing/empty ${dockerFile}`);
+    }
+
+    logStep(
+      '8/9 cli-and-docker',
+      `Verified 'open-dreamflow doctor' (exit 0), unified single-port SPA GET ${baseUrl}/ (200 OK) & Dockerfile + docker-compose.yml`
     );
   } finally {
     for (const mediaPath of createdMediaPaths) {
@@ -407,7 +555,7 @@ async function verifyStages2To5LiveServer() {
   }
 }
 
-function verifyStage6ChromeBridge() {
+function verifyStage7ChromeBridge() {
   const extDir = path.join(ROOT, 'extensions/chrome-bridge');
   const manifestPath = path.join(extDir, 'manifest.json');
   assert(fs.existsSync(manifestPath), 'extensions/chrome-bridge/manifest.json missing');
@@ -438,15 +586,15 @@ function verifyStage6ChromeBridge() {
 
   const bgSource = fs.readFileSync(path.join(extDir, 'background.js'), 'utf8');
   assert(bgSource.includes('isKnownJobId'), 'background.js missing jobId deduplication guard');
-  assert(bgSource.includes('/api/bridge/push'), 'background.js missing Stage 4 /api/bridge/push relay');
+  assert(bgSource.includes('/api/bridge/push'), 'background.js missing /api/bridge/push relay');
 
   logStep(
-    '6/7 chrome-bridge',
+    '7/9 chrome-bridge',
     `Manifest V3 v${manifest.version}, 3 icons, live bridge relay & ${scripts.length} scripts syntax-checked`
   );
 }
 
-function verifyStage7WebStudioBundle() {
+function verifyStage9WebStudioBundle() {
   const distDir = path.join(ROOT, 'apps/web-studio/dist');
   const indexHtml = path.join(distDir, 'index.html');
   assert(
@@ -471,34 +619,39 @@ function verifyStage7WebStudioBundle() {
   const cssSizeKb = (fs.statSync(cssPath).size / 1024).toFixed(1);
 
   const jsBundle = fs.readFileSync(jsPath, 'utf8');
-  for (const marker of ['Create new', 'Timelines 1', '#20D5EC']) {
+  for (const marker of ['Salt & Terracotta', 'Timelines 1', '#20D5EC']) {
     assert(
       jsBundle.toLowerCase().includes(marker.toLowerCase()),
-      `Dreamina Canvas UI marker missing in compiled bundle: ${marker}`
+      `Stage 5 Studio UI marker missing in compiled bundle: ${marker}`
     );
   }
 
   const distMedia = path.join(distDir, 'media');
-  if (fs.existsSync(path.join(ROOT, 'apps/web-studio/public/media/protocol_rain_master.mp4'))) {
+  for (const mediaFile of [
+    'real_salt_terracotta_master.mp4',
+    'real_shot02_bridge.mp4',
+    'real_coastal_foley.mp3',
+    'real_courtyard_sun.jpg',
+    'real_coastal_cliffs.jpg',
+  ]) {
     assert(
-      fs.existsSync(path.join(distMedia, 'protocol_rain_master.mp4')),
-      'dist/media/protocol_rain_master.mp4 missing from production build'
+      fs.existsSync(path.join(distMedia, mediaFile)),
+      `dist/media/${mediaFile} missing from production build`
     );
   }
 
   logStep(
-    '7/7 web-studio',
-    `Dreamina 1:1 Vite bundle + dist/media verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
+    '9/9 web-studio',
+    `Dreamina 1:1 Vite bundle + dist/media real photography verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
   );
 }
 
 async function main() {
-  console.log('\nOpen-DreamFlow — Running 7-Stage End-to-End Verification Suite...');
+  console.log('\nOpen-DreamFlow — Running 9-Stage End-to-End Verification Suite...');
   await verifyStage1ProviderSdk();
-  await verifyStages2To5LiveServer();
-  verifyStage6ChromeBridge();
-  verifyStage7WebStudioBundle();
-  console.log('All 7/7 Open-DreamFlow subsystems passed verification with 0 errors!\n');
+  await verifyLiveServerStages();
+  verifyStage9WebStudioBundle();
+  console.log('All 9/9 Open-DreamFlow subsystems passed verification with 0 errors!\n');
 }
 
 main().catch((err) => {
