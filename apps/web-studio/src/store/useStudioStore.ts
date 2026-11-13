@@ -21,6 +21,7 @@ import type {
   MCPServerEntry,
   MCPToolDefinition,
   McpBackendHealth,
+  McpOAuthSession,
   MultiframeBridge,
   MultiframeCard,
   PlatformDefinition,
@@ -65,6 +66,7 @@ import {
 import {
   LOCAL_MCP_BASE,
   LOCAL_MCP_HTTP_URL,
+  checkBrowserConnectionsViaBackend,
   compileTimelineViaBackend,
   deleteDiskProject,
   deleteExternalMcpServer,
@@ -80,6 +82,7 @@ import {
   getActiveApiKeyForProvider,
   getDefaultDiscoveredMcpTools,
   getDiskProject,
+  getMcpOAuthStatusViaBackend,
   getProviderDisplayLabel,
   importDiskProjectBundle,
   inpaintViaBackend,
@@ -99,6 +102,7 @@ import {
   renderVideoViaBackend,
   saveDiskProject,
   sliceGridViaBackend,
+  startMcpOAuthViaBackend,
   uploadMediaViaBackend,
   upscaleViaBackend,
   verifyProviderViaBackend,
@@ -248,6 +252,8 @@ function defaultByok(): BYOKCredentials {
     openaiApiKey: '',
     comfyUiUrl: 'http://127.0.0.1:8188',
     higgsfieldApiKey: '',
+    higgsfieldKeyId: '',
+    higgsfieldKeySecret: '',
     sumeApiKey: '',
     klingAccessKey: '',
     klingSecretKey: '',
@@ -328,6 +334,8 @@ export interface StudioState {
   connectedMcpPlatforms: PlatformId[];
   configuredApiPlatforms: PlatformId[];
   launchingBrowserTarget: string | null;
+  checkingBrowserPlatform: string | null;
+  mcpOAuthSession: McpOAuthSession | null;
   lastImagePlatformId: PlatformId;
   lastVideoPlatformId: PlatformId;
   lastAudioPlatformId: PlatformId;
@@ -504,6 +512,14 @@ export interface StudioState {
   ) => Promise<void>;
   refreshConnectionsStatus: () => Promise<void>;
   launchConnectedCreatorBrowser: (platformId?: string) => Promise<boolean>;
+  checkBrowserConnections: (platformId?: string) => Promise<{
+    ok: boolean;
+    connected: boolean;
+    connectedPlatforms: PlatformId[];
+  }>;
+  startMcpOAuth: (platformId: string, mcpUrl?: string) => Promise<McpOAuthSession | null>;
+  pollMcpOAuthStatus: (sessionId?: string) => Promise<McpOAuthSession | null>;
+  setMcpOAuthSession: (session: McpOAuthSession | null) => void;
   runLiveBridgeTestGeneration: (
     target: BrowserPlatformTarget,
     mode?: 'image' | 'video' | 'audio'
@@ -671,6 +687,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   connectedMcpPlatforms: [],
   configuredApiPlatforms: [],
   launchingBrowserTarget: null,
+  checkingBrowserPlatform: null,
+  mcpOAuthSession: null,
   lastImagePlatformId: 'higgsfield',
   lastVideoPlatformId: 'kling',
   lastAudioPlatformId: 'elevenlabs',
@@ -3650,6 +3668,23 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           dreaminaTabConnected: Boolean(p.dreaminaConnected ?? false),
         },
       }));
+    } else if (type === 'dreamflow_mcp_oauth_complete') {
+      const raw = msg as unknown as {
+        sessionId?: string;
+        platformId?: string;
+        serverId?: string;
+        ok?: boolean;
+        error?: string;
+      };
+      if (raw.sessionId) {
+        void get().pollMcpOAuthStatus(raw.sessionId);
+      }
+      if (raw.ok) {
+        void get().refreshPlatformsAndExternalMcp();
+        get().showToast(`${raw.platformId || 'MCP'} connected successfully!`, 'ok');
+      } else if (raw.error) {
+        get().showToast(raw.error, 'error');
+      }
     } else if (type === 'DREAMFLOW_JOB_COMPLETE' || type === 'DREAMFLOW_JOB_COMPLETED') {
       const jobId = String(p.jobId || '');
       const videoUrl = typeof p.videoUrl === 'string' ? p.videoUrl : undefined;
@@ -4727,6 +4762,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       ev?.source === 'flow' ? 'google-flow' : String(ev?.source || '');
 
     if (!ev || (ev.type !== 'bridge_asset' && ev.type !== 'bridge_prompt')) {
+      if (ev?.type === 'mcp_oauth_update') {
+        const sess = (ev as unknown as { session?: McpOAuthSession }).session;
+        if (sess && sess.sessionId) {
+          const prevStep = get().mcpOAuthSession?.step;
+          set({ mcpOAuthSession: sess });
+          if (sess.step === 'connected' && prevStep !== 'connected') {
+            void get().refreshPlatformsAndExternalMcp();
+            get().showToast(`${sess.platformId} MCP Connected Successfully!`);
+          }
+        }
+        return true;
+      }
       if (ev?.type === 'bridge_session') {
         const domainMap: Array<[string, PlatformId]> = [
           ['dreamina.capcut.com', 'dreamina'],
@@ -5001,7 +5048,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       kling: byok.klingApiKey?.trim() || undefined,
       elevenlabs: byok.elevenlabsApiKey?.trim() || undefined,
       openai: byok.openaiApiKey?.trim() || undefined,
-      higgsfield: byok.higgsfieldApiKey?.trim() || undefined,
+      higgsfield:
+        byok.higgsfieldKeyId?.trim() && byok.higgsfieldKeySecret?.trim()
+          ? `${byok.higgsfieldKeyId.trim()}:${byok.higgsfieldKeySecret.trim()}`
+          : byok.higgsfieldApiKey?.trim() || undefined,
       sume: byok.sumeApiKey?.trim() || undefined,
       openart: byok.openartApiKey?.trim() || undefined,
       imagineart: byok.imagineartApiKey?.trim() || undefined,
@@ -5014,8 +5064,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const result = await verifyProviderViaBackend({
       provider,
       apiKey: apiKeyMap[provider],
-      accessKey: provider === 'kling' ? byok.klingAccessKey?.trim() || undefined : undefined,
-      secretKey: provider === 'kling' ? byok.klingSecretKey?.trim() || undefined : undefined,
+      accessKey:
+        provider === 'kling'
+          ? byok.klingAccessKey?.trim() || undefined
+          : provider === 'higgsfield'
+          ? byok.higgsfieldKeyId?.trim() || undefined
+          : undefined,
+      secretKey:
+        provider === 'kling'
+          ? byok.klingSecretKey?.trim() || undefined
+          : provider === 'higgsfield'
+          ? byok.higgsfieldKeySecret?.trim() || undefined
+          : undefined,
       baseUrl:
         provider === 'comfyui'
           ? byok.comfyUiUrl?.trim() || 'http://127.0.0.1:8188'
@@ -5898,6 +5958,89 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     setTimeout(() => void get().refreshConnectionsStatus(), 1500);
     setTimeout(() => void get().refreshConnectionsStatus(), 4000);
     return true;
+  },
+
+  checkBrowserConnections: async (platformId) => {
+    set({ checkingBrowserPlatform: platformId || 'all' });
+    const res = await checkBrowserConnectionsViaBackend(platformId);
+    set({ checkingBrowserPlatform: null });
+    await get().refreshConnectionsStatus();
+    const list = res.connectedBrowserPlatforms || [];
+    const connected = platformId ? list.includes(platformId as PlatformId) : list.length > 0;
+    if (connected) {
+      get().showToast(
+        platformId
+          ? `Detected active ${platformId} browser session!`
+          : `Detected ${list.length} active browser sessions!`
+      );
+    } else if (res.error) {
+      get().showToast(res.error, 'error');
+    } else {
+      get().showToast(
+        platformId
+          ? `No open signed-in ${platformId} tab detected yet — sign in via browser then click Check again.`
+          : 'No open creator tabs detected yet.',
+        'error'
+      );
+    }
+    return {
+      ok: res.ok,
+      connected,
+      connectedPlatforms: list,
+    };
+  },
+
+  setMcpOAuthSession: (mcpOAuthSession) => set({ mcpOAuthSession }),
+
+  startMcpOAuth: async (platformId, mcpUrl) => {
+    set({
+      mcpOAuthSession: {
+        sessionId: 'starting',
+        platformId,
+        mcpUrl: mcpUrl || (platformId === 'higgsfield' ? 'https://mcp.higgsfield.ai/mcp' : ''),
+        step: 'registering',
+        updatedAt: Date.now(),
+      },
+    });
+    const res = await startMcpOAuthViaBackend(platformId, mcpUrl);
+    if (!res.ok || !res.sessionId || !res.authorizeUrl) {
+      const errSess: McpOAuthSession = {
+        sessionId: res.sessionId || 'error',
+        platformId,
+        mcpUrl: res.mcpUrl || mcpUrl || '',
+        step: 'error',
+        error: res.error || 'Could not start MCP OAuth handshake',
+        updatedAt: Date.now(),
+      };
+      set({ mcpOAuthSession: errSess });
+      get().showToast(errSess.error || 'MCP OAuth error', 'error');
+      return errSess;
+    }
+    const nextSess: McpOAuthSession = {
+      sessionId: res.sessionId,
+      state: res.state,
+      platformId: res.platformId || platformId,
+      mcpUrl: res.mcpUrl || mcpUrl || '',
+      authorizeUrl: res.authorizeUrl,
+      step: res.step || 'awaiting_login',
+      updatedAt: Date.now(),
+    };
+    set({ mcpOAuthSession: nextSess });
+    return nextSess;
+  },
+
+  pollMcpOAuthStatus: async (sessionId) => {
+    const targetId = sessionId || get().mcpOAuthSession?.sessionId;
+    if (!targetId || targetId === 'starting' || targetId === 'error') return null;
+    const res = await getMcpOAuthStatusViaBackend(targetId);
+    if (!res.ok || !res.session) return null;
+    const prevStep = get().mcpOAuthSession?.step;
+    set({ mcpOAuthSession: res.session });
+    if (res.session.step === 'connected' && prevStep !== 'connected') {
+      await get().refreshPlatformsAndExternalMcp();
+      get().showToast(`${res.session.platformId} MCP Connected Successfully!`);
+    }
+    return res.session;
   },
 
   refreshPlatformsAndExternalMcp: async () => {

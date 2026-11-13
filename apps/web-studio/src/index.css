@@ -83,3 +83,62 @@
   stroke-dasharray: 6 6;
   animation: cyan-wire-dash 0.9s linear infinite;
 }
+
+@keyframes orbit-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes brand-pulse-glow {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(32, 213, 236, 0.25);
+  }
+  50% {
+    transform: scale(1.04);
+    box-shadow: 0 0 24px 4px rgba(32, 213, 236, 0.16);
+  }
+}
+
+@keyframes check-spring-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.45);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes check-stroke-draw {
+  0% {
+    stroke-dashoffset: 36;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+.animate-orbit-spin {
+  animation: orbit-spin 1.8s linear infinite;
+}
+
+.animate-brand-pulse {
+  animation: brand-pulse-glow 2.1s ease-in-out infinite;
+}
+
+.animate-check-spring {
+  animation: check-spring-in 0.45s cubic-bezier(0.22, 1.4, 0.36, 1) forwards;
+}
+
+.animate-check-stroke {
+  stroke-dasharray: 36;
+  stroke-dashoffset: 36;
+  animation: check-stroke-draw 0.42s ease-out 0.12s forwards;
+}

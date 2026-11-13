@@ -133,7 +133,8 @@ export const App: React.FC = () => {
             } else if (
               parsed.type === 'bridge_asset' ||
               parsed.type === 'bridge_prompt' ||
-              parsed.type === 'bridge_session'
+              parsed.type === 'bridge_session' ||
+              parsed.type === 'mcp_oauth_update'
             ) {
               ingestBridgeWsEvent(parsed as unknown as BridgeIncomingEvent);
             }

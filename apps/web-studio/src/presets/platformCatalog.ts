@@ -92,6 +92,17 @@ export interface ExternalMcpTemplate {
 
 export const EXTERNAL_MCP_TEMPLATES: ExternalMcpTemplate[] = [
   {
+    id: 'tpl-higgsfield-cli-mcp',
+    name: 'Higgsfield CLI MCP (@higgsfield/cli)',
+    platformId: 'higgsfield',
+    description: 'Local stdio MCP bridge via @higgsfield/cli using your Key ID + Key Secret.',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@higgsfield/cli', 'mcp'],
+    envKeyName: 'HF_API_KEY',
+    envPlaceholder: 'KEY_ID:KEY_SECRET',
+  },
+  {
     id: 'tpl-elevenlabs-mcp',
     name: 'ElevenLabs Official MCP',
     platformId: 'elevenlabs',
@@ -919,10 +930,10 @@ export interface PlatformUiMeta {
 
 export const PLATFORM_UI_META: Record<PlatformId, PlatformUiMeta> = {
   higgsfield: {
-    tagline: 'ChatGPT Image 2.6 · Soul · DoP Cinema I2V · Wan 2.6',
-    apiKeyUrl: 'https://cloud.higgsfield.ai',
-    apiKeyUrlLabel: 'cloud.higgsfield.ai',
-    apiPlaceholder: 'hf_...',
+    tagline: 'Official MCP OAuth (mcp.higgsfield.ai) · Soul · DoP Cinema I2V · Genjutsu',
+    apiKeyUrl: 'https://console.higgsfield.ai',
+    apiKeyUrlLabel: 'console.higgsfield.ai',
+    apiPlaceholder: 'KEY_ID:KEY_SECRET',
     verifySlug: 'higgsfield',
   },
   sume: {
@@ -1067,7 +1078,12 @@ export function getPlatformConnectionStatus(
     Boolean(backendPlatform?.activeTransports?.includes('api-key'));
   switch (platformId) {
     case 'higgsfield':
-      if (byok.higgsfieldApiKey?.trim()) hasApiKey = true;
+      if (
+        byok.higgsfieldApiKey?.trim() ||
+        (byok.higgsfieldKeyId?.trim() && byok.higgsfieldKeySecret?.trim())
+      ) {
+        hasApiKey = true;
+      }
       break;
     case 'sume':
       if (byok.sumeApiKey?.trim()) hasApiKey = true;
@@ -1119,12 +1135,12 @@ export function getPlatformConnectionStatus(
     | 'Connected via Browser'
     | 'Connected via MCP'
     | 'Connected via API Key'
-    | 'Not Connected' = hasBrowser
+    | 'Not Connected' = hasMcp
+    ? 'Connected via MCP'
+    : hasBrowser
     ? 'Connected via Browser'
     : hasApiKey
     ? 'Connected via API Key'
-    : hasMcp
-    ? 'Connected via MCP'
     : 'Not Connected';
 
   const labels = transports.map((t) =>
@@ -1151,8 +1167,16 @@ export function resolveByokCredentialsForPlatform(
   baseUrl?: string;
 } {
   switch (platformId) {
-    case 'higgsfield':
-      return { apiKey: byok.higgsfieldApiKey?.trim() || undefined };
+    case 'higgsfield': {
+      const keyId = byok.higgsfieldKeyId?.trim();
+      const keySecret = byok.higgsfieldKeySecret?.trim();
+      const combined = keyId && keySecret ? `${keyId}:${keySecret}` : byok.higgsfieldApiKey?.trim();
+      return {
+        apiKey: combined || undefined,
+        accessKey: keyId || undefined,
+        secretKey: keySecret || undefined,
+      };
+    }
     case 'sume':
       return { apiKey: byok.sumeApiKey?.trim() || undefined };
     case 'kling':

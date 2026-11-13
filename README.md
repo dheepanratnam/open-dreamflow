@@ -99,14 +99,12 @@ npm test
 
 ### 3. Connect Your Platform Credits (MCP · Browser Bridge · API Keys)
 
-Click **`Connections · Credits`** in the top-right header for the 1-click guided hub:
+Click **`Connections · Credits`** in the top-right header for the **MCP-First Guided Hub** with unmistakable company brand icons (`PlatformBrandIcon`) and an animated 4-stage connection progress stepper:
 
-- **Top Action — `Launch Connected Creator Browser (Connect All Accounts)`:**
-  Opens a pre-linked Creator Chrome profile for **Higgsfield, Sume, Kling AI, Dreamina, Google Flow, OpenArt, ImagineArt, and ElevenLabs**—sign in once and live **`● Connected via Browser`** badges update automatically every 3 seconds via `GET /api/connections/status`.
-- **Tab 1 — Creator Platforms & APIs (`12 Platforms · Side-by-Side`):**
-  Pick any platform from the left sidebar to either click **`Sign In to <Platform> ↗`** (Option A: Web Subscription / Free Credits) or click **`Get <Platform> API Key ↗`** + **`Save & Verify`** (Option B: `$0 Markup` official API keys stored strictly in browser `localStorage`). Includes a collapsible manual Chrome extension / DevTools footer accordion for existing Chrome windows.
-- **Tab 2 — MCP Servers · 1-Click Presets (`stdio` & Streamable HTTP):**
-  Pick **ElevenLabs Official MCP**, **Playwright Creator Credits MCP**, **Fal Media MCP**, or **Custom MCP**, paste one API key, and click **Connect MCP** (`POST /api/mcp/servers`). Advanced command/URL fields stay tucked cleanly behind an **Advanced Config** toggle.
+- **#1 Featured — Higgsfield Official MCP (`https://mcp.higgsfield.ai/mcp` · OAuth 2.1 + PKCE):**
+  Click **`Connect Higgsfield via MCP →`** to complete browser OAuth with live progress + emerald checkmark confirmation, then use the built-in **MCP Functions & Info Explorer** to check GPU/account status, run any MCP tool with auto-generated forms, or drop functions straight onto the canvas. Also supports **`npx -y @higgsfield/cli mcp`**, **Console Key ID + Secret (`console.higgsfield.ai`)**, and CDP-verified browser sign-in.
+- **All 13 Creator Platforms — MCP + Browser Check + `$0 Markup` APIs:**
+  Connect **ElevenLabs Official MCP (`@elevenlabs/elevenlabs-mcp`)**, **Sume**, **Kling AI**, **Dreamina**, **Google Flow**, **OpenArt**, **ImagineArt**, **OpenAI**, **Fal.ai**, **Replicate**, **ComfyUI**, or any **Custom Streamable HTTP / Stdio MCP**. Includes explicit **`↻ Verify Browser Sign-In`** (`POST /api/connections/check-browser`) and collapsible Chrome Extension (`open-dreamflow/extensions/chrome-bridge`) manual setup.
 
 ---
 

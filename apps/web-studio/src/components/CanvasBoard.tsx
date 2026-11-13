@@ -41,6 +41,7 @@ import {
   resolvePlayableAudioUrl,
 } from './SmartMedia';
 import { TimelineCanvasNode } from './TimelineCanvasNode';
+import { PlatformBrandIcon } from './PlatformBrandIcon';
 
 export interface CanvasBoardProps {
   activeInpaintNodeId: string | null;
@@ -917,8 +918,11 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                     node.kind !== 'timeline' &&
                     node.kind !== 'sticky' &&
                     node.kind !== 'text' && (
-                      <span className="px-1.5 py-0.5 rounded-[5px] bg-[#191919] border border-white/[0.08] text-[10px] font-medium text-white/65 truncate">
-                        {platformBadge}
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[5px] bg-[#191919] border border-white/[0.08] text-[10px] font-medium text-white/75 truncate">
+                        {node.platformId && (
+                          <PlatformBrandIcon platformId={node.platformId} size="xs" />
+                        )}
+                        <span className="truncate">{platformBadge}</span>
                       </span>
                     )}
                   {node.resolution &&

@@ -90,6 +90,15 @@ export interface ExternalMcpToolItem {
   inputSchema?: Record<string, unknown>;
 }
 
+export interface McpAccountInfo {
+  email?: string;
+  name?: string;
+  username?: string;
+  avatarUrl?: string;
+  sub?: string;
+  orgId?: string;
+}
+
 export interface ExternalMcpServerRecord {
   id: string;
   name: string;
@@ -100,9 +109,49 @@ export interface ExternalMcpServerRecord {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  authType?: 'oauth' | 'headers' | 'stdio' | string;
+  account?: McpAccountInfo;
   status: 'connected' | 'connecting' | 'error' | 'disconnected' | string;
   error?: string;
   tools: ExternalMcpToolItem[];
+}
+
+export type McpOAuthStep =
+  | 'idle'
+  | 'registering'
+  | 'awaiting_login'
+  | 'exchanging_token'
+  | 'discovering_tools'
+  | 'connected'
+  | 'error';
+
+export interface McpOAuthSession {
+  sessionId: string;
+  state?: string;
+  platformId: PlatformId | string;
+  mcpUrl: string;
+  authorizeUrl?: string;
+  step: McpOAuthStep;
+  serverId?: string;
+  account?: McpAccountInfo;
+  tools?: ExternalMcpToolItem[];
+  error?: string;
+  updatedAt?: number;
+}
+
+export interface McpToolCallResult {
+  ok: boolean;
+  serverId?: string;
+  toolName?: string;
+  textContent?: string;
+  structuredData?: unknown;
+  mediaUrl?: string;
+  fullUrl?: string;
+  imageUrl?: string;
+  videoUrl?: string;
+  audioUrl?: string;
+  rawResult?: unknown;
+  error?: string;
 }
 
 export type FrameLayerType = 'fg' | 'bg' | 'mask' | 'text';
@@ -345,6 +394,8 @@ export interface BYOKCredentials {
   openaiApiKey: string;
   comfyUiUrl: string;
   higgsfieldApiKey: string;
+  higgsfieldKeyId: string;
+  higgsfieldKeySecret: string;
   sumeApiKey: string;
   klingAccessKey: string;
   klingSecretKey: string;
@@ -457,7 +508,9 @@ export interface BridgeIncomingEvent {
     | 'bridge_prompt'
     | 'bridge_session'
     | 'bridge_job_complete'
-    | 'dispatch_bridge_job';
+    | 'dispatch_bridge_job'
+    | 'mcp_oauth_update'
+    | 'dreamflow_mcp_oauth_complete';
   source?: BrowserPlatformTarget | 'flow' | 'manual' | string;
   jobId?: string;
   target?: BrowserPlatformTarget | string;

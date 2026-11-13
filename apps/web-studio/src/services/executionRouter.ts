@@ -11,6 +11,8 @@ import type {
   KeyframeBridgeCurve,
   MCPToolDefinition,
   McpBackendHealth,
+  McpOAuthSession,
+  McpToolCallResult,
   ModelModality,
   PlatformDefinition,
   PlatformId,
@@ -667,6 +669,210 @@ export async function launchConnectedBrowserViaBackend(
         err instanceof Error
           ? `Could not reach :3001 browser launcher (${err.message})`
           : 'Could not reach :3001 browser launcher',
+    };
+  }
+}
+
+export async function checkBrowserConnectionsViaBackend(
+  platformId?: string
+): Promise<{
+  ok: boolean;
+  connectedBrowserPlatforms: PlatformId[];
+  openDomains: string[];
+  cdpReachable?: boolean;
+  error?: string;
+}> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/connections/check-browser`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify(platformId ? { platformId } : {}),
+    });
+    clearTimeout(timer);
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        connectedBrowserPlatforms: [],
+        openDomains: [],
+        error:
+          (typeof json.error === 'string' && json.error) ||
+          `Browser check failed (HTTP ${res.status})`,
+      };
+    }
+    return {
+      ok: true,
+      connectedBrowserPlatforms: Array.isArray(json.connectedBrowserPlatforms)
+        ? (json.connectedBrowserPlatforms.filter((x): x is string => typeof x === 'string') as PlatformId[])
+        : [],
+      openDomains: Array.isArray(json.openDomains)
+        ? json.openDomains.filter((x): x is string => typeof x === 'string')
+        : [],
+      cdpReachable: typeof json.cdpReachable === 'boolean' ? json.cdpReachable : undefined,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      connectedBrowserPlatforms: [],
+      openDomains: [],
+      error:
+        err instanceof Error
+          ? `Could not check browser sessions (${err.message})`
+          : 'Could not check browser sessions',
+    };
+  }
+}
+
+export async function startMcpOAuthViaBackend(
+  platformId: string,
+  mcpUrl?: string
+): Promise<{
+  ok: boolean;
+  sessionId?: string;
+  state?: string;
+  platformId?: string;
+  mcpUrl?: string;
+  authorizeUrl?: string;
+  step?: McpOAuthSession['step'];
+  error?: string;
+}> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/oauth/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify({ platformId, ...(mcpUrl ? { mcpUrl } : {}) }),
+    });
+    clearTimeout(timer);
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        error:
+          (typeof json.error === 'string' && json.error) ||
+          `Failed to start MCP OAuth (HTTP ${res.status})`,
+      };
+    }
+    return {
+      ok: true,
+      sessionId: typeof json.sessionId === 'string' ? json.sessionId : undefined,
+      state: typeof json.state === 'string' ? json.state : undefined,
+      platformId: typeof json.platformId === 'string' ? json.platformId : platformId,
+      mcpUrl: typeof json.mcpUrl === 'string' ? json.mcpUrl : mcpUrl,
+      authorizeUrl: typeof json.authorizeUrl === 'string' ? json.authorizeUrl : undefined,
+      step: typeof json.step === 'string' ? (json.step as McpOAuthSession['step']) : 'awaiting_login',
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error
+          ? `Could not reach :3001 MCP OAuth endpoint (${err.message})`
+          : 'Could not reach :3001 MCP OAuth endpoint',
+    };
+  }
+}
+
+export async function getMcpOAuthStatusViaBackend(sessionId: string): Promise<{
+  ok: boolean;
+  session?: McpOAuthSession;
+  error?: string;
+}> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch(
+      `${LOCAL_MCP_BASE}/api/mcp/oauth/status/${encodeURIComponent(sessionId)}`,
+      { signal: ctrl.signal }
+    );
+    clearTimeout(timer);
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      session?: McpOAuthSession;
+      error?: string;
+    };
+    if (!res.ok || json.ok === false || !json.session) {
+      return {
+        ok: false,
+        error: json.error || `Status check failed (HTTP ${res.status})`,
+      };
+    }
+    return { ok: true, session: json.session };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Status check network error',
+    };
+  }
+}
+
+export async function callExternalMcpToolViaBackend(
+  serverId: string,
+  toolName: string,
+  args: Record<string, unknown> = {}
+): Promise<McpToolCallResult> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 120000);
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        serverId,
+        toolName,
+        args,
+        arguments: args,
+      }),
+    });
+    clearTimeout(timer);
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        serverId,
+        toolName,
+        error:
+          (typeof json.error === 'string' && json.error) ||
+          `MCP tool call failed (HTTP ${res.status})`,
+        rawResult: json.rawResult ?? json,
+      };
+    }
+    const relMedia =
+      (typeof json.mediaUrl === 'string' && json.mediaUrl) ||
+      (typeof json.imageUrl === 'string' && json.imageUrl) ||
+      (typeof json.videoUrl === 'string' && json.videoUrl) ||
+      (typeof json.audioUrl === 'string' && json.audioUrl) ||
+      undefined;
+    return {
+      ok: true,
+      serverId: (typeof json.serverId === 'string' && json.serverId) || serverId,
+      toolName: (typeof json.toolName === 'string' && json.toolName) || toolName,
+      textContent: typeof json.textContent === 'string' ? json.textContent : undefined,
+      structuredData: json.structuredData,
+      mediaUrl: relMedia,
+      fullUrl:
+        (typeof json.fullUrl === 'string' && json.fullUrl) ||
+        (relMedia ? normalizeBackendMediaUrl(relMedia, true) : undefined),
+      imageUrl: typeof json.imageUrl === 'string' ? json.imageUrl : undefined,
+      videoUrl: typeof json.videoUrl === 'string' ? json.videoUrl : undefined,
+      audioUrl: typeof json.audioUrl === 'string' ? json.audioUrl : undefined,
+      rawResult: json.rawResult ?? json,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      serverId,
+      toolName,
+      error:
+        err instanceof Error
+          ? `MCP call error (${err.message})`
+          : 'MCP call error',
     };
   }
 }

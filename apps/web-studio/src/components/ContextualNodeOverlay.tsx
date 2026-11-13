@@ -43,6 +43,7 @@ import {
 } from '../presets/platformCatalog';
 import { useStudioStore } from '../store/useStudioStore';
 import { SmartMediaImage } from './SmartMedia';
+import { PlatformBrandIcon } from './PlatformBrandIcon';
 
 const IMAGE_ASPECTS: AspectRatio[] = ['16:9', '1:1', '9:16', '4:3', '3:4', '21:9'];
 const VIDEO_ASPECTS: AspectRatio[] = ['16:9', '9:16', '1:1', '21:9'];
@@ -771,6 +772,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                   className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.08] text-[12px] font-medium text-white/95 flex items-center gap-1.5 transition-colors"
                   title="Where this node gets generated (Platform / Credits)"
                 >
+                  <PlatformBrandIcon platformId={effectivePlatformId} size="xs" />
                   <span
                     className={`w-1.5 h-1.5 rounded-full ${
                       activeConnStatus.connected ? 'bg-[#10b981]' : 'bg-white/35'
@@ -807,17 +809,20 @@ export const ContextualNodeOverlay: React.FC = () => {
                             active ? 'bg-white/[0.1] text-white' : 'hover:bg-white/[0.06] text-white/85'
                           }`}
                         >
-                          <div className="min-w-0">
-                            <div className="text-[12px] font-medium flex items-center gap-1.5">
-                              <span
-                                className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                  st.connected ? 'bg-[#10b981]' : 'bg-white/25'
-                                }`}
-                              />
-                              <span className="truncate">{plat.name}</span>
-                            </div>
-                            <div className="text-[10.5px] text-white/40 pl-3 truncate">
-                              {st.connected ? st.summary : 'Click to select · Setup credits'}
+                          <div className="min-w-0 flex items-center gap-2">
+                            <PlatformBrandIcon platformId={plat.id} size="sm" />
+                            <div className="min-w-0">
+                              <div className="text-[12px] font-medium flex items-center gap-1.5">
+                                <span
+                                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                    st.connected ? 'bg-[#10b981]' : 'bg-white/25'
+                                  }`}
+                                />
+                                <span className="truncate">{plat.name}</span>
+                              </div>
+                              <div className="text-[10.5px] text-white/40 truncate">
+                                {st.connected ? st.summary : 'Click to select · Setup credits'}
+                              </div>
                             </div>
                           </div>
                           {active && (
@@ -831,7 +836,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                       type="button"
                       onClick={() => {
                         setOpenMenu(null);
-                        openProviderModal('mcp');
+                        openProviderModal('byok', effectivePlatformId);
                       }}
                       className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-[11.5px] text-[#20D5EC] flex items-center gap-1.5"
                     >
