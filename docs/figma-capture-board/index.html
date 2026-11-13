@@ -1,0 +1,1395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sume vs Higgsfield vs Open-DreamFlow — UI Teardown & Super-Studio Design Board</title>
+  <style>
+    :root {
+      --bg-board: #09090b;
+      --bg-panel: #111114;
+      --bg-card: #18181b;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --text-primary: rgba(255, 255, 255, 0.94);
+      --text-secondary: rgba(255, 255, 255, 0.62);
+      --text-muted: rgba(255, 255, 255, 0.4);
+      --sume-sky: #00afff;
+      --higgs-lime: #d1fe17;
+      --higgs-void: #030304;
+      --odf-canvas: #0e0e0e;
+      --odf-levitation: #191919;
+      --odf-pill: #252525;
+      --odf-cyan: #20d5ec;
+      --ok-emerald: #10b981;
+      --warn-amber: #f59e0b;
+      --danger-rose: #f43f5e;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg-board);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .board-shell {
+      max-width: 1580px;
+      margin: 0 auto;
+      padding: 28px 28px 64px;
+    }
+
+    /* Top Header */
+    .board-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 24px;
+    }
+
+    .brand-title {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .eyebrow {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--odf-cyan);
+    }
+
+    .board-header h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+
+    .board-subtitle {
+      margin: 0;
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    .tab-bar {
+      display: flex;
+      gap: 6px;
+      background: #141418;
+      padding: 4px;
+      border-radius: 12px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .tab-btn {
+      border: 0;
+      background: transparent;
+      color: var(--text-secondary);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 550;
+      padding: 8px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .tab-btn:hover {
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .tab-btn.active {
+      background: #ffffff;
+      color: #0e0e0e;
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    /* 3-Column Comparison Grid */
+    .comparison-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(340px, 1fr));
+      gap: 20px;
+      align-items: start;
+    }
+
+    @media (max-width: 1180px) {
+      .comparison-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .teardown-col {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 18px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .teardown-col.odf-winner {
+      border-color: rgba(32, 213, 236, 0.45);
+      box-shadow: 0 0 0 1px rgba(32, 213, 236, 0.15), 0 24px 60px rgba(0, 0, 0, 0.55);
+    }
+
+    .col-head {
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .col-head h2 {
+      margin: 0 0 4px;
+      font-size: 16px;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+
+    .col-head p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .badge-sky {
+      background: rgba(0, 175, 255, 0.14);
+      color: #4cc9ff;
+      border: 1px solid rgba(0, 175, 255, 0.3);
+    }
+
+    .badge-lime {
+      background: rgba(209, 254, 23, 0.14);
+      color: #d1fe17;
+      border: 1px solid rgba(209, 254, 23, 0.35);
+    }
+
+    .badge-cyan {
+      background: rgba(32, 213, 236, 0.14);
+      color: #20d5ec;
+      border: 1px solid rgba(32, 213, 236, 0.38);
+    }
+
+    /* Mock Studio Frame */
+    .studio-frame {
+      margin: 16px;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      overflow: hidden;
+      min-height: 455px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    /* Sume Reconstruction */
+    .sume-frame {
+      background: #0b0d10;
+      background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+      background-size: 16px 16px;
+    }
+
+    .sume-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: rgba(15, 18, 24, 0.92);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 11px;
+    }
+
+    .sume-logo {
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .sume-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 3px;
+      background: var(--sume-sky);
+    }
+
+    .sume-nav {
+      display: flex;
+      gap: 8px;
+      color: var(--text-secondary);
+      font-size: 10.5px;
+    }
+
+    .sume-wallet-pill {
+      background: rgba(0, 175, 255, 0.15);
+      border: 1px solid rgba(0, 175, 255, 0.35);
+      color: #66d4ff;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-weight: 600;
+      font-size: 10.5px;
+    }
+
+    .sume-body {
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      flex: 1;
+    }
+
+    .sume-composer {
+      background: #14181f;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .sume-textarea-mock {
+      color: rgba(255, 255, 255, 0.72);
+      font-size: 12px;
+      min-height: 44px;
+    }
+
+    .sume-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .mini-pill {
+      background: #202630;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      color: rgba(255, 255, 255, 0.85);
+      padding: 4px 8px;
+      border-radius: 7px;
+      font-size: 10.5px;
+      cursor: pointer;
+    }
+
+    .sume-cta {
+      background: var(--sume-sky);
+      color: #03121a;
+      font-weight: 700;
+      border: 0;
+      padding: 5px 11px;
+      border-radius: 999px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .sume-template-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+
+    .sume-tpl-card {
+      background: #13161c;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 10px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .tpl-thumb {
+      height: 54px;
+      border-radius: 7px;
+      background: linear-gradient(135deg, #1b2735, #101620);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      display: flex;
+      align-items: flex-end;
+      padding: 6px;
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.65);
+    }
+
+    .tpl-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 10.5px;
+    }
+
+    .tpl-btn {
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      padding: 2px 7px;
+      border-radius: 5px;
+      font-size: 10px;
+    }
+
+    .callout-box {
+      margin-top: auto;
+      padding: 9px 11px;
+      border-radius: 9px;
+      font-size: 11px;
+      border: 1px dashed rgba(244, 63, 94, 0.45);
+      background: rgba(244, 63, 94, 0.08);
+      color: #fda4af;
+    }
+
+    /* Higgsfield Reconstruction */
+    .higgs-frame {
+      background: var(--higgs-void);
+    }
+
+    .higgs-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: #0a0b0d;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 11px;
+    }
+
+    .higgs-logo {
+      font-weight: 700;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .higgs-mark {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      background: var(--higgs-lime);
+    }
+
+    .higgs-promo {
+      background: linear-gradient(90deg, rgba(209, 254, 23, 0.16), rgba(22, 123, 255, 0.16));
+      border-bottom: 1px solid rgba(209, 254, 23, 0.22);
+      padding: 6px 12px;
+      font-size: 10.5px;
+      color: #e7ff7a;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .higgs-body {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      flex: 1;
+    }
+
+    .higgs-split {
+      display: grid;
+      grid-template-columns: 128px 1fr;
+      gap: 10px;
+      flex: 1;
+    }
+
+    .higgs-sidebar {
+      background: #0f1113;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      padding: 9px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .higgs-section-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #999999;
+      font-weight: 600;
+    }
+
+    .soul-chip {
+      background: #171a1e;
+      border: 1px solid rgba(209, 254, 23, 0.35);
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 10.5px;
+      color: #ffffff;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .soul-sub {
+      font-size: 9.5px;
+      color: #d1fe17;
+    }
+
+    .dop-preset {
+      background: #171a1e;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 7px;
+      padding: 5px 7px;
+      font-size: 10.5px;
+      color: rgba(255, 255, 255, 0.85);
+      cursor: pointer;
+    }
+
+    .dop-preset.selected {
+      border-color: var(--higgs-lime);
+      background: rgba(209, 254, 23, 0.1);
+      color: var(--higgs-lime);
+    }
+
+    .higgs-stage {
+      background: #0f1113;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .cinema-viewport {
+      height: 150px;
+      border-radius: 8px;
+      background: radial-gradient(circle at 35% 35%, #232a35, #090a0d 75%);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .lens-row {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+
+    .lens-tag {
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      padding: 2px 6px;
+      border-radius: 5px;
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: rgba(255, 255, 255, 0.85);
+    }
+
+    .higgs-cta {
+      background: var(--higgs-lime);
+      color: #030304;
+      font-weight: 700;
+      border: 0;
+      border-radius: 8px;
+      padding: 7px 10px;
+      font-size: 11px;
+      width: 100%;
+      cursor: pointer;
+    }
+
+    /* Open-DreamFlow Reconstruction */
+    .odf-frame {
+      background-color: var(--odf-canvas);
+      background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+      background-size: 18px 18px;
+    }
+
+    .odf-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 11px;
+      background: rgba(25, 25, 25, 0.92);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 11px;
+    }
+
+    .odf-status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--odf-pill);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 10.5px;
+    }
+
+    .green-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--ok-emerald);
+    }
+
+    .odf-canvas-area {
+      position: relative;
+      padding: 14px 12px 10px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .dag-row {
+      display: grid;
+      grid-template-columns: 1fr 24px 1fr 24px 1fr;
+      align-items: center;
+      gap: 2px;
+      margin-top: 4px;
+    }
+
+    .dag-node {
+      background: #191919;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 10px;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      position: relative;
+    }
+
+    .dag-node.selected {
+      border-color: rgba(255, 255, 255, 0.55);
+      box-shadow: 0 0 0 2px rgba(32, 213, 236, 0.22);
+    }
+
+    .node-kicker {
+      font-size: 9.5px;
+      color: var(--odf-cyan);
+      font-weight: 600;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .node-preview {
+      height: 50px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, #20242b, #121417);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.72);
+      text-align: center;
+      padding: 4px;
+    }
+
+    .wire-connector {
+      height: 2px;
+      background: var(--odf-cyan);
+      position: relative;
+      box-shadow: 0 0 8px rgba(32, 213, 236, 0.5);
+    }
+
+    .wire-connector::after {
+      content: '';
+      position: absolute;
+      right: -2px;
+      top: -3px;
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--odf-cyan);
+    }
+
+    .odf-popover {
+      background: #191919;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 12px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.65);
+    }
+
+    .odf-prompt-line {
+      font-size: 11.5px;
+      color: rgba(255, 255, 255, 0.85);
+    }
+
+    .odf-pills-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+
+    .odf-pill {
+      background: #252525;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      color: rgba(255, 255, 255, 0.88);
+      padding: 4px 7px;
+      border-radius: 7px;
+      font-size: 10px;
+    }
+
+    .odf-submit {
+      width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      background: #ffffff;
+      color: #0e0e0e;
+      font-weight: 800;
+      border: 0;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .odf-timeline {
+      background: #161618;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 10px;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .timeline-clips {
+      display: grid;
+      grid-template-columns: 1.2fr 1.4fr 1fr;
+      gap: 6px;
+    }
+
+    .tl-clip {
+      background: #23262c;
+      border: 1px solid rgba(32, 213, 236, 0.35);
+      border-radius: 6px;
+      padding: 4px 6px;
+      font-size: 9.5px;
+      color: rgba(255, 255, 255, 0.85);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .callout-win {
+      margin-top: auto;
+      padding: 9px 11px;
+      border-radius: 9px;
+      font-size: 11px;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      background: rgba(16, 185, 129, 0.1);
+      color: #6ee7b7;
+    }
+
+    /* Annotations Footer inside each Column */
+    .anatomy-notes {
+      padding: 0 18px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .note-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 10px;
+      background: #16161a;
+      border-radius: 9px;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 12px;
+    }
+
+    .note-row strong {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .note-row span {
+      color: var(--text-secondary);
+      text-align: right;
+    }
+
+    /* Tab 2: Connections Hub Wireframe */
+    .hub-wireframe {
+      background: #141414;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 18px;
+      overflow: hidden;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.65);
+    }
+
+    .hub-banner {
+      background: linear-gradient(135deg, rgba(32, 213, 236, 0.12), rgba(255, 255, 255, 0.03));
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 20px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .hub-steps {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .hub-step-pill {
+      background: rgba(255, 255, 255, 0.06);
+      padding: 4px 10px;
+      border-radius: 999px;
+    }
+
+    .hub-primary-btn {
+      background: #ffffff;
+      color: #0e0e0e;
+      border: 0;
+      border-radius: 10px;
+      padding: 11px 18px;
+      font-weight: 650;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .hub-split {
+      display: grid;
+      grid-template-columns: 270px 1fr;
+      min-height: 440px;
+    }
+
+    @media (max-width: 900px) {
+      .hub-split {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .hub-list {
+      border-right: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: #121212;
+    }
+
+    .hub-platform-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      font-family: inherit;
+      font-size: 12.5px;
+      text-align: left;
+    }
+
+    .hub-platform-item.active {
+      background: #222222;
+      border-color: rgba(255, 255, 255, 0.14);
+      color: #ffffff;
+    }
+
+    .hub-detail {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .hub-cards-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(240px, 1fr));
+      gap: 16px;
+    }
+
+    @media (max-width: 720px) {
+      .hub-cards-2 {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .conn-card {
+      background: #191919;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 14px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .conn-card h3 {
+      margin: 0;
+      font-size: 14.5px;
+    }
+
+    .conn-card p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .input-mock {
+      background: #101010;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 9px 11px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+    }
+
+    /* Tab 3: Scale Infra & Economics */
+    .infra-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(260px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    @media (max-width: 960px) {
+      .infra-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .infra-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .infra-card h3 {
+      margin: 0;
+      font-size: 14px;
+      color: #ffffff;
+    }
+
+    .infra-list {
+      margin: 0;
+      padding-left: 16px;
+      color: var(--text-secondary);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+    }
+
+    .econ-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+
+    .econ-table th,
+    .econ-table td {
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 12.5px;
+    }
+
+    .econ-table th {
+      background: #16161b;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+
+    .econ-table tr:last-child td {
+      border-bottom: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="board-shell">
+    <header class="board-header">
+      <div class="brand-title">
+        <span class="eyebrow">Competitive Teardown + Commercial Scale Spec</span>
+        <h1>Sume.com vs Higgsfield.ai vs Open-DreamFlow</h1>
+        <p class="board-subtitle">Frontend UX reverse-engineering, 1-click credit/MCP connection hub, and zero-egress R2 + H100 infrastructure blueprint</p>
+      </div>
+      <div class="tab-bar" role="tablist">
+        <button class="tab-btn active" data-tab="teardown">1. UI Teardown Board</button>
+        <button class="tab-btn" data-tab="connections">2. 1-Click Connections Hub</button>
+        <button class="tab-btn" data-tab="infra">3. Scale Infra & Unit Economics</button>
+      </div>
+    </header>
+
+    <!-- PANEL 1: 3-WAY TEARDOWN -->
+    <section id="tab-teardown" class="tab-panel active">
+      <div class="comparison-grid">
+        <!-- SUME.COM -->
+        <article class="teardown-col">
+          <div class="col-head">
+            <div>
+              <h2>Sume.com</h2>
+              <p>Next.js App Router · Geist Sans · --sume-sky (#00AFFF)</p>
+            </div>
+            <span class="badge badge-sky">0% Markup · $5 Top-Up</span>
+          </div>
+
+          <div class="studio-frame sume-frame">
+            <div class="sume-topbar">
+              <div class="sume-logo"><span class="sume-dot"></span> sume</div>
+              <div class="sume-nav">
+                <span>Explore</span>
+                <span>Video</span>
+                <span>Director</span>
+                <span>Remix</span>
+                <span>MCP</span>
+              </div>
+              <span class="sume-wallet-pill">$5.00 Wallet</span>
+            </div>
+            <div class="sume-body">
+              <div class="sume-composer">
+                <div class="sume-textarea-mock">Write a scene or remix prompt (single-turn form)...</div>
+                <div class="sume-controls">
+                  <div style="display:flex;gap:5px;flex-wrap:wrap;">
+                    <span class="mini-pill">Seedance 2.5</span>
+                    <span class="mini-pill">Kling 4.0</span>
+                    <span class="mini-pill">16:9</span>
+                    <span class="mini-pill">0% Markup</span>
+                  </div>
+                  <button class="sume-cta" type="button">Generate</button>
+                </div>
+              </div>
+
+              <div class="sume-template-grid">
+                <div class="sume-tpl-card">
+                  <div class="tpl-thumb">Motion Transfer</div>
+                  <div class="tpl-meta">
+                    <span>Festival Mic Swing</span>
+                    <span class="tpl-btn">Recreate</span>
+                  </div>
+                </div>
+                <div class="sume-tpl-card">
+                  <div class="tpl-thumb">Object Swap</div>
+                  <div class="tpl-meta">
+                    <span>Vehicle Swap Drift</span>
+                    <span class="tpl-btn">Recreate</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="callout-box">
+                <strong>Structural Weakness:</strong> Flat single-turn form wrapper. No spatial multi-shot node DAG, no BYOK/existing subscription routing, and no timeline NLE assembly.
+              </div>
+            </div>
+          </div>
+
+          <div class="anatomy-notes">
+            <div class="note-row"><strong>Pricing Wedge</strong><span>$5 prepaid wallet, no monthly lock-in, 0% API markup</span></div>
+            <div class="note-row"><strong>Core UX</strong><span>Template gallery ("Recreate") + flat prompt box</span></div>
+            <div class="note-row"><strong>Tech Surface</strong><span>Next.js chunks, dark dot-grid, REST + MCP endpoint</span></div>
+          </div>
+        </article>
+
+        <!-- HIGGSFIELD.AI -->
+        <article class="teardown-col">
+          <div class="col-head">
+            <div>
+              <h2>Higgsfield.ai</h2>
+              <p>Void #030304 · Acid Lime #D1FE17 · #0F1113 Cards</p>
+            </div>
+            <span class="badge badge-lime">$19-$129/mo Lock-In</span>
+          </div>
+
+          <div class="studio-frame higgs-frame">
+            <div class="higgs-topbar">
+              <div class="higgs-logo"><span class="higgs-mark"></span> Higgsfield</div>
+              <div class="sume-nav">
+                <span>Cinema</span>
+                <span>Soul ID</span>
+                <span>Genjutsu</span>
+                <span>Canvas</span>
+              </div>
+              <span class="mini-pill" style="border-color:rgba(209,254,23,0.4);color:#d1fe17;">Pro Credits</span>
+            </div>
+            <div class="higgs-promo">
+              <span>60% OFF · Unlimited Seedance 2.5 (14d)</span>
+              <span>Upgrade</span>
+            </div>
+            <div class="higgs-body">
+              <div class="higgs-split">
+                <div class="higgs-sidebar">
+                  <div class="higgs-section-label">Soul ID</div>
+                  <div class="soul-chip">
+                    <strong>@Kael_Hero</strong>
+                    <span class="soul-sub">Flux LoRA Locked</span>
+                  </div>
+                  <div class="higgs-section-label" style="margin-top:4px;">DoP Presets</div>
+                  <button class="dop-preset selected" type="button" data-dop="Slow Dolly In · 35mm">Slow Dolly In</button>
+                  <button class="dop-preset" type="button" data-dop="Crane Up · 24mm">Crane Up</button>
+                  <button class="dop-preset" type="button" data-dop="Bullet Time · 50mm">Bullet Time</button>
+                </div>
+                <div class="higgs-stage">
+                  <div class="cinema-viewport">
+                    <div class="lens-row">
+                      <span class="lens-tag" id="higgs-active-dop">Slow Dolly In · 35mm</span>
+                      <span class="lens-tag">f/1.8</span>
+                    </div>
+                    <div style="font-size:11px;color:rgba(255,255,255,0.7);">
+                      Cinema Studio Stage · Multi-Reference Wrapper (Kling / Seedance / Wan)
+                    </div>
+                  </div>
+                  <button class="higgs-cta" type="button">Generate (40 Credits)</button>
+                </div>
+              </div>
+
+              <div class="callout-box">
+                <strong>Structural Weakness:</strong> Expiring monthly credit wall ($19-$129/mo), FOMO upsell banners, separate paid Cloud API, and no BYOK/browser-credit pass-through.
+              </div>
+            </div>
+          </div>
+
+          <div class="anatomy-notes">
+            <div class="note-row"><strong>Key Moat</strong><span>Soul ID character lock + DoP Cinema camera rig</span></div>
+            <div class="note-row"><strong>Under the Hood</strong><span>PuLID/Flux-LoRA + CameraCtrl + 50+ wrapped APIs</span></div>
+            <div class="note-row"><strong>Friction</strong><span>Non-rollover credits + high markup vs wholesale</span></div>
+          </div>
+        </article>
+
+        <!-- OPEN-DREAMFLOW -->
+        <article class="teardown-col odf-winner">
+          <div class="col-head">
+            <div>
+              <h2>Open-DreamFlow Commercial</h2>
+              <p>Dreamina Matte #0E0E0E · #191919 · #20D5EC Cyan DAG</p>
+            </div>
+            <span class="badge badge-cyan">Beat Both · Hybrid Engine</span>
+          </div>
+
+          <div class="studio-frame odf-frame">
+            <div class="odf-topbar">
+              <div style="font-weight:650;">Protocol: Rain · Spatial DAG</div>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <span class="odf-status-pill"><span class="green-dot"></span> Chrome + MCP Live</span>
+                <span class="odf-status-pill">$0.00 / $5 Wallet</span>
+              </div>
+            </div>
+            <div class="odf-canvas-area">
+              <div class="dag-row">
+                <div class="dag-node">
+                  <div class="node-kicker"><span>Soul ID</span><span>@Kael</span></div>
+                  <div class="node-preview">PuLID + 90s Flux-LoRA Vault</div>
+                </div>
+                <div class="wire-connector"></div>
+                <div class="dag-node">
+                  <div class="node-kicker"><span>Image</span><span>Sume/BYOK</span></div>
+                  <div class="node-preview">ChatGPT 2.6 Keyframe</div>
+                </div>
+                <div class="wire-connector"></div>
+                <div class="dag-node selected">
+                  <div class="node-kicker"><span>Video</span><span>Kling 4.0</span></div>
+                  <div class="node-preview">3D DoP Orbit + Audio</div>
+                </div>
+              </div>
+
+              <div class="odf-popover">
+                <div class="odf-prompt-line">@Kael walks through neon rain — 3D DoP Slow Dolly In</div>
+                <div class="odf-pills-row">
+                  <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                    <span class="odf-pill">Where: Kling / Sume / BYOK</span>
+                    <span class="odf-pill">DoP: 35mm Dolly</span>
+                    <span class="odf-pill">16:9 · 1080p</span>
+                  </div>
+                  <button class="odf-submit" type="button">↑</button>
+                </div>
+              </div>
+
+              <div class="odf-timeline">
+                <div style="display:flex;justify-content:space-between;font-size:10px;color:rgba(255,255,255,0.6);">
+                  <span>Timelines 1 · Master NLE</span>
+                  <span>00:00 / 00:18 · R2 Faststart</span>
+                </div>
+                <div class="timeline-clips">
+                  <div class="tl-clip">Shot 01 · Rooftop</div>
+                  <div class="tl-clip">Shot 02 · Alley Chase</div>
+                  <div class="tl-clip">A1 · ElevenLabs SFX</div>
+                </div>
+              </div>
+
+              <div class="callout-win">
+                <strong>Why It Beats Both:</strong> Dreamina spatial DAG + 1-click existing subscription bridge + BYOK ($0) + $5 non-expiring wholesale wallet + own H100 Soul ID & DoP engine.
+              </div>
+            </div>
+          </div>
+
+          <div class="anatomy-notes">
+            <div class="note-row"><strong>Zero Lock-In</strong><span>Use existing Chrome credits, BYOK keys, MCP, or $5 wallet</span></div>
+            <div class="note-row"><strong>Continuity</strong><span>Multi-node reference chaining + Soul ID + 3D DoP</span></div>
+            <div class="note-row"><strong>Infra Edge</strong><span>Cloudflare R2 ($0 egress) + Temporal DAG + H100s</span></div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- PANEL 2: 1-CLICK CONNECTIONS HUB WIREFRAME -->
+    <section id="tab-connections" class="tab-panel">
+      <div class="hub-wireframe">
+        <div class="hub-banner">
+          <div>
+            <span class="eyebrow">Stage 8 UX Spec · Zero-Jargon Onboarding</span>
+            <h2 style="margin:4px 0 0;font-size:18px;">Connect Your Existing Accounts in 1 Click</h2>
+            <div class="hub-steps">
+              <span class="hub-step-pill">1. Launch Connected Browser (Extension pre-loaded)</span>
+              <span class="hub-step-pill">2. Sign into Higgsfield, Sume, Kling, Dreamina, Flow once</span>
+              <span class="hub-step-pill">3. Green badge lights up automatically</span>
+            </div>
+          </div>
+          <button class="hub-primary-btn" type="button">Launch Connected Creator Browser (All Accounts)</button>
+        </div>
+
+        <div class="hub-split">
+          <aside class="hub-list" id="hub-platform-list">
+            <button class="hub-platform-item active" data-plat="higgsfield"><span>Higgsfield AI</span><span style="color:#10b981;">● Browser</span></button>
+            <button class="hub-platform-item" data-plat="sume"><span>Sume.com (0% Markup)</span><span style="color:#10b981;">● Browser</span></button>
+            <button class="hub-platform-item" data-plat="kling"><span>Kling AI</span><span style="color:#10b981;">● API Key</span></button>
+            <button class="hub-platform-item" data-plat="dreamina"><span>Dreamina Canvas</span><span style="color:#10b981;">● Browser</span></button>
+            <button class="hub-platform-item" data-plat="google-flow"><span>Google Flow / Veo 3.1</span><span style="color:rgba(255,255,255,0.45);">○ Setup</span></button>
+            <button class="hub-platform-item" data-plat="elevenlabs"><span>ElevenLabs Voice/SFX</span><span style="color:#10b981;">● MCP</span></button>
+          </aside>
+
+          <div class="hub-detail">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+              <div>
+                <h3 id="hub-selected-name" style="margin:0;font-size:17px;">Higgsfield AI</h3>
+                <p id="hub-selected-desc" style="margin:4px 0 0;color:var(--text-secondary);font-size:12.5px;">
+                  Route Soul ID, DoP Cinema Studio, and ChatGPT Image 2.6 via your existing web plan or Cloud API key.
+                </p>
+              </div>
+              <span class="badge badge-cyan" id="hub-selected-status">Connected via Browser Session</span>
+            </div>
+
+            <div class="hub-cards-2">
+              <div class="conn-card">
+                <span class="eyebrow">Option A · Web Subscription / Free Credits</span>
+                <h3>1-Click Guided Browser Sign-In</h3>
+                <p>Opens a persistent Chrome creator profile with the Open-DreamFlow bridge already attached. Zero chrome://extensions setup.</p>
+                <button class="hub-primary-btn" id="hub-signin-btn" type="button">Sign In to Higgsfield AI</button>
+              </div>
+
+              <div class="conn-card">
+                <span class="eyebrow">Option B · Official API Key ($0 Markup)</span>
+                <h3>Direct Key Vault (LocalStorage / KMS)</h3>
+                <p>Calls the official provider endpoint directly with zero Open-DreamFlow markup.</p>
+                <div class="input-mock" id="hub-key-placeholder">hf_live_••••••••••••••••••••••••</div>
+                <div style="display:flex;gap:8px;">
+                  <button class="mini-pill" style="padding:8px 12px;" id="hub-getkey-btn" type="button">Get API Key</button>
+                  <button class="hub-primary-btn" style="padding:8px 14px;font-size:12px;" type="button">Save & Verify</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PANEL 3: SCALE INFRASTRUCTURE & UNIT ECONOMICS -->
+    <section id="tab-infra" class="tab-panel">
+      <div class="infra-grid">
+        <div class="infra-card">
+          <h3>1. Realtime Spatial Edge & DAG Queue</h3>
+          <ul class="infra-list">
+            <li><strong>Frontend + Sync:</strong> Cloudflare Pages ($5/mo, $0 egress) + SQLite Durable Objects ($0.15/M reqs) for 60fps collaborative DAGs.</li>
+            <li><strong>Orchestrator:</strong> Trigger.dev v3 Pro ($50/mo MVP) scaling to Temporal Cloud ($25-$50/M actions) for 3-min async video jobs.</li>
+            <li><strong>DB & Vault:</strong> Neon Postgres (7-table Drizzle schema), AWS KMS ($1/CMK/mo), and BIGINT microcent HOLD -> CAPTURE/RELEASE ledger.</li>
+          </ul>
+        </div>
+        <div class="infra-card">
+          <h3>2. Zero-Egress Media CDN & Proxy</h3>
+          <ul class="infra-list">
+            <li><strong>Object Storage:</strong> Cloudflare R2 ($0.015/GB-mo, $0.00 egress) + SHA-256 dedup. At 50 TB/mo egress: ~$250/mo vs ~$4,300/mo on S3 (94% savings).</li>
+            <li><strong>Canvas LOD:</strong> Cloudflare Image Transformations transitioning to self-hosted imgproxy (libvips) for 360px/720px WebP tiles + lossless PNG/EXR inputs.</li>
+            <li><strong>Video Pipeline:</strong> R2 HTTP 206 faststart MP4s + containerized FFmpeg 8.0 NVENC fleet on Modal L4/H100 workers.</li>
+          </ul>
+        </div>
+        <div class="infra-card">
+          <h3>3. Proprietary H100 Engine ("De-Wrapping")</h3>
+          <ul class="infra-list">
+            <li><strong>Soul ID Recipe:</strong> FLUX.1-dev FP8 + PuLID-FLUX (~$0.008/img in &lt;7s H100) + 2-4m ostris/ai-toolkit Flux-LoRA (~$0.16/run vs $2-$5 managed).</li>
+            <li><strong>DoP Cinema Rig:</strong> WebGL [R|t] extrinsics to Plucker embeddings into CameraCtrl + Wan 2.2/2.6 14B FP8 (~$0.06/5s 720p).</li>
+            <li><strong>Genjutsu & LipSync:</strong> DepthCrafter + DWPose + SAM 2 + Wan-VACE + LatentSync (~$0.006-$0.015/s) alongside BytePlus, Kling, Vertex Veo 3.1.</li>
+          </ul>
+        </div>
+      </div>
+
+      <table class="econ-table">
+        <thead>
+          <tr>
+            <th>Platform</th>
+            <th>Pricing Model</th>
+            <th>Egress & Video Delivery</th>
+            <th>Multi-Shot Continuity</th>
+            <th>User Lock-In / Margin Wedge</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Sume.com</strong></td>
+            <td>$5 Prepaid · 0% Markup (select router fees)</td>
+            <td>Standard cloud CDN</td>
+            <td>Flat single-turn forms</td>
+            <td>Low margin; no spatial DAG or existing-account bridge</td>
+          </tr>
+          <tr>
+            <td><strong>Higgsfield.ai</strong></td>
+            <td>$19–$129/mo expiring credits + separate Cloud API</td>
+            <td>Cloudflare Image/Media CDN</td>
+            <td>Soul ID + Cinema Studio</td>
+            <td>High subscription lock-in & non-rollover friction</td>
+          </tr>
+          <tr>
+            <td><strong>Open-DreamFlow</strong></td>
+            <td>Free BYOK/MCP/Browser + $5 trial / $15-$50 non-expiring wallet</td>
+            <td>Cloudflare R2 ($0 egress, 94% cheaper at 50 TB/mo) + imgproxy LOD + 206 MP4</td>
+            <td>Full Spatial DAG + Soul ID ($0.008) + 3D DoP ($0.06/5s) + NLE</td>
+            <td>MVP $495/mo -&gt; 10K $8,020/mo (~35% GM) -&gt; 100K $64.5K/mo (&gt;41% GM)</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <script>
+    const tabs = document.querySelectorAll('.tab-btn');
+    const panels = document.querySelectorAll('.tab-panel');
+    tabs.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        tabs.forEach((b) => b.classList.remove('active'));
+        panels.forEach((p) => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      });
+    });
+
+    const dopButtons = document.querySelectorAll('.dop-preset');
+    const activeDopLabel = document.getElementById('higgs-active-dop');
+    dopButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        dopButtons.forEach((b) => b.classList.remove('selected'));
+        btn.classList.add('selected');
+        activeDopLabel.textContent = btn.dataset.dop;
+      });
+    });
+
+    const platDetails = {
+      higgsfield: {
+        name: 'Higgsfield AI',
+        desc: 'Route Soul ID, DoP Cinema Studio, and ChatGPT Image 2.6 via your existing web plan or Cloud API key.',
+        status: 'Connected via Browser Session',
+        keyHint: 'hf_live_••••••••••••••••••••••••',
+        btn: 'Sign In to Higgsfield AI'
+      },
+      sume: {
+        name: 'Sume.com (0% Markup)',
+        desc: 'Use your $5 non-expiring Sume wallet for Seedance 2.5, Kling 4.0, and Flux.1 Pro directly from canvas nodes.',
+        status: 'Connected via Browser Session',
+        keyHint: 'sume_sk_••••••••••••••••••••••••',
+        btn: 'Sign In to Sume.com'
+      },
+      kling: {
+        name: 'Kling AI',
+        desc: 'Execute Kling 4.0 and Kling 3.0 Master image-to-video chains via official HS256 AK/SK or browser session.',
+        status: 'Connected via Official API Key',
+        keyHint: 'AccessKey + SecretKey (HS256)',
+        btn: 'Sign In to Kling AI'
+      },
+      dreamina: {
+        name: 'Dreamina Canvas',
+        desc: 'Use Dreamina Seedream 5.0 Pro and Seedance 2.5 web credits seamlessly via pre-bridged Chrome.',
+        status: 'Connected via Browser Session',
+        keyHint: 'volc_ark_•••••••••••••••••••••••',
+        btn: 'Sign In to Dreamina'
+      },
+      'google-flow': {
+        name: 'Google Flow / Veo 3.1',
+        desc: 'Connect Google Flow web sessions or Google AI Studio keys for Veo 3.1 + Imagen 4 + Gemini Flash Image.',
+        status: 'Not Connected yet',
+        keyHint: 'AIzaSy••••••••••••••••••••••••••',
+        btn: 'Sign In to Google Flow'
+      },
+      elevenlabs: {
+        name: 'ElevenLabs Voice & SFX',
+        desc: '1-Click ElevenLabs MCP server or API key for Multilingual v2 voiceovers and Sound Effects v2.',
+        status: 'Connected via MCP Server',
+        keyHint: 'xi_•••••••••••••••••••••••••••••',
+        btn: 'Sign In to ElevenLabs'
+      }
+    };
+
+    const platItems = document.querySelectorAll('.hub-platform-item');
+    platItems.forEach((item) => {
+      item.addEventListener('click', () => {
+        platItems.forEach((el) => el.classList.remove('active'));
+        item.classList.add('active');
+        const d = platDetails[item.dataset.plat];
+        if (!d) return;
+        document.getElementById('hub-selected-name').textContent = d.name;
+        document.getElementById('hub-selected-desc').textContent = d.desc;
+        document.getElementById('hub-selected-status').textContent = d.status;
+        document.getElementById('hub-key-placeholder').textContent = d.keyHint;
+        document.getElementById('hub-signin-btn').textContent = d.btn;
+      });
+    });
+  </script>
+</body>
+</html>
