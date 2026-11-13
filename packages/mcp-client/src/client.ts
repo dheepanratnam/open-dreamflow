@@ -92,6 +92,7 @@ export interface McpToolCallResult {
     frameUrl?: string;
     slices?: string[];
     audioUrl?: string;
+    waveform?: number[];
     styleDna?: Record<string, unknown>;
     interactionId?: string;
     parsedJson?: Record<string, unknown>;
@@ -138,6 +139,7 @@ export interface CanvasNodeInspectorControl {
 export type CanvasNodeCategory =
   | 'video-generation'
   | 'image-editing'
+  | 'audio-synthesis'
   | 'style-dna'
   | 'scene-builder'
   | 'mcp-custom';
@@ -346,6 +348,33 @@ const CANONICAL_TOOL_BLUEPRINTS: Record<
       { id: 'project_record', label: 'Saved Project Metadata', dataType: 'json', required: true },
     ],
   },
+  keyframe_bridge: {
+    title: 'MCP · Keyframe Bridge (A → B)',
+    category: 'video-generation',
+    icon: '🌉',
+    accentColor: '#20D5EC',
+    inputPorts: [
+      { id: 'startImageUrl', label: 'Frame A (Start)', dataType: 'image', required: true },
+      { id: 'endImageUrl', label: 'Frame B (End)', dataType: 'image', required: true },
+      { id: 'prompt', label: 'Bridge Direction', dataType: 'prompt', required: false },
+    ],
+    outputPorts: [
+      { id: 'video', label: 'Bridged Clip (.mp4)', dataType: 'video', required: true },
+    ],
+  },
+  generate_audio: {
+    title: 'MCP · Audio & Voiceover Synthesis',
+    category: 'audio-synthesis',
+    icon: '🔊',
+    accentColor: '#20D5EC',
+    inputPorts: [
+      { id: 'prompt', label: 'Soundscape / Voice Prompt', dataType: 'prompt', required: true },
+    ],
+    outputPorts: [
+      { id: 'audio', label: 'Stereo Audio (.mp3)', dataType: 'audio', required: true },
+      { id: 'waveform', label: '64-Bar Waveform', dataType: 'json', required: false },
+    ],
+  },
 };
 
 function inferCanvasPortType(
@@ -506,6 +535,7 @@ export function normalizeMcpToolCallResult(raw: Record<string, unknown>): McpToo
   let frameUrl: string | undefined;
   let slices: string[] | undefined;
   let audioUrl: string | undefined;
+  let waveform: number[] | undefined;
   let styleDna: Record<string, unknown> | undefined;
   let interactionId: string | undefined;
   let parsedJson: Record<string, unknown> | undefined = structured;
@@ -552,6 +582,9 @@ export function normalizeMcpToolCallResult(raw: Record<string, unknown>): McpToo
     if (!imageUrl && frameUrl) imageUrl = frameUrl;
     if (!imageUrl && slices && slices.length > 0) imageUrl = slices[0];
     if (!audioUrl && typeof parsedJson.audioUrl === 'string') audioUrl = parsedJson.audioUrl;
+    if (Array.isArray(parsedJson.waveform)) {
+      waveform = parsedJson.waveform.map((n) => Number(n)).filter((n) => Number.isFinite(n));
+    }
     if (typeof parsedJson.interactionId === 'string') interactionId = parsedJson.interactionId;
     if (typeof parsedJson.interaction_id === 'string') interactionId = parsedJson.interaction_id;
     if (typeof parsedJson.styleDna === 'object' && parsedJson.styleDna !== null) {
@@ -572,6 +605,7 @@ export function normalizeMcpToolCallResult(raw: Record<string, unknown>): McpToo
       frameUrl,
       slices,
       audioUrl,
+      waveform,
       styleDna,
       interactionId,
       parsedJson,

@@ -1,0 +1,9 @@
+node_modules
+node_modules.nosync
+**/node_modules
+.git
+.git.nosync
+.dreamflow-data
+.dreamflow-data.nosync
+*.log
+.DS_Store

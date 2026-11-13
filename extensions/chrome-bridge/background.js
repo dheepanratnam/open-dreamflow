@@ -576,12 +576,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const pushResult = await pushEventToLocalRelay({
           type: 'bridge_asset',
           source: message.source || 'dreamina',
-          mediaUrl: message.mediaUrl || '/media/shot01_rooftop.mp4',
-          videoUrl: message.videoUrl || '/media/shot01_rooftop.mp4',
-          title: message.title || 'Bridge · Dreamina Captured Clip',
+          mediaUrl: message.mediaUrl || '/media/real_alpine_road.jpg',
+          videoUrl: message.videoUrl || null,
+          imageUrl: message.imageUrl || '/media/real_alpine_road.jpg',
+          title: message.title || 'Bridge · 35mm Alpine Location Frame',
           prompt:
             message.prompt ||
-            '@Hero_Kael rooftop rain establishing shot relayed via Chrome Bridge',
+            'Morning mist clearing over timber mountain pass, natural 35mm daylight',
         });
         sendResponse({
           ok: Boolean(pushResult?.ok),

@@ -2,13 +2,18 @@
   "name": "open-dreamflow",
   "version": "1.0.0",
   "private": true,
-  "description": "Open-source Zero-Markup Smart Canvas & Multi-Turn AI Filmmaking Studio (Dreamina 2.0 + Google Flow Omni 1.2 Flash Clone with BYOK, MCP & Chrome Subscription Bridge)",
+  "description": "Open-source Zero-Markup Smart Canvas & Multi-Turn AI Filmmaking Studio (Dreamina 2.0 + Google Flow Omni 1.2 Clone with BYOK, 12-Tool MCP, Local FFmpeg & Chrome Bridge)",
   "license": "MIT",
+  "bin": {
+    "open-dreamflow": "./bin/open-dreamflow.mjs"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
+    "start": "node bin/open-dreamflow.mjs start",
+    "doctor": "node bin/open-dreamflow.mjs doctor",
     "dev": "npm --prefix apps/web-studio run dev",
     "build": "npm --prefix apps/web-studio run build",
     "preview": "npm --prefix apps/web-studio run preview",

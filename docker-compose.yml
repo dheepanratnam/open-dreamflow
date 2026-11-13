@@ -1,0 +1,15 @@
+services:
+  open-dreamflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: open-dreamflow
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - HOST=0.0.0.0
+      - PORT=3001
+    volumes:
+      - ./.dreamflow-data.nosync:/app/.dreamflow-data.nosync
+    restart: unless-stopped

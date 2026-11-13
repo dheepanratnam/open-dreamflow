@@ -57,6 +57,17 @@ import type { McpToolDefinition } from './client.js';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 const MIME_BY_EXT: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.txt': 'text/plain; charset=utf-8',
+  '.map': 'application/json',
+  '.webmanifest': 'application/manifest+json',
   '.mp4': 'video/mp4',
   '.webm': 'video/webm',
   '.mov': 'video/quicktime',
@@ -69,6 +80,7 @@ const MIME_BY_EXT: Record<string, string> = {
   '.wav': 'audio/wav',
   '.mp3': 'audio/mpeg',
   '.m4a': 'audio/mp4',
+  '.aiff': 'audio/aiff',
   '.json': 'application/json',
 };
 
@@ -153,7 +165,7 @@ export const BUILTIN_DREAMFLOW_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'generate_video',
     description:
-      'Synthesize a 3s–15s 1280x720 24fps H.264 + stereo AAC video clip via zero-markup BYOK cloud providers or local FFmpeg camera motion + LUT + rain/sub-bass audio.',
+      'Synthesize a 3s–15s 1280x720 24fps H.264 + stereo AAC video clip via zero-markup BYOK cloud providers or local FFmpeg 35mm camera motion + Kodak 250D film grain + organic stereo foley.',
     annotations: { title: 'MCP · Generate Video (Omni / FFmpeg)' },
     inputSchema: {
       type: 'object',
@@ -163,8 +175,8 @@ export const BUILTIN_DREAMFLOW_MCP_TOOLS: McpToolDefinition[] = [
         duration_seconds: { type: 'integer', minimum: 2, maximum: 15, default: 6 },
         resolution: { type: 'string', enum: ['360p', '720p', '1080p', '2k', '4k'], default: '720p' },
         aspect_ratio: { type: 'string', enum: ['16:9', '9:16', '21:9', '1:1'], default: '16:9' },
-        first_frame: { type: 'string', description: 'Start keyframe PNG URL or /media/* path' },
-        last_frame: { type: 'string', description: 'Optional end keyframe PNG for First/Last Frame bridge' },
+        first_frame: { type: 'string', description: 'Start keyframe image URL or /media/* path' },
+        last_frame: { type: 'string', description: 'Optional end keyframe image for First/Last Frame bridge' },
         output_name: { type: 'string', description: 'Optional output .mp4 filename in /media/' },
         camera_curve: {
           type: 'string',
@@ -172,6 +184,48 @@ export const BUILTIN_DREAMFLOW_MCP_TOOLS: McpToolDefinition[] = [
           default: 'dolly_in',
         },
         previous_interaction_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'keyframe_bridge',
+    description:
+      'Synthesize a smooth First-Frame → Last-Frame optical transition clip (.mp4) bridging startImageUrl to endImageUrl via BYOK cloud providers or FFmpeg 8.0 dual-keyframe motion curves.',
+    annotations: { title: 'MCP · Keyframe Bridge (A → B)' },
+    inputSchema: {
+      type: 'object',
+      required: ['startImageUrl', 'endImageUrl'],
+      properties: {
+        startImageUrl: { type: 'string', description: 'First frame image URL or /media/* path' },
+        endImageUrl: { type: 'string', description: 'Last frame image URL or /media/* path' },
+        durationSec: { type: 'integer', minimum: 2, maximum: 15, default: 6 },
+        motionCurve: {
+          type: 'string',
+          enum: ['ease-in-out', 'linear', 'match-dissolve', 'whip-pan'],
+          default: 'ease-in-out',
+        },
+        prompt: { type: 'string', description: 'Optional scene motion direction' },
+        provider: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'generate_audio',
+    description:
+      'Synthesize stereo MP3 spoken voiceover (macOS /usr/bin/say TTS + studio room tone) or natural coastal/acoustic ambient & foley stems with an exact 64-bar normalized RMS waveform.',
+    annotations: { title: 'MCP · Audio & Voiceover Synthesis' },
+    inputSchema: {
+      type: 'object',
+      required: ['prompt'],
+      properties: {
+        prompt: { type: 'string', description: 'Soundscape direction or spoken narration prompt' },
+        mode: {
+          type: 'string',
+          enum: ['voiceover', 'ambient', 'sfx'],
+          default: 'ambient',
+        },
+        voiceText: { type: 'string', description: 'Optional explicit spoken voiceover script' },
+        durationSec: { type: 'integer', minimum: 2, maximum: 30, default: 12 },
       },
     },
   },
@@ -258,6 +312,17 @@ export const BUILTIN_DREAMFLOW_MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         prompt: { type: 'string' },
         clips: { type: 'array', items: { type: 'string' }, description: 'Ordered .mp4 clip URLs or paths' },
+        audioTracks: {
+          type: 'array',
+          description: 'Optional external audio stems ({ audioUrl, volume }) mixed with ducked video audio',
+          items: {
+            type: 'object',
+            properties: {
+              audioUrl: { type: 'string' },
+              volume: { type: 'number', minimum: 0, maximum: 2, default: 1.0 },
+            },
+          },
+        },
         keyframes: { type: 'array', items: { type: 'string' } },
         output_name: { type: 'string', description: 'Optional master .mp4 filename' },
         camera_curve: {
@@ -400,6 +465,42 @@ function runSubprocess(
             `FFmpeg exited with code ${String(code)}: ${stderr.slice(-600) || stdout.slice(-300)}`
           )
         );
+      }
+    });
+  });
+}
+
+function runSubprocessBuffer(
+  bin: string,
+  args: string[],
+  timeoutMs = 60_000
+): Promise<{ stdout: Buffer; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const outChunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
+
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL');
+      reject(new Error(`Command timed out after ${timeoutMs}ms: ${bin}`));
+    }, timeoutMs);
+
+    proc.stdout.on('data', (c: Buffer) => outChunks.push(c));
+    proc.stderr.on('data', (c: Buffer) => errChunks.push(c));
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      const stdout = Buffer.concat(outChunks);
+      const stderr = Buffer.concat(errChunks).toString('utf8');
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(`Subprocess exited with code ${String(code)}: ${stderr.slice(-400)}`));
       }
     });
   });
@@ -607,7 +708,7 @@ export class McpStdioBridgeServer {
     const httpUrl = `http://${displayHost}:${boundPort}/mcp`;
 
     this.log(
-      `Open-DreamFlow Stage 4 Engine listening on ${wsUrl}, ${bridgeWsUrl} & ${httpUrl} (ffmpeg=${
+      `Open-DreamFlow Stage 5 Engine listening on http://${displayHost}:${boundPort}/, ${wsUrl} & ${bridgeWsUrl} (ffmpeg=${
         this.ffmpegAvailable ? this.ffmpegPath : 'unavailable'
       }, media=${this.mediaDir}, data=${this.dataDir})`
     );
@@ -693,6 +794,29 @@ export class McpStdioBridgeServer {
   }
 
   /**
+   * Prefers the `.nosync`-backed `apps/web-studio/dist/media/<file>` mirror when reading
+   * an existing file from `apps/web-studio/public/media` so macOS iCloud Drive eviction
+   * never stalls `/media/*` HTTP streaming or FFmpeg reads.
+   */
+  private preferResidentMediaPath(primaryPath: string): string {
+    try {
+      const base = path.basename(primaryPath);
+      if (
+        path.basename(this.mediaDir) === 'media' &&
+        path.basename(path.dirname(this.mediaDir)) === 'public'
+      ) {
+        const distMirror = path.resolve(this.mediaDir, '../../dist/media', base);
+        if (fs.existsSync(distMirror) && fs.statSync(distMirror).isFile()) {
+          return distMirror;
+        }
+      }
+    } catch {
+      // Fallback to primaryPath
+    }
+    return primaryPath;
+  }
+
+  /**
    * Resolves a media reference (`/media/foo.png`, `http://localhost:3001/media/foo.png`,
    * `foo.png`, absolute path, or `data:...;base64,...`) into an existing local file path.
    */
@@ -730,7 +854,7 @@ export class McpStdioBridgeServer {
         const baseName = decodeURIComponent(path.basename(parsed.pathname));
         const localCandidate = path.join(this.mediaDir, baseName);
         if (baseName && fs.existsSync(localCandidate) && fs.statSync(localCandidate).isFile()) {
-          return localCandidate;
+          return this.preferResidentMediaPath(localCandidate);
         }
 
         const res = await fetch(trimmed);
@@ -755,14 +879,14 @@ export class McpStdioBridgeServer {
     const stripped = trimmed.replace(/^\/+/, '').replace(/^media\/+/i, '');
     const candidateInMedia = path.join(this.mediaDir, path.basename(stripped));
     if (fs.existsSync(candidateInMedia) && fs.statSync(candidateInMedia).isFile()) {
-      return candidateInMedia;
+      return this.preferResidentMediaPath(candidateInMedia);
     }
 
     return null;
   }
 
   /**
-   * Resolves a source image path or falls back to `shot01_rooftop.png` / synthesized test frame
+   * Resolves a source image path or falls back to `real_courtyard_sun.jpg` / synthesized test frame
    * so inline edit tools work reliably even in clean CI directories.
    */
   private async resolveImageOrFallback(
@@ -772,10 +896,15 @@ export class McpStdioBridgeServer {
     const resolved = await this.resolveInputMediaPath(rawInput, tempFiles);
     if (resolved) return resolved;
 
-    for (const fallback of ['shot01_rooftop.png', 'hero_kael_vault.png', 'contact_sheet_9grid.png']) {
+    for (const fallback of [
+      'real_courtyard_sun.jpg',
+      'real_coastal_cliffs.jpg',
+      'real_atelier_interior.jpg',
+      'real_contact_9grid.jpg',
+    ]) {
       const candidate = path.join(this.mediaDir, fallback);
       if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-        return candidate;
+        return this.preferResidentMediaPath(candidate);
       }
     }
 
@@ -934,11 +1063,11 @@ export class McpStdioBridgeServer {
         editTransform =
           'colorbalance=rs=0.26:gs=0.10:bs=-0.16:rm=0.18:gm=0.07:bm=-0.12:rh=0.28:gh=0.12:bh=-0.10,eq=contrast=1.18:saturation=1.45:brightness=0.08,unsharp=5:5:1.1:3:3:0.5';
       } else if (
-        lowerPrompt.includes('neon') ||
-        lowerPrompt.includes('cyan') ||
-        lowerPrompt.includes('holo') ||
-        lowerPrompt.includes('cyber') ||
-        lowerPrompt.includes('rain')
+        lowerPrompt.includes('cool') ||
+        lowerPrompt.includes('coastal') ||
+        lowerPrompt.includes('atlantic') ||
+        lowerPrompt.includes('sea') ||
+        lowerPrompt.includes('mist')
       ) {
         editTransform =
           'colorbalance=rs=-0.12:gs=0.16:bs=0.28:rm=-0.06:gm=0.12:bm=0.22:rh=0.10:gh=0.18:bh=0.30,eq=contrast=1.22:saturation=1.55:brightness=0.07,unsharp=5:5:1.2:3:3:0.5';
@@ -1318,7 +1447,7 @@ export class McpStdioBridgeServer {
     const nextName =
       typeof params.name === 'string' && params.name.trim()
         ? params.name.trim()
-        : existing?.name || 'Protocol: Rain';
+        : existing?.name || 'Salt & Terracotta — Coastal Short';
 
     const nextState =
       typeof params.state === 'object' && params.state !== null
@@ -1481,11 +1610,633 @@ export class McpStdioBridgeServer {
   }
 
   // ============================================================================
-  // Stage 2 Video Synthesis, Slicing, Last-Frame & Timeline Compilation
+  // Stage 5 Keyframe Bridge, Audio/Voiceover TTS + Waveform, Video & Timeline
   // ============================================================================
 
+  /**
+   * `POST /api/keyframe-bridge` & MCP `keyframe_bridge`:
+   * Synthesizes a smooth First-Frame → Last-Frame optical transition clip (.mp4)
+   * bridging `startImageUrl` to `endImageUrl` via BYOK cloud providers or FFmpeg 8.0
+   * dual-keyframe motion curves (`ease-in-out`, `linear`, `match-dissolve`, `whip-pan`).
+   */
+  public async keyframeBridge(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const prompt = String(
+      params.prompt || 'Natural 35mm optical camera bridge between location keyframes'
+    ).trim();
+    const durationSec = Math.max(
+      2,
+      Math.min(
+        15,
+        Math.round(
+          Number(
+            params.durationSec ??
+              params.durationSeconds ??
+              params.duration_seconds ??
+              params.duration ??
+              6
+          ) || 6
+        )
+      )
+    );
+    const rawCurve = String(
+      params.motionCurve || params.motion_curve || params.curve || 'ease-in-out'
+    )
+      .trim()
+      .toLowerCase();
+    const motionCurve: 'ease-in-out' | 'linear' | 'match-dissolve' | 'whip-pan' =
+      rawCurve === 'linear' ||
+      rawCurve === 'match-dissolve' ||
+      rawCurve === 'whip-pan' ||
+      rawCurve === 'ease-in-out'
+        ? rawCurve
+        : rawCurve.includes('whip')
+          ? 'whip-pan'
+          : rawCurve.includes('match') || rawCurve.includes('dissolve')
+            ? 'match-dissolve'
+            : rawCurve.includes('linear')
+              ? 'linear'
+              : 'ease-in-out';
+
+    const toolName = String(params._toolName || 'keyframe_bridge');
+    const interactionId = `int_bridge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const previousInteractionId =
+      (params.previousInteractionId as string | undefined) ||
+      (params.previous_interaction_id as string | undefined) ||
+      null;
+
+    const rawStartInput =
+      params.startImageUrl ??
+      params.start_image_url ??
+      params.startImage ??
+      params.first_frame ??
+      params.firstFrame ??
+      params.imageUrl ??
+      params.image;
+    const rawEndInput =
+      params.endImageUrl ??
+      params.end_image_url ??
+      params.endImage ??
+      params.last_frame ??
+      params.lastFrame ??
+      params.endFrame;
+
+    // Optional Zero-Markup BYOK Cloud Pass-Through
+    const rawApiKey = typeof params.apiKey === 'string' ? params.apiKey.trim() : '';
+    const providerName = String(params.provider || '').toLowerCase();
+    if (rawApiKey && rawApiKey !== 'local' && rawApiKey !== 'ffmpeg') {
+      try {
+        const sdkPath = path.resolve(
+          path.dirname(fileURLToPath(import.meta.url)),
+          '../../provider-sdk/dist/index.js'
+        );
+        if (fs.existsSync(sdkPath)) {
+          const sdk = (await import(pathToFileURL(sdkPath).href)) as Record<string, any>;
+          const startStr = String(rawStartInput || '/media/real_courtyard_sun.jpg');
+          const endStr = String(rawEndInput || '/media/real_coastal_cliffs.jpg');
+
+          if (providerName.includes('seedance') && sdk.SeedanceClient) {
+            const client = new sdk.SeedanceClient({ apiKey: rawApiKey });
+            const out = await client.synthesizeKeyframeSequence({
+              prompt,
+              keyframes: [{ imageUrl: startStr }, { imageUrl: endStr }],
+            });
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              tool: toolName,
+              interactionId,
+              previousInteractionId,
+              videoUrl: out.videoUrl,
+              fullUrl: out.videoUrl,
+              durationSec,
+              motionCurve,
+              engine: 'seedance-zero-markup',
+            };
+          }
+          if (providerName.includes('fal') && sdk.FalClient) {
+            const client = new sdk.FalClient({ apiKey: rawApiKey });
+            const out = await client.generateOpenWeightVideo({
+              family: 'wan-2.1-i2v',
+              prompt,
+              imageUrl: startStr,
+            });
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              tool: toolName,
+              interactionId,
+              previousInteractionId,
+              videoUrl: out.videoUrl,
+              fullUrl: out.videoUrl,
+              durationSec,
+              motionCurve,
+              engine: 'fal-zero-markup',
+            };
+          }
+          if (sdk.GeminiOmniClient) {
+            const client = new sdk.GeminiOmniClient({ apiKey: rawApiKey });
+            const out = await client.generateVideo({
+              prompt,
+              durationSeconds: Math.max(3, durationSec),
+              firstFrame: startStr,
+              lastFrame: endStr,
+              previousInteractionId: previousInteractionId || undefined,
+            });
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              tool: toolName,
+              interactionId: out.interactionId || interactionId,
+              previousInteractionId,
+              videoUrl: out.videoUrl,
+              fullUrl: out.videoUrl,
+              durationSec,
+              motionCurve,
+              engine: 'gemini-omni-zero-markup',
+            };
+          }
+        }
+      } catch (cloudErr) {
+        if (params.allowLocalFallback === false) {
+          throw cloudErr;
+        }
+        this.log(
+          `Cloud BYOK keyframeBridge failed (${cloudErr instanceof Error ? cloudErr.message : String(cloudErr)}); falling back to ffmpeg-local.`
+        );
+      }
+    }
+
+    if (!this.ffmpegAvailable) {
+      throw new Error(`FFmpeg binary not found at ${this.ffmpegPath}`);
+    }
+
+    fs.mkdirSync(this.mediaDir, { recursive: true });
+    const tempFiles: string[] = [];
+
+    try {
+      const startPath = await this.resolveImageOrFallback(
+        rawStartInput || 'real_courtyard_sun.jpg',
+        tempFiles
+      );
+      const endPath = await this.resolveImageOrFallback(
+        rawEndInput || 'real_coastal_cliffs.jpg',
+        tempFiles
+      );
+
+      const requestedName =
+        (params.outputName as string | undefined) ||
+        (params.output_name as string | undefined) ||
+        (params.filename as string | undefined) ||
+        `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.mp4`;
+      const outFilename = sanitizeMediaFilename(requestedName, '.mp4');
+      const outFullPath = path.join(this.mediaDir, outFilename);
+
+      const fps = 24;
+      let fadeDur = Math.min(2.0, Math.max(0.8, Number((durationSec * 0.28).toFixed(2))));
+      let xfadeType = 'fade';
+      if (motionCurve === 'whip-pan') {
+        fadeDur = Math.min(0.9, Math.max(0.45, Number((durationSec * 0.14).toFixed(2))));
+        xfadeType = 'wipeleft';
+      } else if (motionCurve === 'match-dissolve') {
+        fadeDur = Math.min(2.4, Math.max(1.0, Number((durationSec * 0.42).toFixed(2))));
+        xfadeType = 'fade';
+      }
+
+      const segDur = (durationSec + fadeDur) / 2;
+      const segFrames = Math.max(28, Math.ceil(segDur * fps) + 2);
+      const actualSegSec = segFrames / fps;
+      const offsetSec = Math.max(0.3, Number((actualSegSec - fadeDur - 0.08).toFixed(3)));
+      const fadeOutStart = Math.max(0.4, Number((durationSec - 0.45).toFixed(2)));
+
+      let zoomA = `zoompan=z='1.0+0.12*(on/${segFrames})':x='iw/2-(iw/zoom/2)+(on*0.32)':y='ih/2-(ih/zoom/2)':d=${segFrames}:s=1280x720:fps=${fps}`;
+      let zoomB = `zoompan=z='1.12-0.10*(on/${segFrames})':x='iw/2-(iw/zoom/2)+((${segFrames}-on)*0.28)':y='ih/2-(ih/zoom/2)':d=${segFrames}:s=1280x720:fps=${fps}`;
+
+      if (motionCurve === 'whip-pan') {
+        zoomA = `zoompan=z='1.12':x='(iw-iw/zoom)*(on/${segFrames})':y='ih/2-(ih/zoom/2)':d=${segFrames}:s=1280x720:fps=${fps}`;
+        zoomB = `zoompan=z='1.12-0.06*(on/${segFrames})':x='(iw-iw/zoom)*(0.25+0.75*(on/${segFrames}))':y='ih/2-(ih/zoom/2)':d=${segFrames}:s=1280x720:fps=${fps}`;
+      } else if (motionCurve === 'linear') {
+        zoomA = `zoompan=z='1.0+0.10*(on/${segFrames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${segFrames}:s=1280x720:fps=${fps}`;
+        zoomB = `zoompan=z='1.10-0.08*(on/${segFrames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${segFrames}:s=1280x720:fps=${fps}`;
+      } else if (motionCurve === 'match-dissolve') {
+        zoomA = `zoompan=z='1.02+0.06*(on/${segFrames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${segFrames}:s=1280x720:fps=${fps}`;
+        zoomB = `zoompan=z='1.08-0.06*(on/${segFrames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${segFrames}:s=1280x720:fps=${fps}`;
+      }
+
+      const filterComplex = [
+        `[0:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,${zoomA},setsar=1,settb=AVTB,fps=${fps},format=yuv420p[va]`,
+        `[1:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,${zoomB},setsar=1,settb=AVTB,fps=${fps},format=yuv420p[vb]`,
+        `[va][vb]xfade=transition=${xfadeType}:duration=${fadeDur}:offset=${offsetSec},colorbalance=rs=0.02:gs=0.008:bs=-0.015,noise=alls=3:allf=t,fade=t=in:st=0:d=0.3,fade=t=out:st=${fadeOutStart}:d=0.45,format=yuv420p[vout]`,
+        `[2:a]highpass=f=130,lowpass=f=1850,tremolo=f=0.18:d=0.55,pan=stereo|c0=0.92*c0|c1=0.82*c0,afade=t=in:st=0:d=0.35,afade=t=out:st=${fadeOutStart}:d=0.45[aout]`,
+      ].join(';');
+
+      await runSubprocess(this.ffmpegPath, [
+        '-y',
+        '-i',
+        startPath,
+        '-i',
+        endPath,
+        '-f',
+        'lavfi',
+        '-i',
+        `anoisesrc=color=pink:amplitude=0.09:duration=${durationSec}:sample_rate=48000`,
+        '-filter_complex',
+        filterComplex,
+        '-map',
+        '[vout]',
+        '-map',
+        '[aout]',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-crf',
+        '20',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '160k',
+        '-ar',
+        '48000',
+        '-ac',
+        '2',
+        '-t',
+        String(durationSec),
+        '-movflags',
+        '+faststart',
+        outFullPath,
+        '-loglevel',
+        'error',
+      ]);
+
+      const bytes = fs.statSync(outFullPath).size;
+      this.mirrorToDistMedia(outFilename, outFullPath);
+
+      const videoUrl = `/media/${outFilename}`;
+      const fullUrl = `${this.getPublicBaseUrl()}${videoUrl}`;
+
+      return {
+        ok: true,
+        status: 'COMPLETED',
+        tool: toolName,
+        interactionId,
+        previousInteractionId,
+        videoUrl,
+        fullUrl,
+        startImageUrl: typeof rawStartInput === 'string' ? rawStartInput : '/media/real_courtyard_sun.jpg',
+        endImageUrl: typeof rawEndInput === 'string' ? rawEndInput : '/media/real_coastal_cliffs.jpg',
+        durationSec,
+        durationSeconds: durationSec,
+        motionCurve,
+        bytes,
+        engine: 'ffmpeg-local',
+      };
+    } finally {
+      for (const tmp of tempFiles) {
+        try {
+          if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+        } catch {
+          // Ignore
+        }
+      }
+    }
+  }
+
+  /**
+   * Decodes raw Float32 PCM samples from an audio file via FFmpeg and buckets RMS
+   * amplitude across 64 normalized bars (`0.08..1.0`).
+   */
+  private async computeAudioWaveform64(audioFullPath: string): Promise<number[]> {
+    const BAR_COUNT = 64;
+    try {
+      const { stdout } = await runSubprocessBuffer(this.ffmpegPath, [
+        '-v',
+        'error',
+        '-i',
+        audioFullPath,
+        '-ac',
+        '1',
+        '-ar',
+        '2000',
+        '-f',
+        'f32le',
+        'pipe:1',
+      ]);
+
+      const sampleCount = Math.floor(stdout.byteLength / 4);
+      if (sampleCount < BAR_COUNT) {
+        return Array.from({ length: BAR_COUNT }, (_, i) =>
+          Number((0.28 + 0.42 * Math.abs(Math.sin(i * 0.27))).toFixed(3))
+        );
+      }
+
+      const rmsBuckets: number[] = [];
+      for (let b = 0; b < BAR_COUNT; b++) {
+        const startIdx = Math.floor((b * sampleCount) / BAR_COUNT);
+        const endIdx = Math.max(startIdx + 1, Math.floor(((b + 1) * sampleCount) / BAR_COUNT));
+        let sumSq = 0;
+        let count = 0;
+        for (let s = startIdx; s < endIdx && (s + 1) * 4 <= stdout.byteLength; s++) {
+          const val = stdout.readFloatLE(s * 4);
+          if (Number.isFinite(val)) {
+            sumSq += val * val;
+            count++;
+          }
+        }
+        rmsBuckets.push(count > 0 ? Math.sqrt(sumSq / count) : 0);
+      }
+
+      const peak = Math.max(...rmsBuckets, 1e-5);
+      return rmsBuckets.map((rms) => {
+        const normalized = rms / peak;
+        return Number(Math.max(0.08, Math.min(1.0, normalized)).toFixed(3));
+      });
+    } catch {
+      return Array.from({ length: BAR_COUNT }, (_, i) =>
+        Number((0.24 + 0.52 * Math.abs(Math.sin(i * 0.31))).toFixed(3))
+      );
+    }
+  }
+
+  /**
+   * `POST /api/generate-audio` & MCP `generate_audio`:
+   * Synthesizes spoken voiceover (via macOS `/usr/bin/say` + warm studio room tone)
+   * or organic `ambient` / `sfx` foley MP3 stems, plus an exact 64-bar RMS `waveform[]`.
+   */
+  public async generateAudio(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!this.ffmpegAvailable) {
+      throw new Error(`FFmpeg binary not found at ${this.ffmpegPath}`);
+    }
+
+    fs.mkdirSync(this.mediaDir, { recursive: true });
+    const tempFiles: string[] = [];
+
+    const prompt = String(
+      params.prompt || 'Coastal wind and Mediterranean ocean surf ambience'
+    ).trim();
+    const rawVoiceText = typeof params.voiceText === 'string' ? params.voiceText.trim() : '';
+    const rawMode = String(params.mode || '').trim().toLowerCase();
+    const mode: 'voiceover' | 'ambient' | 'sfx' =
+      rawMode === 'voiceover' || rawMode === 'sfx' || rawMode === 'ambient'
+        ? rawMode
+        : rawVoiceText.length > 0
+          ? 'voiceover'
+          : 'ambient';
+
+    const requestedDur = Number(
+      params.durationSec ?? params.durationSeconds ?? params.duration_seconds ?? (mode === 'sfx' ? 6 : 12)
+    );
+    let durationSec = Math.max(2, Math.min(30, Math.round(requestedDur || 12)));
+
+    const requestedName =
+      (params.outputName as string | undefined) ||
+      (params.output_name as string | undefined) ||
+      (params.filename as string | undefined) ||
+      `audio_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.mp3`;
+    const outFilename = sanitizeMediaFilename(requestedName, '.mp3');
+    const outFullPath = path.join(this.mediaDir, outFilename);
+
+    let usedMacOsSay = false;
+
+    try {
+      const wantsVoice = mode === 'voiceover' || rawVoiceText.length > 0;
+      if (wantsVoice && fs.existsSync('/usr/bin/say')) {
+        const spokenScript = (rawVoiceText || prompt)
+          .replace(/[\r\n]+/g, ' ')
+          .slice(0, 600);
+        const tmpAiff = path.join(
+          os.tmpdir(),
+          `df_tts_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.aiff`
+        );
+        tempFiles.push(tmpAiff);
+
+        try {
+          await runSubprocess('/usr/bin/say', ['-o', tmpAiff, spokenScript], 30_000);
+          if (fs.existsSync(tmpAiff) && fs.statSync(tmpAiff).size > 256) {
+            const ttsMeta = await this.probeClipMetadata(tmpAiff);
+            if (!params.durationSec && !params.durationSeconds && !params.duration_seconds) {
+              durationSec = Math.max(3, Math.min(30, Math.ceil(ttsMeta.durationSec + 0.8)));
+            }
+            const fadeOutSt = Math.max(0.4, Number((durationSec - 0.5).toFixed(2)));
+            await runSubprocess(this.ffmpegPath, [
+              '-y',
+              '-i',
+              tmpAiff,
+              '-f',
+              'lavfi',
+              '-i',
+              `anoisesrc=color=brown:amplitude=0.014:duration=${durationSec}:sample_rate=48000`,
+              '-filter_complex',
+              `[0:a]aformat=sample_rates=48000:channel_layouts=stereo,highpass=f=90,lowpass=f=9500,adelay=220|220,apad,atrim=0:${durationSec},volume=1.25[vox];` +
+                `[1:a]highpass=f=70,lowpass=f=900,pan=stereo|c0=0.85*c0|c1=0.85*c0[room];` +
+                `[vox][room]amix=inputs=2:duration=first:normalize=0,afade=t=in:st=0:d=0.15,afade=t=out:st=${fadeOutSt}:d=0.5[aout]`,
+              '-map',
+              '[aout]',
+              '-c:a',
+              'libmp3lame',
+              '-b:a',
+              '192k',
+              '-ar',
+              '48000',
+              '-ac',
+              '2',
+              '-t',
+              String(durationSec),
+              outFullPath,
+              '-loglevel',
+              'error',
+            ]);
+            usedMacOsSay = true;
+          }
+        } catch (ttsErr) {
+          this.log(
+            `macOS /usr/bin/say unavailable in current session (${ttsErr instanceof Error ? ttsErr.message : String(ttsErr)}); using FFmpeg acoustic cadence fallback.`
+          );
+        }
+      }
+
+      if (!usedMacOsSay) {
+        const fadeOutSt = Math.max(0.4, Number((durationSec - 0.8).toFixed(2)));
+        const lowerPrompt = prompt.toLowerCase();
+
+        if (mode === 'sfx') {
+          await runSubprocess(this.ffmpegPath, [
+            '-y',
+            '-f',
+            'lavfi',
+            '-i',
+            `anoisesrc=color=pink:amplitude=0.22:duration=${durationSec}:sample_rate=48000`,
+            '-f',
+            'lavfi',
+            '-i',
+            `anoisesrc=color=brown:amplitude=0.12:duration=${durationSec}:sample_rate=48000`,
+            '-filter_complex',
+            `[0:a]highpass=f=240,lowpass=f=3600,tremolo=f=1.6:d=0.82,pan=stereo|c0=0.95*c0|c1=0.80*c0[crisp];` +
+              `[1:a]highpass=f=80,lowpass=f=640,tremolo=f=0.45:d=0.55,pan=stereo|c0=0.80*c0|c1=0.95*c0[body];` +
+              `[crisp][body]amix=inputs=2:duration=first:normalize=0,afade=t=in:st=0:d=0.25,afade=t=out:st=${fadeOutSt}:d=0.8,volume=1.35[aout]`,
+            '-map',
+            '[aout]',
+            '-c:a',
+            'libmp3lame',
+            '-b:a',
+            '192k',
+            '-ar',
+            '48000',
+            '-ac',
+            '2',
+            '-t',
+            String(durationSec),
+            outFullPath,
+            '-loglevel',
+            'error',
+          ]);
+        } else if (
+          lowerPrompt.includes('chord') ||
+          lowerPrompt.includes('piano') ||
+          lowerPrompt.includes('cello') ||
+          lowerPrompt.includes('acoustic') ||
+          lowerPrompt.includes('score')
+        ) {
+          await runSubprocess(this.ffmpegPath, [
+            '-y',
+            '-f',
+            'lavfi',
+            '-i',
+            `sine=frequency=220:duration=${durationSec}:sample_rate=48000`,
+            '-f',
+            'lavfi',
+            '-i',
+            `sine=frequency=329.63:duration=${durationSec}:sample_rate=48000`,
+            '-f',
+            'lavfi',
+            '-i',
+            `anoisesrc=color=pink:amplitude=0.07:duration=${durationSec}:sample_rate=48000`,
+            '-filter_complex',
+            `[0:a]lowpass=f=900,tremolo=f=0.24:d=0.40,volume=0.14,pan=stereo|c0=0.9*c0|c1=0.7*c0[n1];` +
+              `[1:a]lowpass=f=1100,tremolo=f=0.19:d=0.45,volume=0.10,pan=stereo|c0=0.7*c0|c1=0.9*c0[n2];` +
+              `[2:a]highpass=f=140,lowpass=f=1700,tremolo=f=0.16:d=0.60,pan=stereo|c0=0.85*c0|c1=0.85*c0[air];` +
+              `[n1][n2][air]amix=inputs=3:duration=first:normalize=0,afade=t=in:st=0:d=0.6,afade=t=out:st=${fadeOutSt}:d=0.8,volume=1.5[aout]`,
+            '-map',
+            '[aout]',
+            '-c:a',
+            'libmp3lame',
+            '-b:a',
+            '192k',
+            '-ar',
+            '48000',
+            '-ac',
+            '2',
+            '-t',
+            String(durationSec),
+            outFullPath,
+            '-loglevel',
+            'error',
+          ]);
+        } else {
+          // Organic coastal surf swell & warm Mediterranean room air
+          await runSubprocess(this.ffmpegPath, [
+            '-y',
+            '-f',
+            'lavfi',
+            '-i',
+            `anoisesrc=color=pink:amplitude=0.15:duration=${durationSec}:sample_rate=48000`,
+            '-f',
+            'lavfi',
+            '-i',
+            `anoisesrc=color=brown:amplitude=0.11:duration=${durationSec}:sample_rate=48000`,
+            '-filter_complex',
+            `[0:a]highpass=f=135,lowpass=f=1900,tremolo=f=0.18:d=0.66,pan=stereo|c0=0.92*c0|c1=0.76*c0[surf];` +
+              `[1:a]highpass=f=65,lowpass=f=520,tremolo=f=0.11:d=0.48,pan=stereo|c0=0.76*c0|c1=0.94*c0[swell];` +
+              `[surf][swell]amix=inputs=2:duration=first:normalize=0,afade=t=in:st=0:d=0.6,afade=t=out:st=${fadeOutSt}:d=0.8,volume=1.4[aout]`,
+            '-map',
+            '[aout]',
+            '-c:a',
+            'libmp3lame',
+            '-b:a',
+            '192k',
+            '-ar',
+            '48000',
+            '-ac',
+            '2',
+            '-t',
+            String(durationSec),
+            outFullPath,
+            '-loglevel',
+            'error',
+          ]);
+        }
+      }
+
+      const bytes = fs.statSync(outFullPath).size;
+      const meta = await this.probeClipMetadata(outFullPath);
+      const waveform = await this.computeAudioWaveform64(outFullPath);
+      this.mirrorToDistMedia(outFilename, outFullPath);
+
+      const audioUrl = `/media/${outFilename}`;
+      const fullUrl = `${this.getPublicBaseUrl()}${audioUrl}`;
+
+      return {
+        ok: true,
+        status: 'COMPLETED',
+        tool: 'generate_audio',
+        audioUrl,
+        mediaUrl: audioUrl,
+        fullUrl,
+        durationSec: Number(meta.durationSec.toFixed(2)),
+        mode,
+        prompt,
+        waveform,
+        bytes,
+        engine: usedMacOsSay ? 'macos-say+ffmpeg' : 'ffmpeg-local',
+      };
+    } finally {
+      for (const tmp of tempFiles) {
+        try {
+          if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+        } catch {
+          // Ignore
+        }
+      }
+    }
+  }
+
   public async renderVideo(params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const prompt = String(params.prompt || 'Cinematic scene').trim();
+    const rawStartCandidate =
+      params.startImageUrl ??
+      params.start_image_url ??
+      params.image ??
+      params.imageUrl ??
+      params.image_url ??
+      params.firstFrame ??
+      params.first_frame ??
+      params.startImage ??
+      params.sourceImage;
+    const rawEndCandidate =
+      params.endImageUrl ??
+      params.end_image_url ??
+      params.endImage ??
+      params.end_image ??
+      params.lastFrame ??
+      params.last_frame ??
+      params.endFrame;
+
+    // Automatically invoke dual-keyframe bridge when BOTH start and end keyframes are provided
+    if (
+      typeof rawStartCandidate === 'string' &&
+      rawStartCandidate.trim() &&
+      typeof rawEndCandidate === 'string' &&
+      rawEndCandidate.trim()
+    ) {
+      return this.keyframeBridge({
+        ...params,
+        startImageUrl: rawStartCandidate,
+        endImageUrl: rawEndCandidate,
+        _toolName: 'generate_video',
+      });
+    }
+
+    const prompt = String(params.prompt || 'Natural 35mm daylight scene').trim();
     const durationSec = Math.max(
       2,
       Math.min(
@@ -1525,7 +2276,7 @@ export class McpStdioBridgeServer {
             const out = await client.generateOpenWeightVideo({
               family: 'wan-2.1-i2v',
               prompt,
-              imageUrl: params.image || params.imageUrl || params.first_frame,
+              imageUrl: rawStartCandidate,
             });
             return {
               ok: true,
@@ -1565,11 +2316,10 @@ export class McpStdioBridgeServer {
           }
           if (providerName.includes('seedance') && sdk.SeedanceClient) {
             const client = new sdk.SeedanceClient({ apiKey: rawApiKey });
-            const startImg = String(params.image || params.imageUrl || params.first_frame || '');
-            const endImg = String(params.endImage || params.last_frame || startImg);
+            const startImg = String(rawStartCandidate || '');
             const out = await client.synthesizeKeyframeSequence({
               prompt,
-              keyframes: [{ imageUrl: startImg }, { imageUrl: endImg }],
+              keyframes: [{ imageUrl: startImg }, { imageUrl: startImg }],
             });
             return {
               ok: true,
@@ -1637,37 +2387,25 @@ export class McpStdioBridgeServer {
       const outputFilename = sanitizeMediaFilename(requestedName, '.mp4');
       const outputFullPath = path.join(this.mediaDir, outputFilename);
 
-      const rawStartInput =
-        params.image ??
-        params.imageUrl ??
-        params.image_url ??
-        params.firstFrame ??
-        params.first_frame ??
-        params.startImage ??
-        params.sourceImage;
-      const rawEndInput =
-        params.endImage ??
-        params.end_image ??
-        params.lastFrame ??
-        params.last_frame ??
-        params.endFrame;
-
-      let startImagePath = await this.resolveInputMediaPath(rawStartInput, tempFiles);
-      const endImagePath = await this.resolveInputMediaPath(rawEndInput, tempFiles);
+      let startImagePath = await this.resolveInputMediaPath(rawStartCandidate, tempFiles);
 
       if (!startImagePath) {
         const lowerHint = `${outputFilename} ${prompt}`.toLowerCase();
         const fallbackCandidates =
-          lowerHint.includes('sunrise') || lowerHint.includes('02b')
-            ? ['shot02b_sunrise_remix.png', 'shot01_rooftop.png']
-            : lowerHint.includes('alley') || lowerHint.includes('chase') || lowerHint.includes('02')
-              ? ['shot02_alley_chase.png', 'shot01_rooftop.png']
-              : ['shot01_rooftop.png', 'hero_kael_vault.png'];
+          lowerHint.includes('cliff') || lowerHint.includes('coast') || lowerHint.includes('ocean')
+            ? ['real_coastal_cliffs.jpg', 'real_courtyard_sun.jpg']
+            : lowerHint.includes('atelier') || lowerHint.includes('studio') || lowerHint.includes('interior')
+              ? ['real_atelier_interior.jpg', 'real_courtyard_sun.jpg']
+              : lowerHint.includes('alpine') || lowerHint.includes('mountain')
+                ? ['real_alpine_road.jpg', 'real_courtyard_sun.jpg']
+                : lowerHint.includes('kyoto') || lowerHint.includes('timber')
+                  ? ['real_kyoto_timber.jpg', 'real_courtyard_sun.jpg']
+                  : ['real_courtyard_sun.jpg', 'real_coastal_cliffs.jpg'];
 
         for (const candidate of fallbackCandidates) {
           const full = path.join(this.mediaDir, candidate);
           if (fs.existsSync(full)) {
-            startImagePath = full;
+            startImagePath = this.preferResidentMediaPath(full);
             break;
           }
         }
@@ -1681,153 +2419,72 @@ export class McpStdioBridgeServer {
       const totalFrames = durationSec * fps;
       const styleHint = `${prompt} ${outputFilename} ${String(params.cameraCurve || params.camera_curve || params.cameraMotion || '')} ${String(params.grade || params.mood || params.lightingPreset || '')}`.toLowerCase();
 
-      let zoomPanExpr = `zoompan=z='min(zoom+0.0014,1.22)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=1280x720:fps=${fps}`;
+      let zoomPanExpr = `zoompan=z='min(1.0+0.00055*on,1.10)':x='iw/2-(iw/zoom/2)+sin(on/20)*7':y='ih/2-(ih/zoom/2)+cos(on/27)*4':d=${totalFrames}:s=1280x720:fps=${fps}`;
       if (
-        styleHint.includes('alley') ||
-        styleHint.includes('chase') ||
         styleHint.includes('tracking') ||
         styleHint.includes('pan_right') ||
         styleHint.includes('whip_pan')
       ) {
-        zoomPanExpr = `zoompan=z='1.15+0.04*sin(on/18)':x='(iw-iw/zoom)*(on/${totalFrames})':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=1280x720:fps=${fps}`;
+        zoomPanExpr = `zoompan=z='1.10':x='(iw-iw/zoom)*(on/${totalFrames})':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=1280x720:fps=${fps}`;
       } else if (styleHint.includes('pan_left') || styleHint.includes('orbit')) {
-        zoomPanExpr = `zoompan=z='1.16':x='(iw-iw/zoom)*(1-on/${totalFrames})':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=1280x720:fps=${fps}`;
+        zoomPanExpr = `zoompan=z='1.10':x='(iw-iw/zoom)*(1-on/${totalFrames})':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=1280x720:fps=${fps}`;
       } else if (
         styleHint.includes('sunrise') ||
         styleHint.includes('dawn') ||
         styleHint.includes('crane')
       ) {
-        zoomPanExpr = `zoompan=z='1.10+0.10*(on/${totalFrames})':x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(1-on/${totalFrames})':d=${totalFrames}:s=1280x720:fps=${fps}`;
+        zoomPanExpr = `zoompan=z='1.06+0.06*(on/${totalFrames})':x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(1-on/${totalFrames})':d=${totalFrames}:s=1280x720:fps=${fps}`;
       } else if (styleHint.includes('dolly_out')) {
-        zoomPanExpr = `zoompan=z='1.22-0.20*(on/${totalFrames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=1280x720:fps=${fps}`;
+        zoomPanExpr = `zoompan=z='1.14-0.12*(on/${totalFrames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=1280x720:fps=${fps}`;
       }
 
-      let colorGradeFilter =
-        'format=rgb24,colorbalance=rs=-0.05:gs=0.02:bs=0.10:rm=-0.02:gm=0.02:bm=0.07:rh=0.03:gh=0.02:bh=0.08,eq=contrast=1.06:saturation=1.12,format=yuv420p';
-      let rainGain = 0.08;
-      let bassFreq = 55;
-      let bassPulseFilter = 'volume=0.18';
+      const colorGradeFilter =
+        'colorbalance=rs=0.025:gs=0.01:bs=-0.018,noise=alls=3:allf=t,format=yuv420p';
+      const fadeOutStart = Math.max(0.4, Number((durationSec - 0.5).toFixed(2)));
 
-      if (
-        styleHint.includes('sunrise') ||
-        styleHint.includes('dawn') ||
-        styleHint.includes('golden')
-      ) {
-        colorGradeFilter =
-          'format=rgb24,colorbalance=rs=0.08:gs=0.02:bs=-0.07:rm=0.11:gm=0.05:bm=-0.07:rh=0.13:gh=0.07:bh=-0.05,eq=contrast=1.05:saturation=1.18:brightness=0.02,format=yuv420p';
-        rainGain = 0.035;
-        bassFreq = 65.41;
-        bassPulseFilter = 'volume=0.16';
-      } else if (styleHint.includes('alley') || styleHint.includes('chase')) {
-        colorGradeFilter =
-          'format=rgb24,colorbalance=rs=-0.04:gs=0.03:bs=0.09:rm=0.02:gm=0.01:bm=0.06:rh=0.05:gh=0.01:bh=0.08,eq=contrast=1.10:saturation=1.15,format=yuv420p';
-        rainGain = 0.09;
-        bassFreq = 58.27;
-        bassPulseFilter = 'tremolo=f=4:d=0.45,volume=0.20';
-      }
+      const filterComplex = [
+        `[0:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,${zoomPanExpr},${colorGradeFilter},fade=t=in:st=0:d=0.35,fade=t=out:st=${fadeOutStart}:d=0.5[vout]`,
+        `[1:a]highpass=f=140,lowpass=f=1750,tremolo=f=0.19:d=0.45,pan=stereo|c0=0.9*c0|c1=0.82*c0,afade=t=in:st=0:d=0.35,afade=t=out:st=${fadeOutStart}:d=0.5[aout]`,
+      ].join(';');
 
-      const fadeOutStart = Math.max(0.4, Number((durationSec - 0.6).toFixed(2)));
-
-      if (endImagePath) {
-        const fadeDur = Math.min(2, Math.max(0.8, Number((durationSec * 0.35).toFixed(2))));
-        const segDur = Number(((durationSec + fadeDur) / 2).toFixed(2));
-        const segFrames = Math.max(24, Math.round(segDur * fps));
-        const offsetSec = Math.max(0.5, Number((segDur - fadeDur).toFixed(2)));
-
-        const filterComplex = [
-          `[0:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z='min(zoom+0.0014,1.18)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${segFrames}:s=1280x720:fps=${fps},settb=AVTB,fps=${fps}[v0]`,
-          `[1:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z='1.18-0.14*(on/${segFrames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${segFrames}:s=1280x720:fps=${fps},settb=AVTB,fps=${fps}[v1]`,
-          `[v0][v1]xfade=transition=fade:duration=${fadeDur}:offset=${offsetSec},${colorGradeFilter}[vout]`,
-          `[2:a]lowpass=f=1800,highpass=f=180,aformat=sample_rates=44100:channel_layouts=stereo[rain]`,
-          `[3:a]${bassPulseFilter},aformat=sample_rates=44100:channel_layouts=stereo[sub]`,
-          `[rain][sub]amix=inputs=2:duration=first:normalize=0,afade=t=in:st=0:d=0.35,afade=t=out:st=${fadeOutStart}:d=0.6[aout]`,
-        ].join(';');
-
-        await runSubprocess(this.ffmpegPath, [
-          '-y',
-          '-i',
-          startImagePath,
-          '-i',
-          endImagePath,
-          '-f',
-          'lavfi',
-          '-i',
-          `anoisesrc=d=${durationSec}:c=pink:r=44100:a=${rainGain}`,
-          '-f',
-          'lavfi',
-          '-i',
-          `sine=f=${bassFreq}:d=${durationSec}:r=44100`,
-          '-filter_complex',
-          filterComplex,
-          '-map',
-          '[vout]',
-          '-map',
-          '[aout]',
-          '-c:v',
-          'libx264',
-          '-preset',
-          'veryfast',
-          '-crf',
-          '20',
-          '-pix_fmt',
-          'yuv420p',
-          '-c:a',
-          'aac',
-          '-b:a',
-          '160k',
-          '-shortest',
-          '-movflags',
-          '+faststart',
-          outputFullPath,
-          '-loglevel',
-          'error',
-        ]);
-      } else {
-        const filterComplex = [
-          `[0:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,${zoomPanExpr},${colorGradeFilter}[vout]`,
-          `[1:a]lowpass=f=1800,highpass=f=180,aformat=sample_rates=44100:channel_layouts=stereo[rain]`,
-          `[2:a]${bassPulseFilter},aformat=sample_rates=44100:channel_layouts=stereo[sub]`,
-          `[rain][sub]amix=inputs=2:duration=first:normalize=0,afade=t=in:st=0:d=0.35,afade=t=out:st=${fadeOutStart}:d=0.6[aout]`,
-        ].join(';');
-
-        await runSubprocess(this.ffmpegPath, [
-          '-y',
-          '-i',
-          startImagePath,
-          '-f',
-          'lavfi',
-          '-i',
-          `anoisesrc=d=${durationSec}:c=pink:r=44100:a=${rainGain}`,
-          '-f',
-          'lavfi',
-          '-i',
-          `sine=f=${bassFreq}:d=${durationSec}:r=44100`,
-          '-filter_complex',
-          filterComplex,
-          '-map',
-          '[vout]',
-          '-map',
-          '[aout]',
-          '-c:v',
-          'libx264',
-          '-preset',
-          'veryfast',
-          '-crf',
-          '20',
-          '-pix_fmt',
-          'yuv420p',
-          '-c:a',
-          'aac',
-          '-b:a',
-          '160k',
-          '-shortest',
-          '-movflags',
-          '+faststart',
-          outputFullPath,
-          '-loglevel',
-          'error',
-        ]);
-      }
+      await runSubprocess(this.ffmpegPath, [
+        '-y',
+        '-i',
+        startImagePath,
+        '-f',
+        'lavfi',
+        '-i',
+        `anoisesrc=color=pink:amplitude=0.07:duration=${durationSec}:sample_rate=48000`,
+        '-filter_complex',
+        filterComplex,
+        '-map',
+        '[vout]',
+        '-map',
+        '[aout]',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-crf',
+        '20',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '160k',
+        '-ar',
+        '48000',
+        '-ac',
+        '2',
+        '-t',
+        String(durationSec),
+        '-movflags',
+        '+faststart',
+        outputFullPath,
+        '-loglevel',
+        'error',
+      ]);
 
       const bytes = fs.statSync(outputFullPath).size;
       this.mirrorToDistMedia(outputFilename, outputFullPath);
@@ -1878,13 +2535,13 @@ export class McpStdioBridgeServer {
         params.source_image ??
         params.sheetUrl ??
         params.contactSheet ??
-        'contact_sheet_9grid.png';
+        'real_contact_9grid.jpg';
 
       let sourcePath = await this.resolveInputMediaPath(rawSource, tempFiles);
       if (!sourcePath) {
-        const defaultSheet = path.join(this.mediaDir, 'contact_sheet_9grid.png');
+        const defaultSheet = path.join(this.mediaDir, 'real_contact_9grid.jpg');
         if (fs.existsSync(defaultSheet)) {
-          sourcePath = defaultSheet;
+          sourcePath = this.preferResidentMediaPath(defaultSheet);
         } else {
           sourcePath = await this.resolveImageOrFallback(undefined, tempFiles);
         }
@@ -2149,12 +2806,13 @@ export class McpStdioBridgeServer {
 
       if (resolvedClipPaths.length === 0) {
         const defaultClips = [
-          'shot01_rooftop.mp4',
-          'shot02_alley_chase.mp4',
-          'shot02b_sunrise_remix.mp4',
+          'real_shot01_courtyard.mp4',
+          'real_shot02_bridge.mp4',
+          'real_shot03_atelier.mp4',
         ]
           .map((f) => path.join(this.mediaDir, f))
-          .filter((p) => fs.existsSync(p));
+          .filter((p) => fs.existsSync(p))
+          .map((p) => this.preferResidentMediaPath(p));
 
         if (defaultClips.length > 0) {
           resolvedClipPaths.push(...defaultClips);
@@ -2179,6 +2837,42 @@ export class McpStdioBridgeServer {
         }
       }
 
+      // Resolve optional external audioTracks for ducked multi-track mix
+      const rawAudioTracks = Array.isArray(params.audioTracks)
+        ? params.audioTracks
+        : Array.isArray(params.audio_tracks)
+          ? params.audio_tracks
+          : typeof params.audioUrl === 'string' && params.audioUrl.trim()
+            ? [{ audioUrl: params.audioUrl, volume: 1.0 }]
+            : [];
+
+      const resolvedAudioTracks: Array<{ filePath: string; volume: number }> = [];
+      for (const rawTrack of rawAudioTracks) {
+        const trackUrl =
+          typeof rawTrack === 'string'
+            ? rawTrack
+            : typeof rawTrack === 'object' && rawTrack !== null
+              ? String(
+                  (rawTrack as Record<string, unknown>).audioUrl ||
+                    (rawTrack as Record<string, unknown>).url ||
+                    (rawTrack as Record<string, unknown>).src ||
+                    (rawTrack as Record<string, unknown>).mediaUrl ||
+                    ''
+                )
+              : '';
+        const trackVolRaw =
+          typeof rawTrack === 'object' && rawTrack !== null && typeof (rawTrack as Record<string, unknown>).volume === 'number'
+            ? Number((rawTrack as Record<string, unknown>).volume)
+            : 1.0;
+        const audioLocalPath = await this.resolveInputMediaPath(trackUrl, tempFiles);
+        if (audioLocalPath) {
+          resolvedAudioTracks.push({
+            filePath: audioLocalPath,
+            volume: Math.max(0.05, Math.min(2.0, Number.isFinite(trackVolRaw) ? trackVolRaw : 1.0)),
+          });
+        }
+      }
+
       const requestedName =
         (params.outputName as string | undefined) ||
         (params.output_name as string | undefined) ||
@@ -2190,10 +2884,12 @@ export class McpStdioBridgeServer {
       const inputArgs: string[] = [];
       const filterParts: string[] = [];
       const concatPairs: string[] = [];
+      let totalVideoDurationSec = 0;
 
       for (let i = 0; i < resolvedClipPaths.length; i++) {
         const clipPath = resolvedClipPaths[i];
         const meta = await this.probeClipMetadata(clipPath);
+        totalVideoDurationSec += meta.durationSec;
         inputArgs.push('-i', clipPath);
 
         filterParts.push(
@@ -2201,19 +2897,44 @@ export class McpStdioBridgeServer {
         );
         if (meta.hasAudio) {
           filterParts.push(
-            `[${i}:a]aformat=sample_rates=44100:channel_layouts=stereo[a${i}]`
+            `[${i}:a]aformat=sample_rates=48000:channel_layouts=stereo[a${i}]`
           );
         } else {
           filterParts.push(
-            `anullsrc=r=44100:cl=stereo:d=${meta.durationSec.toFixed(2)}[a${i}]`
+            `anullsrc=r=48000:cl=stereo:d=${meta.durationSec.toFixed(2)}[a${i}]`
           );
         }
         concatPairs.push(`[v${i}][a${i}]`);
       }
 
-      filterParts.push(
-        `${concatPairs.join('')}concat=n=${resolvedClipPaths.length}:v=1:a=1[vout][aout]`
-      );
+      if (resolvedAudioTracks.length > 0) {
+        filterParts.push(
+          `${concatPairs.join('')}concat=n=${resolvedClipPaths.length}:v=1:a=1[vout][acat]`
+        );
+        filterParts.push(`[acat]volume=0.45[avid]`);
+
+        const mixInputs: string[] = ['[avid]'];
+        const targetDur = Math.max(1.0, Number(totalVideoDurationSec.toFixed(2)));
+        const fadeStart = Math.max(0.2, Number((targetDur - 0.6).toFixed(2)));
+
+        for (let k = 0; k < resolvedAudioTracks.length; k++) {
+          const track = resolvedAudioTracks[k];
+          const inIdx = resolvedClipPaths.length + k;
+          inputArgs.push('-stream_loop', '3', '-i', track.filePath);
+          filterParts.push(
+            `[${inIdx}:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=0:${targetDur},asetpts=PTS-STARTPTS,afade=t=out:st=${fadeStart}:d=0.6,volume=${track.volume.toFixed(2)}[aext${k}]`
+          );
+          mixInputs.push(`[aext${k}]`);
+        }
+
+        filterParts.push(
+          `${mixInputs.join('')}amix=inputs=${mixInputs.length}:duration=first:normalize=0[aout]`
+        );
+      } else {
+        filterParts.push(
+          `${concatPairs.join('')}concat=n=${resolvedClipPaths.length}:v=1:a=1[vout][aout]`
+        );
+      }
 
       await runSubprocess(this.ffmpegPath, [
         '-y',
@@ -2235,7 +2956,11 @@ export class McpStdioBridgeServer {
         '-c:a',
         'aac',
         '-b:a',
-        '160k',
+        '192k',
+        '-ar',
+        '48000',
+        '-ac',
+        '2',
         '-movflags',
         '+faststart',
         outFullPath,
@@ -2260,6 +2985,8 @@ export class McpStdioBridgeServer {
         fullUrl,
         bytes,
         clipCount: resolvedClipPaths.length,
+        audioTrackCount: resolvedAudioTracks.length,
+        audioDucked: resolvedAudioTracks.length > 0,
         keyframeCount: resolvedClipPaths.length,
         durationSec: Number(finalMeta.durationSec.toFixed(2)),
         engine: 'ffmpeg-local',
@@ -2354,19 +3081,20 @@ export class McpStdioBridgeServer {
   ): void {
     const relRequested = decodeURIComponent(pathname.replace(/^\/media\/+/, ''));
     const safeBase = path.basename(relRequested);
-    const targetPath = path.resolve(this.mediaDir, safeBase);
+    const primaryTargetPath = path.resolve(this.mediaDir, safeBase);
 
     if (
       !safeBase ||
-      !targetPath.startsWith(path.resolve(this.mediaDir)) ||
-      !fs.existsSync(targetPath) ||
-      !fs.statSync(targetPath).isFile()
+      !primaryTargetPath.startsWith(path.resolve(this.mediaDir)) ||
+      !fs.existsSync(primaryTargetPath) ||
+      !fs.statSync(primaryTargetPath).isFile()
     ) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: `Media file not found: ${safeBase}` }));
       return;
     }
 
+    const targetPath = this.preferResidentMediaPath(primaryTargetPath);
     const stat = fs.statSync(targetPath);
     const totalSize = stat.size;
     const ext = path.extname(safeBase).toLowerCase();
@@ -2414,6 +3142,85 @@ export class McpStdioBridgeServer {
     }
 
     fs.createReadStream(targetPath).pipe(res);
+  }
+
+  private resolveStudioDistDir(): string | null {
+    const candidates = [
+      process.env.DREAMFLOW_STUDIO_DIST_DIR,
+      path.resolve(this.mediaDir, '../../dist'),
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../apps/web-studio/dist'),
+    ].filter((c): c is string => Boolean(c));
+
+    for (const dir of candidates) {
+      try {
+        if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+          return path.resolve(dir);
+        }
+      } catch {
+        // Ignore
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Unified Single-Port Static Hosting Mode:
+   * Serves `apps/web-studio/dist/*` static assets and SPA `index.html` fallback on `:3001`
+   * for any GET/HEAD route not matching `/api/*`, `/mcp*`, or `/media/*`.
+   */
+  private serveStudioStaticOrSpa(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    pathname: string
+  ): boolean {
+    const studioDistDir = this.resolveStudioDistDir();
+    if (!studioDistDir) return false;
+
+    const cleanRel = decodeURIComponent(pathname).replace(/^\/+/, '');
+    if (cleanRel) {
+      const candidate = path.resolve(studioDistDir, cleanRel);
+      if (
+        candidate.startsWith(studioDistDir) &&
+        fs.existsSync(candidate) &&
+        fs.statSync(candidate).isFile()
+      ) {
+        const stat = fs.statSync(candidate);
+        const ext = path.extname(candidate).toLowerCase();
+        const contentType = MIME_BY_EXT[ext] || 'application/octet-stream';
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Content-Length': stat.size,
+          'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
+        });
+        if (req.method === 'HEAD') {
+          res.end();
+          return true;
+        }
+        fs.createReadStream(candidate).pipe(res);
+        return true;
+      }
+    }
+
+    // SPA HTML fallback for `/` or client-side routes without file extension
+    if (!cleanRel || !path.extname(cleanRel)) {
+      const indexHtmlPath = path.join(studioDistDir, 'index.html');
+      if (fs.existsSync(indexHtmlPath) && fs.statSync(indexHtmlPath).isFile()) {
+        const stat = fs.statSync(indexHtmlPath);
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Length': stat.size,
+          'Cache-Control': 'no-cache',
+        });
+        if (req.method === 'HEAD') {
+          res.end();
+          return true;
+        }
+        fs.createReadStream(indexHtmlPath).pipe(res);
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private sendJson(res: http.ServerResponse, status: number, payload: unknown): void {
@@ -2602,6 +3409,14 @@ export class McpStdioBridgeServer {
           this.sendJson(res, 200, await this.renderVideo(bodyObj));
           return;
         }
+        if (pathname === '/api/keyframe-bridge') {
+          this.sendJson(res, 200, await this.keyframeBridge(bodyObj));
+          return;
+        }
+        if (pathname === '/api/generate-audio') {
+          this.sendJson(res, 200, await this.generateAudio(bodyObj));
+          return;
+        }
         if (pathname === '/api/slice-grid') {
           this.sendJson(res, 200, await this.sliceGrid(bodyObj));
           return;
@@ -2679,6 +3494,18 @@ export class McpStdioBridgeServer {
 
       this.sendJson(res, 200, responseObj);
       return;
+    }
+
+    // 8. Unified Single-Port Static Studio SPA Serving (`GET /`, `GET /assets/*`, etc.)
+    if (
+      (req.method === 'GET' || req.method === 'HEAD') &&
+      !pathname.startsWith('/api/') &&
+      !pathname.startsWith('/mcp') &&
+      !pathname.startsWith('/media/')
+    ) {
+      if (this.serveStudioStaticOrSpa(req, res, pathname)) {
+        return;
+      }
     }
 
     this.sendJson(res, 404, { error: `Unknown MCP bridge route: ${req.method} ${pathname}` });
@@ -2851,7 +3678,7 @@ export class McpStdioBridgeServer {
         result: {
           protocolVersion: '2025-03-26',
           capabilities: { tools: { listChanged: true }, resources: { listChanged: false } },
-          serverInfo: { name: 'open-dreamflow-local-bridge', version: '4.0.0' },
+          serverInfo: { name: 'open-dreamflow-local-bridge', version: '5.0.0' },
         },
       };
     }
@@ -2903,6 +3730,10 @@ export class McpStdioBridgeServer {
       switch (toolName) {
         case 'generate_video':
           return wrapStructured(await this.renderVideo(args));
+        case 'keyframe_bridge':
+          return wrapStructured(await this.keyframeBridge(args));
+        case 'generate_audio':
+          return wrapStructured(await this.generateAudio(args));
         case 'inpaint_frame':
           return wrapStructured(await this.inpaintImage(args));
         case 'outpaint_expand':
@@ -2921,11 +3752,11 @@ export class McpStdioBridgeServer {
           return wrapStructured(this.saveProject(args));
         case 'extract_style_dna': {
           const styleDna = {
-            paletteHex: ['#0E0E0E', '#191919', '#20D5EC', '#F8FAFC', '#64748B'],
-            lighting: 'Volumetric Cyberpunk Practical Neon + Wet Asphalt Rim Light',
-            lens: '35mm Cooke Anamorphic T2.3',
-            filmStock: 'Kodak Vision3 500T 5219',
-            lockStrength: Number(args.lock_strength ?? 0.85),
+            paletteHex: ['#191919', '#C89F81', '#D9CDBF', '#4A6B7C', '#F4EFEA'],
+            lighting: 'Natural Mediterranean Daylight & Warm Limestone Bounce',
+            lens: '35mm Leica Summilux-M f/1.4 ASPH',
+            filmStock: 'Kodak Vision3 250D 5207',
+            lockStrength: Number(args.lock_strength ?? 0.88),
           };
           return wrapStructured({
             ok: true,
