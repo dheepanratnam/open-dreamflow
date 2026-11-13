@@ -932,6 +932,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                     node.kind !== 'audio' && (
                       <span className="font-mono text-[10px] text-white/35 shrink-0">
                         {node.resolution}
+                        {node.quality ? ` · ${node.quality}` : ''}
                       </span>
                     )}
                 </div>

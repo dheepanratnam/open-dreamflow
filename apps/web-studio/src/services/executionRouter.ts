@@ -375,14 +375,17 @@ export async function verifyProviderViaBackend(params: {
   }
 }
 
-export async function fetchPlatformCatalogViaBackend(): Promise<{
+export async function fetchPlatformCatalogViaBackend(forceRefresh = false): Promise<{
   ok: boolean;
   platforms: PlatformDefinition[];
 }> {
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 6000);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/platforms`, {
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const url = forceRefresh
+      ? `${LOCAL_MCP_BASE}/api/platforms?forceRefresh=1`
+      : `${LOCAL_MCP_BASE}/api/platforms`;
+    const res = await fetch(url, {
       signal: ctrl.signal,
     });
     clearTimeout(timer);
@@ -409,13 +412,16 @@ export interface GenerateNodeBackendParams {
   settings: {
     aspectRatio?: AspectRatio;
     resolution?: ResolutionTier;
+    quality?: string;
     batchCount?: 1 | 2 | 4;
     durationSec?: number;
     audioEnabled?: boolean;
     audioMode?: 'tts' | 'ambient' | 'voiceover' | 'sfx';
     voiceId?: string;
     seed?: number;
+    modelParams?: Record<string, string | number | boolean>;
   };
+  modelParams?: Record<string, string | number | boolean>;
   referenceImages?: string[];
   mcpServerId?: string;
   mcpToolName?: string;

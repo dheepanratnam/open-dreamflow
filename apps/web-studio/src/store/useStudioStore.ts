@@ -35,12 +35,14 @@ import type {
   TimelineClip,
 } from '../types/studio';
 import {
+  LEGACY_MODEL_ID_REDIRECTS,
   PLATFORM_CATALOG,
   getModelsForPlatformAndModality,
   getPlatformBadgeLabel,
   getPlatformConnectionStatus,
   nodeKindToModality,
   resolveByokCredentialsForPlatform,
+  resolveCanonicalModelId,
 } from '../presets/platformCatalog';
 import {
   BUILTIN_SKILLS,
@@ -1428,14 +1430,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         platformsCatalog,
         externalMcpServers
       );
-      const defaultImageModelId = imgModels[0]?.id || 'chatgpt-image-2.6';
+      const defaultImgModel = imgModels[0];
+      const defaultImageModelId = defaultImgModel?.id || 'gpt_image_2_6';
       const defaultImageBadge =
         getPlatformBadgeLabel(
           lastImagePlatformId,
           defaultImageModelId,
           platformsCatalog,
           externalMcpServers
-        ) || 'Higgsfield · ChatGPT Image 2.6';
+        ) || 'Higgsfield · ChatGPT / GPT Image 2.6';
 
       const vidModels = getModelsForPlatformAndModality(
         lastVideoPlatformId,
@@ -1443,14 +1446,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         platformsCatalog,
         externalMcpServers
       );
-      const defaultVideoModelId = vidModels[0]?.id || 'kling-4.0';
+      const defaultVidModel = vidModels[0];
+      const defaultVideoModelId = defaultVidModel?.id || 'cinematic_studio_video_4_0';
       const defaultVideoBadge =
         getPlatformBadgeLabel(
           lastVideoPlatformId,
           defaultVideoModelId,
           platformsCatalog,
           externalMcpServers
-        ) || 'Kling AI · Kling 4.0';
+        ) || 'Higgsfield · Cinema Studio 4.0';
 
       const audModels = getModelsForPlatformAndModality(
         lastAudioPlatformId,
@@ -1458,7 +1462,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         platformsCatalog,
         externalMcpServers
       );
-      const defaultAudioModelId = audModels[0]?.id || 'eleven_multilingual_v2';
+      const defaultAudModel = audModels[0];
+      const defaultAudioModelId = defaultAudModel?.id || 'eleven_multilingual_v2';
       const defaultAudioBadge =
         getPlatformBadgeLabel(
           lastAudioPlatformId,
@@ -1466,6 +1471,26 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           platformsCatalog,
           externalMcpServers
         ) || 'ElevenLabs · Multilingual v2';
+
+      const initParamsFromModel = (m?: {
+        id: string;
+        parameters?: Array<{ name: string; default?: string | number | boolean; options?: Array<string | number> }>;
+      }) => {
+        const out: Record<string, string | number | boolean> = {};
+        for (const p of m?.parameters || []) {
+          if (p.default !== undefined) out[p.name] = p.default;
+        }
+        if (['gpt_image_2_6', 'gpt_image_2_6_flare', 'gpt_image_2_5', 'gpt_image_2'].includes(m?.id || '')) {
+          out.quality = 'high';
+        }
+        return {
+          quality: typeof out.quality === 'string' ? out.quality : undefined,
+          modelParams: Object.keys(out).length > 0 ? out : undefined,
+        };
+      };
+      const imgInit = initParamsFromModel(defaultImgModel);
+      const vidInit = initParamsFromModel(defaultVidModel);
+      const audInit = initParamsFromModel(defaultAudModel);
 
       switch (tool) {
         case 'text': {
@@ -1501,7 +1526,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             y,
             width: 384,
             height: 216,
-            aspectRatio: '16:9',
+            aspectRatio: defaultImgModel?.defaultAspect || '16:9',
             status: 'idle',
             platformId: lastImagePlatformId,
             connectionMode: 'auto',
@@ -1509,7 +1534,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             batchCount: 1,
             imageUrl: undefined,
             seed: 200 + n * 37,
-            resolution: '2K',
+            resolution: defaultImgModel?.defaultResolution || '2k',
+            ...(imgInit.quality ? { quality: imgInit.quality } : {}),
+            ...(imgInit.modelParams ? { modelParams: imgInit.modelParams } : {}),
             elementHandles: [],
             layers: [],
             providerUsed: defaultImageBadge,
@@ -1529,7 +1556,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             y,
             width: 480,
             height: 270,
-            aspectRatio: '16:9',
+            aspectRatio: defaultVidModel?.defaultAspect || '16:9',
             status: 'idle',
             platformId: lastVideoPlatformId,
             connectionMode: 'auto',
@@ -1537,10 +1564,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             audioEnabled: true,
             imageUrl: undefined,
             videoUrl: undefined,
-            durationSec: 5,
+            durationSec: defaultVidModel?.defaultDurationSec ?? 5,
             previousInteractionId: upstream?.interactionId,
             seed: 500 + n * 41,
-            resolution: '1080p',
+            resolution: defaultVidModel?.defaultResolution || '720p',
+            ...(vidInit.quality ? { quality: vidInit.quality } : {}),
+            ...(vidInit.modelParams ? { modelParams: vidInit.modelParams } : {}),
             elementHandles: [],
             layers: [],
             providerUsed: defaultVideoBadge,
@@ -1569,9 +1598,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             audioMode: 'tts',
             voiceId: 'JBFqnCBsd6RMkjVDRZzb',
             waveform: createDefaultWaveform(seed, 64),
-            durationSec: 8,
+            durationSec: defaultAudModel?.defaultDurationSec ?? 8,
             seed,
             resolution: '1080p',
+            ...(audInit.quality ? { quality: audInit.quality } : {}),
+            ...(audInit.modelParams ? { modelParams: audInit.modelParams } : {}),
             elementHandles: [],
             layers: [],
             providerUsed: defaultAudioBadge,
@@ -5287,10 +5318,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       platformsCatalog,
       externalMcpServers
     );
+    const canonicalExplicit = explicitModelId
+      ? resolveCanonicalModelId(explicitModelId)
+      : undefined;
     const chosenModel =
-      (explicitModelId ? models.find((m) => m.id === explicitModelId) : undefined) ||
-      models[0];
-    const resolvedModelId = explicitModelId || chosenModel?.id || '';
+      (canonicalExplicit
+        ? models.find((m) => m.id === canonicalExplicit || m.id === explicitModelId)
+        : undefined) || models[0];
+    const resolvedModelId = chosenModel?.id || canonicalExplicit || explicitModelId || '';
 
     let mcpServerId: string | undefined;
     let mcpToolName: string | undefined;
@@ -5302,6 +5337,107 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const [, sId, tName] = resolvedModelId.split(':');
       mcpServerId = sId;
       mcpToolName = tName;
+    }
+
+    // Clamp & sync aspectRatio, resolution, durationSec, quality, and modelParams for the selected model
+    let nextAspect = target.aspectRatio;
+    let nextDims: { width: number; height: number } | null = null;
+    if (chosenModel?.aspectRatios?.length) {
+      const matchedAspect = chosenModel.aspectRatios.find(
+        (ar) => ar.toLowerCase() === String(target.aspectRatio).toLowerCase()
+      );
+      if (matchedAspect) {
+        nextAspect = matchedAspect;
+      } else {
+        nextAspect =
+          chosenModel.defaultAspect ||
+          chosenModel.aspectRatios.find((ar) => ar !== 'auto') ||
+          chosenModel.aspectRatios[0];
+        const baseW =
+          target.kind === 'video' || target.kind === 'contact-sheet'
+            ? 480
+            : target.kind === 'element'
+            ? 320
+            : 384;
+        nextDims = getDimensionsForAspect(nextAspect, baseW);
+      }
+    }
+
+    let nextResolution = target.resolution;
+    if (chosenModel?.resolutions?.length) {
+      const matchedRes = chosenModel.resolutions.find(
+        (r) => r.toLowerCase() === String(target.resolution).toLowerCase()
+      );
+      nextResolution =
+        matchedRes || chosenModel.defaultResolution || chosenModel.resolutions[0];
+    }
+
+    let nextDurationSec = target.durationSec;
+    if (chosenModel?.durationsSec?.length) {
+      if (
+        typeof target.durationSec === 'number' &&
+        chosenModel.durationsSec.includes(target.durationSec)
+      ) {
+        nextDurationSec = target.durationSec;
+      } else {
+        nextDurationSec =
+          chosenModel.defaultDurationSec ??
+          chosenModel.durationsSec.find((d) => d > 0) ??
+          chosenModel.durationsSec[0];
+      }
+    } else if (chosenModel?.defaultDurationSec !== undefined) {
+      nextDurationSec = chosenModel.defaultDurationSec;
+    }
+
+    const GPT_CRISP_DEFAULT_IDS = new Set([
+      'gpt_image_2_6',
+      'gpt_image_2_6_flare',
+      'gpt_image_2_5',
+      'gpt_image_2',
+    ]);
+    const qualitySpec = chosenModel?.parameters?.find((p) => p.name === 'quality');
+    let nextQuality: string | undefined;
+    if (qualitySpec) {
+      const opts = (qualitySpec.options || []).map((o) => String(o));
+      const matchedCur = target.quality
+        ? opts.find((o) => o.toLowerCase() === String(target.quality).toLowerCase())
+        : undefined;
+      if (matchedCur && target.modelId === resolvedModelId) {
+        nextQuality = matchedCur;
+      } else if (GPT_CRISP_DEFAULT_IDS.has(resolvedModelId) && opts.includes('high')) {
+        nextQuality = 'high';
+      } else if (qualitySpec.default !== undefined) {
+        nextQuality = String(qualitySpec.default);
+      } else if (opts.length > 0) {
+        nextQuality = opts[0];
+      }
+    }
+
+    const nextModelParams: Record<string, string | number | boolean> = {};
+    const prevParams = target.modelParams || {};
+    for (const spec of chosenModel?.parameters || []) {
+      if (spec.name === 'quality') {
+        if (nextQuality !== undefined) nextModelParams.quality = nextQuality;
+        continue;
+      }
+      const prevVal = prevParams[spec.name];
+      if (prevVal !== undefined) {
+        if (spec.options?.length) {
+          const matched = spec.options.find(
+            (o) => String(o).toLowerCase() === String(prevVal).toLowerCase()
+          );
+          if (matched !== undefined) {
+            nextModelParams[spec.name] = matched;
+            continue;
+          }
+        } else if (typeof prevVal === (spec.type === 'boolean' ? 'boolean' : spec.type === 'number' ? 'number' : 'string')) {
+          nextModelParams[spec.name] = prevVal;
+          continue;
+        }
+      }
+      if (spec.default !== undefined) {
+        nextModelParams[spec.name] = spec.default;
+      }
     }
 
     const badge =
@@ -5324,6 +5460,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               modelId: resolvedModelId,
               mcpServerId,
               mcpToolName,
+              aspectRatio: nextAspect,
+              ...(nextDims ? { width: nextDims.width, height: nextDims.height } : {}),
+              resolution: nextResolution,
+              durationSec: nextDurationSec,
+              quality: nextQuality,
+              modelParams: Object.keys(nextModelParams).length > 0 ? nextModelParams : undefined,
               audioMode:
                 modality === 'audio' && resolvedModelId.includes('sound')
                   ? 'sfx'
@@ -5568,7 +5710,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       state.platformsCatalog,
       state.externalMcpServers
     );
-    const modelId = node.modelId || models[0]?.id || '';
+    const rawModelId = node.modelId || models[0]?.id || '';
+    const modelId =
+      platformId === 'higgsfield' ? resolveCanonicalModelId(rawModelId) : rawModelId;
 
     // Gather wired upstream nodes (both reference images AND upstream text prompt nodes)
     const incomingEdges = state.edges.filter((e) => e.targetId === node.id);
@@ -5663,6 +5807,19 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       ),
     }));
 
+    const effectiveQuality =
+      node.quality ||
+      (typeof node.modelParams?.quality === 'string'
+        ? node.modelParams.quality
+        : undefined);
+    const mergedModelParams: Record<string, string | number | boolean> | undefined =
+      node.modelParams || effectiveQuality
+        ? {
+            ...(node.modelParams || {}),
+            ...(effectiveQuality ? { quality: effectiveQuality } : {}),
+          }
+        : undefined;
+
     const res = await generateNodeViaBackend({
       nodeId: node.id,
       kind: modality,
@@ -5674,13 +5831,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       settings: {
         aspectRatio: node.aspectRatio,
         resolution: node.resolution,
+        ...(effectiveQuality ? { quality: effectiveQuality } : {}),
         batchCount: node.batchCount || 1,
         durationSec: node.durationSec || (modality === 'video' ? 5 : modality === 'audio' ? 8 : undefined),
         audioEnabled: node.audioEnabled ?? true,
         audioMode: node.audioMode || (modality === 'audio' ? 'tts' : undefined),
         voiceId: node.voiceId || (modality === 'audio' ? 'JBFqnCBsd6RMkjVDRZzb' : undefined),
         seed: node.seed,
+        ...(mergedModelParams ? { modelParams: mergedModelParams } : {}),
       },
+      ...(mergedModelParams ? { modelParams: mergedModelParams } : {}),
       referenceImages: Array.from(refSet),
       mcpServerId,
       mcpToolName,
@@ -6150,7 +6310,22 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           if (!remote) return localPlat;
           const mergedModels = [...localPlat.models];
           for (const rm of remote.models || []) {
-            if (!mergedModels.some((lm) => lm.id === rm.id)) {
+            if (!rm?.id || rm.id in LEGACY_MODEL_ID_REDIRECTS) continue;
+            const existingIdx = mergedModels.findIndex((lm) => lm.id === rm.id);
+            if (existingIdx >= 0) {
+              const lm = mergedModels[existingIdx];
+              mergedModels[existingIdx] = {
+                ...lm,
+                ...rm,
+                label: lm.label || rm.label,
+                providerFamily: rm.providerFamily || lm.providerFamily,
+                parameters: rm.parameters?.length ? rm.parameters : lm.parameters,
+                aspectRatios: rm.aspectRatios?.length ? rm.aspectRatios : lm.aspectRatios,
+                resolutions: rm.resolutions?.length ? rm.resolutions : lm.resolutions,
+                durationsSec: rm.durationsSec?.length ? rm.durationsSec : lm.durationsSec,
+                mediaRoles: rm.mediaRoles?.length ? rm.mediaRoles : lm.mediaRoles,
+              };
+            } else {
               mergedModels.push(rm);
             }
           }

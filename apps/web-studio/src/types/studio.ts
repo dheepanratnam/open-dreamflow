@@ -1,4 +1,18 @@
-export type AspectRatio = '16:9' | '9:16' | '21:9' | '1:1' | '4:3' | '3:4';
+export type AspectRatio =
+  | 'auto'
+  | '16:9'
+  | '9:16'
+  | '21:9'
+  | '1:1'
+  | '4:3'
+  | '3:4'
+  | '3:2'
+  | '2:3'
+  | '4:5'
+  | '5:4'
+  | '2:1'
+  | '1:2'
+  | (string & {});
 
 export type NodeKind =
   | 'text'
@@ -26,7 +40,19 @@ export type DreaminaToolId =
   | 'assets'
   | 'upload';
 
-export type ResolutionTier = '360p' | '720p' | '1080p' | '1K' | '2K' | '4K';
+export type ResolutionTier =
+  | 'auto'
+  | '360p'
+  | '480p'
+  | '720p'
+  | '768sq'
+  | '1080p'
+  | '2160p'
+  | '1K'
+  | '1.5K'
+  | '2K'
+  | '4K'
+  | (string & {});
 
 export type PlatformId =
   | 'higgsfield'
@@ -57,11 +83,33 @@ export type ModelModality = 'image' | 'video' | 'audio';
 
 export type ConnectionTransport = 'auto' | 'mcp' | 'browser-bridge' | 'api-key';
 
+export interface ModelParameterSpec {
+  name: string;
+  label?: string;
+  type: 'enum' | 'boolean' | 'number' | 'string';
+  options?: Array<string | number>;
+  default?: string | number | boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  required?: boolean;
+  description?: string;
+  inlinePill?: boolean;
+}
+
 export interface PlatformModelDefinition {
   id: string;
   label: string;
   modality: ModelModality;
   description?: string;
+  providerFamily?: string;
+  supportsUnlim?: boolean;
+  supportsStartEndFrames?: boolean;
+  mediaRoles?: string[];
+  aspectRatios?: string[];
+  resolutions?: string[];
+  durationsSec?: number[];
+  parameters?: ModelParameterSpec[];
   supportsReferences?: boolean;
   maxReferences?: number;
   supportsAudio?: boolean;
@@ -253,7 +301,9 @@ export interface CanvasNode {
     | 'golden-hour';
   seed: number;
   resolution: ResolutionTier;
+  quality?: string;
   durationSec?: number;
+  modelParams?: Record<string, string | number | boolean>;
   cameraAngle?: string;
   cameraMotion?: string;
   bridgeMode?: boolean;

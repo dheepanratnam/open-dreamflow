@@ -6,6 +6,7 @@ export function getDimensionsForAspect(
 ): { width: number; height: number } {
   switch (aspect) {
     case '16:9':
+    case 'auto':
       return { width: baseWidth, height: Math.round((baseWidth * 9) / 16) };
     case '9:16':
       return { width: 250, height: Math.round((250 * 16) / 9) };
@@ -15,9 +16,29 @@ export function getDimensionsForAspect(
       return { width: 340, height: Math.round((340 * 3) / 4) };
     case '3:4':
       return { width: 270, height: Math.round((270 * 4) / 3) };
+    case '3:2':
+      return { width: 360, height: Math.round((360 * 2) / 3) };
+    case '2:3':
+      return { width: 260, height: Math.round((260 * 3) / 2) };
+    case '4:5':
+      return { width: 280, height: Math.round((280 * 5) / 4) };
+    case '5:4':
+      return { width: 340, height: Math.round((340 * 4) / 5) };
     case '1:1':
-    default:
       return { width: 300, height: 300 };
+    default: {
+      const m = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(String(aspect));
+      if (m) {
+        const wRatio = Number(m[1]);
+        const hRatio = Number(m[2]);
+        if (wRatio > 0 && hRatio > 0) {
+          const clampedRatio = Math.max(0.42, Math.min(2.6, wRatio / hRatio));
+          const w = clampedRatio >= 1 ? Math.min(430, Math.max(300, Math.round(baseWidth))) : 260;
+          return { width: w, height: Math.max(150, Math.min(460, Math.round(w / clampedRatio))) };
+        }
+      }
+      return { width: 300, height: 300 };
+    }
   }
 }
 

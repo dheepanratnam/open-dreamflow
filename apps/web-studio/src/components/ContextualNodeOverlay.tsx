@@ -18,7 +18,9 @@ import {
   Paintbrush,
   Play,
   Plus,
+  RotateCcw,
   Scissors,
+  Search,
   SlidersHorizontal,
   Sparkles,
   Trash2,
@@ -31,7 +33,9 @@ import {
 import type {
   AspectRatio,
   ConnectionTransport,
+  ModelParameterSpec,
   PlatformId,
+  PlatformModelDefinition,
   ResolutionTier,
 } from '../types/studio';
 import {
@@ -40,6 +44,7 @@ import {
   getPlatformConnectionStatus,
   getPlatformsForModality,
   nodeKindToModality,
+  resolveCanonicalModelId,
   resolveModelDisplayLabel,
 } from '../presets/platformCatalog';
 import { useStudioStore } from '../store/useStudioStore';
@@ -75,6 +80,48 @@ const TRANSPORT_OPTIONS: Array<{
   { id: 'browser-bridge', label: 'Browser Session Credits', hint: 'Logged-in web tab via Chrome Bridge' },
   { id: 'api-key', label: 'Direct API Key ($0 Markup)', hint: 'Raw BYOK provider call' },
 ];
+
+const MODEL_FAMILY_CHIPS = [
+  'All',
+  '∞ Unlim',
+  'OpenAI',
+  'Higgsfield',
+  'Kling',
+  'ByteDance',
+  'Google',
+  'FLUX',
+] as const;
+
+function formatParamOptionLabel(val: string | number | boolean): string {
+  const str = String(val);
+  if (str === 't2v') return 'Text → Video';
+  if (str === 'omni_reference') return 'Omni Reference';
+  if (str === 'video_edit') return 'Video Edit';
+  if (str === 'video_extension') return 'Video Extend';
+  if (str === 'xhigh') return 'X-High';
+  if (str === 'very_low') return 'Very Low';
+  if (str === 'auto') return 'Auto';
+  if (str === 'unlimited') return 'Unlimited (∞)';
+  if (str === 'credits') return 'Credits (Batch)';
+  if (/^\d+(?:\.\d+)?[kp]$/i.test(str)) return str;
+  if (str.includes('-') && str.length > 10) return str;
+  return str
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function resolveModelParamValue(
+  nodeParams: Record<string, string | number | boolean> | undefined,
+  nodeQuality: string | undefined,
+  spec: ModelParameterSpec
+): string | number | boolean | undefined {
+  if (spec.name === 'quality' && nodeQuality !== undefined) return nodeQuality;
+  const v = nodeParams?.[spec.name];
+  if (v !== undefined) return v;
+  if (spec.default !== undefined) return spec.default;
+  if (spec.options?.length) return spec.options[0];
+  return undefined;
+}
 
 export const ContextualNodeOverlay: React.FC = () => {
   const nodes = useStudioStore((s) => s.nodes);
@@ -124,6 +171,8 @@ export const ContextualNodeOverlay: React.FC = () => {
     | 'model'
     | 'aspect'
     | 'resolution'
+    | 'quality'
+    | 'mode'
     | 'duration'
     | 'batch'
     | 'camera'
@@ -131,6 +180,8 @@ export const ContextualNodeOverlay: React.FC = () => {
     | 'advanced'
     | 'add-ref'
   >(null);
+  const [modelSearch, setModelSearch] = useState('');
+  const [modelFamilyFilter, setModelFamilyFilter] = useState<string>('All');
   const [atAutocompleteOpen, setAtAutocompleteOpen] = useState(false);
 
   const refUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -143,6 +194,8 @@ export const ContextualNodeOverlay: React.FC = () => {
 
   useEffect(() => {
     setOpenMenu(null);
+    setModelSearch('');
+    setModelFamilyFilter('All');
     setAtAutocompleteOpen(false);
   }, [selectedNode?.id]);
 
@@ -222,9 +275,112 @@ export const ContextualNodeOverlay: React.FC = () => {
       )
     : [];
 
+  const canonicalSelectedModelId = resolveCanonicalModelId(selectedNode.modelId);
   const activeModelDef =
-    availableModels.find((m) => m.id === selectedNode.modelId) ||
-    availableModels[0];
+    availableModels.find(
+      (m) => m.id === selectedNode.modelId || m.id === canonicalSelectedModelId
+    ) || availableModels[0];
+
+  const aspectOptions = activeModelDef?.aspectRatios?.length
+    ? activeModelDef.aspectRatios
+    : modality === 'video'
+    ? VIDEO_ASPECTS
+    : IMAGE_ASPECTS;
+  const showResolutionPill =
+    modality !== 'audio' &&
+    (Boolean(activeModelDef?.resolutions?.length) || !activeModelDef?.parameters?.length);
+  const resolutionOptions = activeModelDef?.resolutions?.length
+    ? activeModelDef.resolutions
+    : modality === 'video'
+    ? VIDEO_RESOLUTIONS
+    : IMAGE_RESOLUTIONS;
+  const qualitySpec = activeModelDef?.parameters?.find((p) => p.name === 'quality');
+  const activeQualityVal = qualitySpec
+    ? resolveModelParamValue(selectedNode.modelParams, selectedNode.quality, qualitySpec)
+    : undefined;
+  const modeSpec = activeModelDef?.parameters?.find(
+    (p) =>
+      p.name === 'mode' ||
+      p.name === 'variant' ||
+      (p.inlinePill && p.name !== 'quality')
+  );
+  const activeModeVal = modeSpec
+    ? resolveModelParamValue(selectedNode.modelParams, selectedNode.quality, modeSpec)
+    : undefined;
+  const durationOptions = activeModelDef?.durationsSec?.length
+    ? activeModelDef.durationsSec
+    : modality === 'audio'
+    ? AUDIO_DURATIONS
+    : VIDEO_DURATIONS;
+  const showVideoAudioPill = modality === 'video' && activeModelDef?.supportsAudio !== false;
+  const remainingParamSpecs = (activeModelDef?.parameters || []).filter(
+    (p) => p.name !== 'quality' && p !== modeSpec
+  );
+  const customParamCount = remainingParamSpecs.filter((spec) => {
+    const val = selectedNode.modelParams?.[spec.name];
+    return val !== undefined && val !== spec.default;
+  }).length;
+
+  const updateModelParam = (name: string, value: string | number | boolean | undefined) => {
+    const nextParams: Record<string, string | number | boolean> = {
+      ...(selectedNode.modelParams || {}),
+    };
+    if (value === undefined) {
+      delete nextParams[name];
+    } else {
+      nextParams[name] = value;
+    }
+    updateNodeFields(selectedNode.id, {
+      ...(name === 'quality'
+        ? { quality: typeof value === 'string' ? value : undefined }
+        : {}),
+      modelParams: Object.keys(nextParams).length > 0 ? nextParams : undefined,
+    });
+  };
+
+  const resetModelParamDefaults = () => {
+    const defaults: Record<string, string | number | boolean> = {};
+    for (const p of activeModelDef?.parameters || []) {
+      if (p.default !== undefined) defaults[p.name] = p.default;
+    }
+    updateNodeFields(selectedNode.id, {
+      quality:
+        typeof defaults.quality === 'string' ? defaults.quality : undefined,
+      modelParams: Object.keys(defaults).length > 0 ? defaults : undefined,
+    });
+  };
+
+  const normalizedModelSearch = modelSearch.trim().toLowerCase();
+  const visibleModels = availableModels.filter((m) => {
+    if (modelFamilyFilter === '∞ Unlim' && !m.supportsUnlim) return false;
+    if (
+      modelFamilyFilter !== 'All' &&
+      modelFamilyFilter !== '∞ Unlim' &&
+      (m.providerFamily || '').toLowerCase() !== modelFamilyFilter.toLowerCase()
+    ) {
+      return false;
+    }
+    if (!normalizedModelSearch) return true;
+    return (
+      m.label.toLowerCase().includes(normalizedModelSearch) ||
+      m.id.toLowerCase().includes(normalizedModelSearch) ||
+      (m.providerFamily || '').toLowerCase().includes(normalizedModelSearch) ||
+      (m.description || '').toLowerCase().includes(normalizedModelSearch)
+    );
+  });
+
+  const groupedVisibleModels: Array<{ family: string; models: PlatformModelDefinition[] }> = [];
+  const familyIndexMap = new Map<string, number>();
+  for (const m of visibleModels) {
+    const fam = m.providerFamily || activePlatformDef?.shortLabel || 'Models';
+    const idx = familyIndexMap.get(fam);
+    if (idx === undefined) {
+      familyIndexMap.set(fam, groupedVisibleModels.length);
+      groupedVisibleModels.push({ family: fam, models: [m] });
+    } else {
+      groupedVisibleModels[idx].models.push(m);
+    }
+  }
 
   const liveConnStatusObj = {
     connectedBrowserPlatforms,
@@ -872,16 +1028,21 @@ export const ContextualNodeOverlay: React.FC = () => {
                 )}
               </div>
 
-              {/* 2. MODEL Selector (strictly filtered by Modality + Platform) */}
+              {/* 2. MODEL Selector (Searchable Grouped Studio Picker) */}
               <div className="relative">
                 <button
                   type="button"
                   onClick={() =>
                     setOpenMenu(openMenu === 'model' ? null : 'model')
                   }
-                  className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.08] text-[12px] text-white/90 flex items-center gap-1.5 transition-colors max-w-[210px]"
+                  className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.08] text-[12px] text-white/90 flex items-center gap-1.5 transition-colors max-w-[220px]"
                   title="Model on selected platform"
                 >
+                  {activeModelDef?.supportsUnlim && (
+                    <span className="text-[10px] font-semibold text-emerald-300 shrink-0">
+                      ∞
+                    </span>
+                  )}
                   <span className="truncate">
                     {activeModelDef?.label ||
                       (effectivePlatformId === 'custom-mcp'
@@ -896,73 +1057,177 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </button>
 
                 {openMenu === 'model' && (
-                  <div className="absolute bottom-full left-0 mb-1.5 w-[280px] max-h-[300px] overflow-y-auto p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
-                    <div className="px-2.5 py-1 text-[10.5px] font-medium text-white/40 uppercase tracking-wider">
-                      {activePlatformDef?.name || 'Platform'} ·{' '}
-                      {modality === 'video'
-                        ? 'Video Models'
-                        : modality === 'audio'
-                        ? 'Audio Models'
-                        : 'Image Models'}
-                    </div>
-                    {availableModels.length === 0 ? (
-                      <div className="px-2.5 py-2 text-[11.5px] text-white/55 space-y-2">
-                        <p>No MCP tools registered yet.</p>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setOpenMenu(null);
-                            openProviderModal('mcp');
-                          }}
-                          className="h-7 px-2.5 rounded-[7px] bg-white text-[#0e0e0e] font-medium text-[11.5px]"
-                        >
-                          Add MCP Server →
-                        </button>
-                      </div>
-                    ) : (
-                      availableModels.map((m) => {
-                        const active = m.id === (activeModelDef?.id || selectedNode.modelId);
-                        return (
+                  <div className="absolute bottom-full left-0 mb-1.5 w-[370px] rounded-[13px] dreamina-menu z-50 flex flex-col overflow-hidden">
+                    <div className="p-2 border-b border-white/[0.07] space-y-2">
+                      <div className="flex items-center justify-between px-1">
+                        <span className="text-[10.5px] font-medium text-white/45 uppercase tracking-wider">
+                          {activePlatformDef?.name || 'Platform'} · {availableModels.length}{' '}
+                          {modality === 'video'
+                            ? 'Video Models'
+                            : modality === 'audio'
+                            ? 'Audio Models'
+                            : 'Image Models'}
+                        </span>
+                        {(modelSearch || modelFamilyFilter !== 'All') && (
                           <button
-                            key={m.id}
                             type="button"
                             onClick={() => {
-                              setNodePlatformAndModel(
-                                selectedNode.id,
-                                effectivePlatformId,
-                                m.id
-                              );
-                              setOpenMenu(null);
+                              setModelSearch('');
+                              setModelFamilyFilter('All');
                             }}
-                            className={`w-full px-2.5 py-1.5 rounded-[8px] text-left flex items-center justify-between gap-2 transition-colors ${
-                              active
-                                ? 'bg-white/[0.1] text-white'
-                                : 'hover:bg-white/[0.06] text-white/85'
-                            }`}
+                            className="text-[10px] text-[#20D5EC] hover:underline"
                           >
-                            <div className="min-w-0">
-                              <div className="text-[12px] font-medium truncate">
-                                {m.label}
-                              </div>
-                              {m.description && (
-                                <div className="text-[10.5px] text-white/42 line-clamp-1">
-                                  {m.description}
-                                </div>
-                              )}
-                            </div>
-                            {active && (
-                              <Check className="w-3.5 h-3.5 text-[#20D5EC] shrink-0" strokeWidth={2} />
-                            )}
+                            Clear filter
                           </button>
-                        );
-                      })
-                    )}
+                        )}
+                      </div>
+
+                      {availableModels.length > 6 && (
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 text-white/35 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            autoFocus
+                            value={modelSearch}
+                            onChange={(e) => setModelSearch(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape') setOpenMenu(null);
+                            }}
+                            placeholder="Search 100+ models: ChatGPT, Kling, Cinema, Veo, Seedance, FLUX…"
+                            className="w-full h-8 pl-8 pr-2.5 rounded-[8px] bg-[#141414] border border-white/[0.08] focus:border-[#20D5EC]/45 text-[11.5px] text-white placeholder:text-white/35 outline-none select-text"
+                          />
+                        </div>
+                      )}
+
+                      {availableModels.length > 8 && (
+                        <div className="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar">
+                          {MODEL_FAMILY_CHIPS.map((chip) => {
+                            const hasMatch =
+                              chip === 'All' ||
+                              (chip === '∞ Unlim'
+                                ? availableModels.some((m) => m.supportsUnlim)
+                                : availableModels.some(
+                                    (m) =>
+                                      (m.providerFamily || '').toLowerCase() ===
+                                      chip.toLowerCase()
+                                  ));
+                            if (!hasMatch) return null;
+                            const isChipActive = modelFamilyFilter === chip;
+                            return (
+                              <button
+                                key={chip}
+                                type="button"
+                                onClick={() => setModelFamilyFilter(chip)}
+                                className={`h-6 px-2 rounded-full text-[10.5px] font-medium whitespace-nowrap border transition-colors ${
+                                  isChipActive
+                                    ? chip === '∞ Unlim'
+                                      ? 'bg-emerald-500/20 border-emerald-400/45 text-emerald-200'
+                                      : 'bg-white text-[#0e0e0e] border-white'
+                                    : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.08] text-white/65'
+                                }`}
+                              >
+                                {chip}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="max-h-[340px] overflow-y-auto p-1.5 space-y-2">
+                      {availableModels.length === 0 ? (
+                        <div className="px-2.5 py-2 text-[11.5px] text-white/55 space-y-2">
+                          <p>No MCP tools registered yet.</p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenMenu(null);
+                              openProviderModal('mcp');
+                            }}
+                            className="h-7 px-2.5 rounded-[7px] bg-white text-[#0e0e0e] font-medium text-[11.5px]"
+                          >
+                            Add MCP Server →
+                          </button>
+                        </div>
+                      ) : groupedVisibleModels.length === 0 ? (
+                        <div className="px-3 py-4 text-center text-[11.5px] text-white/45">
+                          No models match &ldquo;{modelSearch}&rdquo;.
+                        </div>
+                      ) : (
+                        groupedVisibleModels.map((grp) => (
+                          <div key={grp.family} className="space-y-0.5">
+                            {groupedVisibleModels.length > 1 && (
+                              <div className="px-2 py-0.5 text-[10px] font-semibold text-white/35 uppercase tracking-wider">
+                                {grp.family}
+                              </div>
+                            )}
+                            {grp.models.map((m) => {
+                              const active = m.id === (activeModelDef?.id || canonicalSelectedModelId);
+                              return (
+                                <button
+                                  key={m.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setNodePlatformAndModel(
+                                      selectedNode.id,
+                                      effectivePlatformId,
+                                      m.id
+                                    );
+                                    setOpenMenu(null);
+                                  }}
+                                  className={`w-full px-2.5 py-1.5 rounded-[8px] text-left flex items-center justify-between gap-2 transition-colors ${
+                                    active
+                                      ? 'bg-white/[0.11] text-white'
+                                      : 'hover:bg-white/[0.06] text-white/85'
+                                  }`}
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="text-[12px] font-medium truncate">
+                                        {m.label}
+                                      </span>
+                                      {m.supportsUnlim && (
+                                        <span className="px-1.5 py-px rounded-[4px] bg-emerald-500/15 border border-emerald-400/25 text-[9.5px] font-semibold text-emerald-300 shrink-0">
+                                          ∞ UNLIM
+                                        </span>
+                                      )}
+                                      {m.supportsStartEndFrames && (
+                                        <span className="px-1 py-px rounded-[4px] bg-white/[0.07] text-[9px] text-white/60 shrink-0">
+                                          Start/End
+                                        </span>
+                                      )}
+                                      {!m.supportsStartEndFrames && m.supportsReferences && (
+                                        <span className="px-1 py-px rounded-[4px] bg-white/[0.07] text-[9px] text-white/55 shrink-0">
+                                          Ref
+                                        </span>
+                                      )}
+                                      {modality === 'video' && m.supportsAudio && (
+                                        <span className="px-1 py-px rounded-[4px] bg-[#20D5EC]/15 text-[9px] text-[#20D5EC] shrink-0">
+                                          Audio
+                                        </span>
+                                      )}
+                                    </div>
+                                    {m.description && (
+                                      <div className="text-[10.5px] text-white/42 line-clamp-1 mt-0.5">
+                                        {m.description}
+                                      </div>
+                                    )}
+                                  </div>
+                                  {active && (
+                                    <Check className="w-3.5 h-3.5 text-[#20D5EC] shrink-0" strokeWidth={2} />
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
 
-              {/* 3. MODEL SETTINGS (Modality-Specific) */}
-              {modality !== 'audio' && (
+              {/* 3. DYNAMIC MODEL-AWARE PARAMETER PILLS */}
+              {modality !== 'audio' && aspectOptions.length > 0 && (
                 <div className="relative">
                   <button
                     type="button"
@@ -976,8 +1241,8 @@ export const ContextualNodeOverlay: React.FC = () => {
                     <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
                   </button>
                   {openMenu === 'aspect' && (
-                    <div className="absolute bottom-full left-0 mb-1.5 w-[124px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
-                      {(modality === 'video' ? VIDEO_ASPECTS : IMAGE_ASPECTS).map((ar) => (
+                    <div className="absolute bottom-full left-0 mb-1.5 w-[132px] max-h-[260px] overflow-y-auto p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                      {aspectOptions.map((ar) => (
                         <button
                           key={ar}
                           type="button"
@@ -986,13 +1251,13 @@ export const ContextualNodeOverlay: React.FC = () => {
                             setOpenMenu(null);
                           }}
                           className={`w-full h-7 px-2.5 rounded-[7px] font-mono text-[11.5px] flex items-center justify-between ${
-                            selectedNode.aspectRatio === ar
+                            String(selectedNode.aspectRatio).toLowerCase() === ar.toLowerCase()
                               ? 'bg-white/[0.1] text-white'
                               : 'hover:bg-white/[0.06] text-white/80'
                           }`}
                         >
                           <span>{ar}</span>
-                          {selectedNode.aspectRatio === ar && (
+                          {String(selectedNode.aspectRatio).toLowerCase() === ar.toLowerCase() && (
                             <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
                           )}
                         </button>
@@ -1002,7 +1267,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </div>
               )}
 
-              {modality !== 'audio' && (
+              {showResolutionPill && (
                 <div className="relative">
                   <button
                     type="button"
@@ -1016,9 +1281,11 @@ export const ContextualNodeOverlay: React.FC = () => {
                     <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
                   </button>
                   {openMenu === 'resolution' && (
-                    <div className="absolute bottom-full left-0 mb-1.5 w-[112px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
-                      {(modality === 'video' ? VIDEO_RESOLUTIONS : IMAGE_RESOLUTIONS).map(
-                        (res) => (
+                    <div className="absolute bottom-full left-0 mb-1.5 w-[118px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                      {resolutionOptions.map((res) => {
+                        const isActiveRes =
+                          String(selectedNode.resolution).toLowerCase() === res.toLowerCase();
+                        return (
                           <button
                             key={res}
                             type="button"
@@ -1027,18 +1294,124 @@ export const ContextualNodeOverlay: React.FC = () => {
                               setOpenMenu(null);
                             }}
                             className={`w-full h-7 px-2.5 rounded-[7px] font-mono text-[11.5px] flex items-center justify-between ${
-                              selectedNode.resolution === res
+                              isActiveRes
                                 ? 'bg-white/[0.1] text-white'
                                 : 'hover:bg-white/[0.06] text-white/80'
                             }`}
                           >
                             <span>{res}</span>
-                            {selectedNode.resolution === res && (
+                            {isActiveRes && (
                               <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
                             )}
                           </button>
-                        )
-                      )}
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* First-Class Quality Pill */}
+              {qualitySpec && (qualitySpec.options?.length || 0) > 0 && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenMenu(openMenu === 'quality' ? null : 'quality')
+                    }
+                    className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] text-[11.5px] text-white/90 flex items-center gap-1"
+                    title={qualitySpec.description || 'Rendering quality tier'}
+                  >
+                    <span className="text-white/50">Quality:</span>
+                    <span className="font-medium text-white">
+                      {formatParamOptionLabel(activeQualityVal ?? '')}
+                    </span>
+                    <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
+                  </button>
+                  {openMenu === 'quality' && (
+                    <div className="absolute bottom-full left-0 mb-1.5 w-[144px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                      <div className="px-2 py-0.5 text-[10px] font-medium text-white/40 uppercase tracking-wider">
+                        Quality Tier
+                      </div>
+                      {(qualitySpec.options || []).map((opt) => {
+                        const activeOpt =
+                          String(activeQualityVal ?? '').toLowerCase() ===
+                          String(opt).toLowerCase();
+                        return (
+                          <button
+                            key={String(opt)}
+                            type="button"
+                            onClick={() => {
+                              updateModelParam('quality', opt);
+                              setOpenMenu(null);
+                            }}
+                            className={`w-full h-7 px-2.5 rounded-[7px] text-[11.5px] flex items-center justify-between ${
+                              activeOpt
+                                ? 'bg-white/[0.1] text-white font-medium'
+                                : 'hover:bg-white/[0.06] text-white/80'
+                            }`}
+                          >
+                            <span>{formatParamOptionLabel(opt)}</span>
+                            {activeOpt && (
+                              <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* First-Class Mode / Variant Pill */}
+              {modeSpec && (modeSpec.options?.length || 0) > 0 && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenMenu(openMenu === 'mode' ? null : 'mode')
+                    }
+                    className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] text-[11.5px] text-white/90 flex items-center gap-1 max-w-[175px]"
+                    title={modeSpec.description || modeSpec.label || 'Model mode / variant'}
+                  >
+                    <span className="text-white/50 shrink-0">
+                      {modeSpec.label || (modeSpec.name === 'variant' ? 'Variant' : 'Mode')}:
+                    </span>
+                    <span className="font-medium text-white truncate">
+                      {formatParamOptionLabel(activeModeVal ?? '')}
+                    </span>
+                    <ChevronDown className="w-3 h-3 text-white/40 shrink-0" strokeWidth={1.6} />
+                  </button>
+                  {openMenu === 'mode' && (
+                    <div className="absolute bottom-full left-0 mb-1.5 min-w-[168px] max-w-[230px] max-h-[260px] overflow-y-auto p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                      <div className="px-2 py-0.5 text-[10px] font-medium text-white/40 uppercase tracking-wider">
+                        {modeSpec.label || modeSpec.name}
+                      </div>
+                      {(modeSpec.options || []).map((opt) => {
+                        const activeOpt =
+                          String(activeModeVal ?? '').toLowerCase() ===
+                          String(opt).toLowerCase();
+                        return (
+                          <button
+                            key={String(opt)}
+                            type="button"
+                            onClick={() => {
+                              updateModelParam(modeSpec.name, opt);
+                              setOpenMenu(null);
+                            }}
+                            className={`w-full h-7 px-2.5 rounded-[7px] text-[11.5px] flex items-center justify-between gap-2 ${
+                              activeOpt
+                                ? 'bg-white/[0.1] text-white font-medium'
+                                : 'hover:bg-white/[0.06] text-white/80'
+                            }`}
+                          >
+                            <span className="truncate">{formatParamOptionLabel(opt)}</span>
+                            {activeOpt && (
+                              <Check className="w-3 h-3 text-[#20D5EC] shrink-0" strokeWidth={2} />
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -1085,7 +1458,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </div>
               )}
 
-              {/* Video Duration + DoP Camera Rig + Native Sound Toggle */}
+              {/* Video Duration + DoP Camera Rig + Dynamic Audio Toggle */}
               {modality === 'video' && (
                 <>
                   <div className="relative">
@@ -1097,12 +1470,16 @@ export const ContextualNodeOverlay: React.FC = () => {
                       className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] font-mono text-[11.5px] text-white/85 flex items-center gap-1"
                       title="Clip Duration"
                     >
-                      <span>{selectedNode.durationSec || 5}s</span>
+                      <span>
+                        {(selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5) === -1
+                          ? 'Auto'
+                          : `${selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5}s`}
+                      </span>
                       <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
                     </button>
                     {openMenu === 'duration' && (
-                      <div className="absolute bottom-full left-0 mb-1.5 w-[100px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
-                        {VIDEO_DURATIONS.map((sec) => (
+                      <div className="absolute bottom-full left-0 mb-1.5 w-[108px] max-h-[240px] overflow-y-auto p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                        {durationOptions.map((sec) => (
                           <button
                             key={sec}
                             type="button"
@@ -1111,13 +1488,13 @@ export const ContextualNodeOverlay: React.FC = () => {
                               setOpenMenu(null);
                             }}
                             className={`w-full h-7 px-2.5 rounded-[7px] font-mono text-[11.5px] flex items-center justify-between ${
-                              (selectedNode.durationSec || 5) === sec
+                              (selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5) === sec
                                 ? 'bg-white/[0.1] text-white'
                                 : 'hover:bg-white/[0.06] text-white/80'
                             }`}
                           >
-                            <span>{sec}s</span>
-                            {(selectedNode.durationSec || 5) === sec && (
+                            <span>{sec === -1 ? 'Auto' : `${sec}s`}</span>
+                            {(selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5) === sec && (
                               <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
                             )}
                           </button>
@@ -1190,27 +1567,29 @@ export const ContextualNodeOverlay: React.FC = () => {
                     )}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() =>
-                      updateNodeFields(selectedNode.id, {
-                        audioEnabled: !(selectedNode.audioEnabled ?? true),
-                      })
-                    }
-                    className={`h-8 px-2 rounded-[8px] border text-[11.5px] flex items-center gap-1 transition-colors ${
-                      selectedNode.audioEnabled ?? true
-                        ? 'bg-[#252525] border-white/[0.1] text-white/90'
-                        : 'bg-[#191919] border-white/[0.06] text-white/40'
-                    }`}
-                    title="Toggle native video audio"
-                  >
-                    {selectedNode.audioEnabled ?? true ? (
-                      <Volume2 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
-                    ) : (
-                      <VolumeX className="w-3.5 h-3.5" strokeWidth={1.6} />
-                    )}
-                    <span>Audio</span>
-                  </button>
+                  {showVideoAudioPill && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateNodeFields(selectedNode.id, {
+                          audioEnabled: !(selectedNode.audioEnabled ?? true),
+                        })
+                      }
+                      className={`h-8 px-2 rounded-[8px] border text-[11.5px] flex items-center gap-1 transition-colors ${
+                        selectedNode.audioEnabled ?? true
+                          ? 'bg-[#252525] border-white/[0.1] text-white/90'
+                          : 'bg-[#191919] border-white/[0.06] text-white/40'
+                      }`}
+                      title="Toggle native video audio"
+                    >
+                      {selectedNode.audioEnabled ?? true ? (
+                        <Volume2 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                      ) : (
+                        <VolumeX className="w-3.5 h-3.5" strokeWidth={1.6} />
+                      )}
+                      <span>Audio</span>
+                    </button>
+                  )}
                 </>
               )}
 
@@ -1295,7 +1674,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                     </button>
                     {openMenu === 'duration' && (
                       <div className="absolute bottom-full left-0 mb-1.5 w-[100px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
-                        {AUDIO_DURATIONS.map((sec) => (
+                        {durationOptions.map((sec) => (
                           <button
                             key={sec}
                             type="button"
@@ -1303,9 +1682,16 @@ export const ContextualNodeOverlay: React.FC = () => {
                               updateNodeFields(selectedNode.id, { durationSec: sec });
                               setOpenMenu(null);
                             }}
-                            className="w-full h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] font-mono text-[11.5px] text-white/85 text-left"
+                            className={`w-full h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] font-mono text-[11.5px] flex items-center justify-between ${
+                              (selectedNode.durationSec || 8) === sec
+                                ? 'bg-white/[0.1] text-white'
+                                : 'text-white/85'
+                            }`}
                           >
-                            {sec}s
+                            <span>{sec}s</span>
+                            {(selectedNode.durationSec || 8) === sec && (
+                              <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
+                            )}
                           </button>
                         ))}
                       </div>
@@ -1314,25 +1700,194 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </>
               )}
 
-              {/* Advanced Settings Popover (Connection Transport, Negative Prompt, Seed) */}
+              {/* Full Model Parameters + Connection Route + Negative Prompt + Seed Popover */}
               <div className="relative">
                 <button
                   type="button"
                   onClick={() =>
                     setOpenMenu(openMenu === 'advanced' ? null : 'advanced')
                   }
-                  className={`w-8 h-8 rounded-[8px] border flex items-center justify-center transition-colors ${
+                  className={`relative h-8 px-2 rounded-[8px] border flex items-center justify-center gap-1 transition-colors ${
                     openMenu === 'advanced'
                       ? 'bg-white text-[#0e0e0e] border-white'
+                      : customParamCount > 0
+                      ? 'bg-[#252525] hover:bg-white/[0.11] border-[#20D5EC]/40 text-white'
                       : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/75'
                   }`}
-                  title="Connection Route, Negative Prompt & Seed"
+                  title="Model Parameters, Connection Route, Negative Prompt & Seed"
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" strokeWidth={1.6} />
+                  {customParamCount > 0 && (
+                    <span className="h-4 min-w-[16px] px-1 rounded-full bg-[#20D5EC]/20 text-[#20D5EC] font-mono text-[10px] font-semibold flex items-center justify-center">
+                      {customParamCount}
+                    </span>
+                  )}
                 </button>
 
                 {openMenu === 'advanced' && (
-                  <div className="absolute bottom-full right-0 mb-1.5 w-[290px] p-3 rounded-[12px] dreamina-menu z-50 space-y-3 text-[12px]">
+                  <div className="absolute bottom-full right-0 mb-1.5 w-[340px] max-h-[420px] overflow-y-auto p-3 rounded-[13px] dreamina-menu z-50 space-y-3 text-[12px]">
+                    {remainingParamSpecs.length > 0 && (
+                      <div className="space-y-2.5 pb-2.5 border-b border-white/[0.08]">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10.5px] font-medium text-white/50 uppercase tracking-wider truncate">
+                            Model Parameters · {activeModelDef?.label}
+                          </span>
+                          {customParamCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={resetModelParamDefaults}
+                              className="inline-flex items-center gap-1 text-[10.5px] text-[#20D5EC] hover:underline shrink-0"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              <span>Reset</span>
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="space-y-2">
+                          {remainingParamSpecs.map((spec) => {
+                            const curVal = resolveModelParamValue(
+                              selectedNode.modelParams,
+                              selectedNode.quality,
+                              spec
+                            );
+
+                            if (spec.type === 'boolean') {
+                              const checked = Boolean(curVal);
+                              return (
+                                <div
+                                  key={spec.name}
+                                  className="flex items-center justify-between gap-2"
+                                  title={spec.description}
+                                >
+                                  <span className="text-[11.5px] text-white/80">
+                                    {spec.label || spec.name}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateModelParam(spec.name, !checked)}
+                                    className={`h-6 px-2.5 rounded-full text-[11px] font-medium border transition-colors ${
+                                      checked
+                                        ? 'bg-[#20D5EC]/20 border-[#20D5EC]/45 text-[#20D5EC]'
+                                        : 'bg-[#141414] border-white/[0.08] text-white/55 hover:text-white/80'
+                                    }`}
+                                  >
+                                    {checked ? 'On' : 'Off'}
+                                  </button>
+                                </div>
+                              );
+                            }
+
+                            if (spec.type === 'enum' && spec.options?.length) {
+                              const opts = spec.options;
+                              const useSegmented =
+                                opts.length <= 5 &&
+                                opts.every((o) => String(o).length <= 14);
+                              return (
+                                <div key={spec.name} className="space-y-1" title={spec.description}>
+                                  <label className="text-[11px] text-white/60 block">
+                                    {spec.label || spec.name}
+                                  </label>
+                                  {useSegmented ? (
+                                    <div className="flex flex-wrap gap-1">
+                                      {opts.map((opt) => {
+                                        const isOptActive =
+                                          String(curVal ?? '') === String(opt);
+                                        return (
+                                          <button
+                                            key={String(opt)}
+                                            type="button"
+                                            onClick={() => updateModelParam(spec.name, opt)}
+                                            className={`h-6 px-2 rounded-[6px] text-[11px] border transition-colors ${
+                                              isOptActive
+                                                ? 'bg-white text-[#0e0e0e] border-white font-semibold'
+                                                : 'bg-[#141414] hover:bg-white/[0.08] border-white/[0.08] text-white/75'
+                                            }`}
+                                          >
+                                            {formatParamOptionLabel(opt)}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : (
+                                    <select
+                                      value={String(curVal ?? opts[0])}
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        const matched = opts.find((o) => String(o) === raw);
+                                        updateModelParam(spec.name, matched ?? raw);
+                                      }}
+                                      className="w-full h-7 px-2 rounded-[7px] bg-[#141414] border border-white/[0.08] text-[11.5px] text-white outline-none"
+                                    >
+                                      {opts.map((opt) => (
+                                        <option key={String(opt)} value={String(opt)}>
+                                          {formatParamOptionLabel(opt)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+                              );
+                            }
+
+                            if (spec.type === 'number') {
+                              return (
+                                <div
+                                  key={spec.name}
+                                  className="flex items-center justify-between gap-2"
+                                  title={spec.description}
+                                >
+                                  <label className="text-[11px] text-white/70 truncate">
+                                    {spec.label || spec.name}
+                                    {spec.min !== undefined && spec.max !== undefined
+                                      ? ` (${spec.min}–${spec.max})`
+                                      : ''}
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min={spec.min}
+                                    max={spec.max}
+                                    step={spec.step ?? (spec.max && spec.max <= 2 ? 0.05 : 1)}
+                                    value={curVal !== undefined ? Number(curVal) : ''}
+                                    placeholder={
+                                      spec.default !== undefined ? String(spec.default) : 'Auto'
+                                    }
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      updateModelParam(
+                                        spec.name,
+                                        val === '' ? undefined : Number(val)
+                                      );
+                                    }}
+                                    className="w-24 h-7 px-2 rounded-[7px] bg-[#141414] border border-white/[0.08] font-mono text-[11.5px] text-white outline-none select-text"
+                                  />
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <div key={spec.name} className="space-y-1" title={spec.description}>
+                                <label className="text-[11px] text-white/60 block">
+                                  {spec.label || spec.name}
+                                </label>
+                                <input
+                                  value={curVal !== undefined ? String(curVal) : ''}
+                                  onChange={(e) =>
+                                    updateModelParam(
+                                      spec.name,
+                                      e.target.value ? e.target.value : undefined
+                                    )
+                                  }
+                                  placeholder={spec.description || spec.name}
+                                  className="w-full h-7 px-2.5 rounded-[7px] bg-[#141414] border border-white/[0.08] text-[11.5px] text-white outline-none select-text"
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="space-y-1">
                       <label className="text-[10.5px] font-medium text-white/45 uppercase tracking-wider">
                         Credit Connection Route

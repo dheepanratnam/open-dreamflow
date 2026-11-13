@@ -372,13 +372,15 @@ export function buildCrossPlatformBlueprintGraph(): {
     status: 'idle',
     platformId: 'higgsfield',
     connectionMode: 'auto',
-    modelId: 'chatgpt-image-2.6',
+    modelId: 'gpt_image_2_6',
     batchCount: 1,
     seed: 1042,
-    resolution: '2K',
+    resolution: '2k',
+    quality: 'high',
+    modelParams: { quality: 'high', output_format: 'png', use_unlim: 'auto' },
     elementHandles: [],
     layers: [],
-    providerUsed: 'Higgsfield · ChatGPT Image 2.6',
+    providerUsed: 'Higgsfield · ChatGPT / GPT Image 2.6',
     createdAt: now - 3000,
   };
 
