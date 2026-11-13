@@ -28,7 +28,7 @@
 
   // Announce bridge presence immediately when loaded
   try {
-    document.documentElement?.setAttribute('data-open-dreamflow-bridge', '1.1.0');
+    document.documentElement?.setAttribute('data-open-dreamflow-bridge', '1.2.0');
     chrome.runtime.sendMessage({ type: 'STUDIO_PING' }, (response) => {
       if (chrome.runtime.lastError) return;
       if (response?.status) {
@@ -52,7 +52,7 @@
       chrome.runtime.sendMessage({ type: 'STUDIO_PING' }, (response) => {
         if (chrome.runtime.lastError) return;
         const status = response?.status || {
-          extensionVersion: '1.1.0',
+          extensionVersion: '1.2.0',
           flowConnected: false,
           dreaminaConnected: false,
         };

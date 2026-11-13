@@ -20,6 +20,7 @@
 
   function detectPlatform() {
     if (host === 'higgsfield.ai' || host.endsWith('.higgsfield.ai')) return 'higgsfield';
+    if (host === 'sume.com' || host.endsWith('.sume.com')) return 'sume';
     if (host === 'klingai.com' || host.endsWith('.klingai.com')) return 'kling';
     if (host === 'openart.ai' || host.endsWith('.openart.ai')) return 'openart';
     if (host === 'imagine.art' || host.endsWith('.imagine.art')) return 'imagineart';
@@ -44,6 +45,20 @@
       ],
       uploadTriggerRegex: /upload|reference|start frame|first frame|image|character/i,
       generateRegex: /generate|create|animate|render/i,
+    },
+    sume: {
+      label: 'Sume.com',
+      cdnRegex: /sume\.com|cloudfront|r2\.dev|amazonaws|googleapis|replicate|fal\.media/i,
+      promptSelectors: [
+        'textarea[placeholder*="Describe" i]',
+        'textarea[placeholder*="prompt" i]',
+        'textarea[placeholder*="imagine" i]',
+        '.ProseMirror[contenteditable="true"]',
+        '[contenteditable="true"][role="textbox"]',
+        'textarea:not([disabled])',
+      ],
+      uploadTriggerRegex: /upload|reference|start frame|first frame|image/i,
+      generateRegex: /generate|create|render/i,
     },
     kling: {
       label: 'Kling AI',

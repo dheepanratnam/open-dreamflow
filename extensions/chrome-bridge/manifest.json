@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Open-DreamFlow Universal Creator Credit Bridge",
-  "version": "1.1.0",
-  "description": "Zero-markup bridge connecting Open-DreamFlow Studio to Dreamina, Google Flow, Higgsfield, Kling AI, OpenArt, ImagineArt, and ElevenLabs.",
+  "version": "1.2.0",
+  "description": "Zero-markup bridge connecting Open-DreamFlow Studio to Dreamina, Google Flow, Higgsfield, Sume.com, Kling AI, OpenArt, ImagineArt, and ElevenLabs.",
   "permissions": [
     "storage",
     "tabs",
@@ -16,6 +16,8 @@
     "https://flow.google.com/*",
     "https://higgsfield.ai/*",
     "https://*.higgsfield.ai/*",
+    "https://sume.com/*",
+    "https://*.sume.com/*",
     "https://app.klingai.com/*",
     "https://klingai.com/*",
     "https://*.klingai.com/*",
@@ -71,6 +73,8 @@
       "matches": [
         "https://higgsfield.ai/*",
         "https://*.higgsfield.ai/*",
+        "https://sume.com/*",
+        "https://*.sume.com/*",
         "https://app.klingai.com/*",
         "https://klingai.com/*",
         "https://*.klingai.com/*",

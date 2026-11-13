@@ -28,6 +28,10 @@
       "types": "./dist/external-mcp-host.d.ts",
       "import": "./dist/external-mcp-host.js"
     },
+    "./browser-session-manager": {
+      "types": "./dist/browser-session-manager.d.ts",
+      "import": "./dist/browser-session-manager.js"
+    },
     "./src/*": "./src/*"
   },
   "files": [

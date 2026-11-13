@@ -54,6 +54,10 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { McpToolDefinition } from './client.js';
 import { ExternalMcpHost } from './external-mcp-host.js';
+import {
+  BrowserSessionManager,
+  mapDomainToCreatorPlatformId,
+} from './browser-session-manager.js';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -166,6 +170,7 @@ export type BridgeTargetPlatform =
   | 'dreamina'
   | 'google-flow'
   | 'higgsfield'
+  | 'sume'
   | 'kling'
   | 'openart'
   | 'imagineart'
@@ -190,6 +195,11 @@ export const BRIDGE_PLATFORM_INFO: Record<
     studioUrl: 'https://higgsfield.ai/create',
     livePrefix: 'higgsfield_live',
   },
+  sume: {
+    name: 'Sume',
+    studioUrl: 'https://sume.com',
+    livePrefix: 'sume_live',
+  },
   kling: {
     name: 'Kling AI',
     studioUrl: 'https://app.klingai.com',
@@ -212,19 +222,33 @@ export const BRIDGE_PLATFORM_INFO: Record<
   },
 };
 
-export function normalizeBridgeTarget(rawTarget: unknown): BridgeTargetPlatform {
+export function tryNormalizeBridgeTarget(rawTarget: unknown): BridgeTargetPlatform | null {
   const lowered = String(rawTarget || '')
     .trim()
     .toLowerCase();
+  if (!lowered) return null;
   if (lowered.includes('higgsfield') || lowered === 'hf') return 'higgsfield';
-  if (lowered.includes('kling')) return 'kling';
+  if (lowered.includes('sume')) return 'sume';
+  if (lowered.includes('kling') && !lowered.includes('openart')) return 'kling';
   if (lowered.includes('openart')) return 'openart';
   if (lowered.includes('imagine')) return 'imagineart';
   if (lowered.includes('eleven')) return 'elevenlabs';
   if (lowered.includes('flow') || lowered.includes('google') || lowered.includes('labs')) {
     return 'google-flow';
   }
-  return 'dreamina';
+  if (
+    lowered.includes('dreamina') ||
+    lowered.includes('seedance') ||
+    lowered.includes('seedream') ||
+    lowered.includes('jimeng')
+  ) {
+    return 'dreamina';
+  }
+  return null;
+}
+
+export function normalizeBridgeTarget(rawTarget: unknown): BridgeTargetPlatform {
+  return tryNormalizeBridgeTarget(rawTarget) || 'dreamina';
 }
 
 export interface BridgeJobRecord {
@@ -266,11 +290,13 @@ export type NormalizedProviderChoice =
   | 'elevenlabs'
   | 'openai'
   | 'higgsfield'
+  | 'sume'
   | 'openart'
   | 'imagineart'
   | 'dreamina-bridge'
   | 'flow-bridge'
   | 'higgsfield-bridge'
+  | 'sume-bridge'
   | 'kling-bridge'
   | 'openart-bridge'
   | 'imagineart-bridge'
@@ -382,6 +408,9 @@ export function normalizeProviderChoice(
   if (lowered === 'higgsfield-bridge' || lowered === 'chrome-bridge-higgsfield') {
     return 'higgsfield-bridge';
   }
+  if (lowered === 'sume-bridge' || lowered === 'chrome-bridge-sume') {
+    return 'sume-bridge';
+  }
   if (lowered === 'kling-bridge' || lowered === 'chrome-bridge-kling') {
     return 'kling-bridge';
   }
@@ -406,6 +435,9 @@ export function normalizeProviderChoice(
   }
   if (lowered === 'higgsfield' || lowered === 'hf') {
     return 'higgsfield';
+  }
+  if (lowered === 'sume' || lowered === 'sume.com') {
+    return 'sume';
   }
   if (lowered === 'openart') {
     return 'openart';
@@ -874,6 +906,7 @@ export class McpStdioBridgeServer {
   public readonly ffmpegAvailable: boolean;
   public readonly ffprobeAvailable: boolean;
   public readonly externalMcpHost: ExternalMcpHost;
+  public readonly browserSessionManager: BrowserSessionManager;
 
   private httpServer: http.Server | null = null;
   private childProc: ChildProcessWithoutNullStreams | null = null;
@@ -883,6 +916,9 @@ export class McpStdioBridgeServer {
   private readonly wsClients = new Map<string, WsClientRecord>();
   private readonly bridgeWsClients = new Map<string, WsClientRecord>();
   private readonly lastBridgePlatformSeenAt = new Map<BridgeTargetPlatform, number>();
+  private readonly explicitlyClosedPlatformAt = new Map<BridgeTargetPlatform, number>();
+  private openCreatorDomains = new Set<string>();
+  private lastExtensionHeartbeatAt = 0;
   private readonly sseClients = new Map<string, SseClientRecord>();
   private readonly pendingStdioCalls = new Map<string, PendingStdioCall>();
   private bridgeEvents: BridgeRelayEvent[] = [];
@@ -928,6 +964,7 @@ export class McpStdioBridgeServer {
       dataDir: this.dataDir,
       quiet: this.quiet,
     });
+    this.browserSessionManager = new BrowserSessionManager(this.dataDir);
 
     try {
       fs.mkdirSync(this.mediaDir, { recursive: true });
@@ -2324,6 +2361,84 @@ export class McpStdioBridgeServer {
     };
   }
 
+  public recordBrowserBridgeHeartbeat(raw: Record<string, unknown>): {
+    connectedBrowserPlatforms: BridgeTargetPlatform[];
+    openDomains: string[];
+  } {
+    const now = Date.now();
+    this.lastExtensionHeartbeatAt = now;
+
+    const meta =
+      typeof raw.metadata === 'object' && raw.metadata !== null
+        ? (raw.metadata as Record<string, unknown>)
+        : {};
+
+    const rawDomains = Array.isArray(raw.openDomains)
+      ? raw.openDomains
+      : Array.isArray(meta.openDomains)
+        ? meta.openDomains
+        : null;
+
+    if (rawDomains) {
+      const replaceSnapshot =
+        raw.source === 'chrome-extension' || raw.fullSnapshot === true;
+      if (replaceSnapshot) {
+        this.openCreatorDomains.clear();
+      }
+      for (const entry of rawDomains) {
+        if (typeof entry !== 'string') continue;
+        const cleanDomain = entry.trim().toLowerCase();
+        if (!cleanDomain) continue;
+        this.openCreatorDomains.add(cleanDomain);
+        const mapped = mapDomainToCreatorPlatformId(cleanDomain);
+        if (mapped) {
+          this.lastBridgePlatformSeenAt.set(mapped, now);
+          this.explicitlyClosedPlatformAt.delete(mapped);
+        }
+      }
+    }
+
+    const rawPlatformsMap =
+      typeof raw.platformsConnected === 'object' && raw.platformsConnected !== null
+        ? (raw.platformsConnected as Record<string, unknown>)
+        : typeof meta.platformsConnected === 'object' && meta.platformsConnected !== null
+          ? (meta.platformsConnected as Record<string, unknown>)
+          : null;
+
+    if (rawPlatformsMap) {
+      for (const [key, isConnected] of Object.entries(rawPlatformsMap)) {
+        const mapped = tryNormalizeBridgeTarget(key);
+        if (!mapped) continue;
+        if (Boolean(isConnected)) {
+          this.lastBridgePlatformSeenAt.set(mapped, now);
+          this.explicitlyClosedPlatformAt.delete(mapped);
+        } else if (isConnected === false && raw.source === 'chrome-extension') {
+          this.lastBridgePlatformSeenAt.delete(mapped);
+          this.explicitlyClosedPlatformAt.set(mapped, now);
+        }
+      }
+    }
+
+    const sourceTarget = tryNormalizeBridgeTarget(raw.source);
+    if (sourceTarget) {
+      this.lastBridgePlatformSeenAt.set(sourceTarget, now);
+      this.explicitlyClosedPlatformAt.delete(sourceTarget);
+      try {
+        const defaultHost = new URL(BRIDGE_PLATFORM_INFO[sourceTarget].studioUrl).hostname;
+        this.openCreatorDomains.add(defaultHost);
+      } catch {
+        // Ignore
+      }
+    }
+
+    return {
+      connectedBrowserPlatforms: (
+        Object.keys(BRIDGE_PLATFORM_INFO) as BridgeTargetPlatform[]
+      ).filter((id) => this.isBridgeSessionRecentlyActive(id)),
+      openDomains: Array.from(this.openCreatorDomains),
+    };
+  }
+
   /**
    * Async bridge event ingest + broadcast: automatically downloads remote CDN URLs or Base64 `dataUrl`
    * payloads to local `/media/` before recording and broadcasting to Studio WebSocket clients.
@@ -2332,11 +2447,36 @@ export class McpStdioBridgeServer {
     raw: Record<string, unknown>
   ): Promise<BridgeRelayEvent> {
     const hydrated: Record<string, unknown> = { ...raw };
+    const rawType = String(raw.type || '').toLowerCase();
     const sourceRaw = String(raw.source || 'manual').toLowerCase();
-    if (sourceRaw && sourceRaw !== 'manual') {
-      this.lastBridgePlatformSeenAt.set(normalizeBridgeTarget(sourceRaw), Date.now());
+    const sourceTarget = tryNormalizeBridgeTarget(sourceRaw);
+    if (sourceTarget && sourceRaw !== 'manual') {
+      this.lastBridgePlatformSeenAt.set(sourceTarget, Date.now());
     }
-    const targetPlatform = normalizeBridgeTarget(sourceRaw);
+    if (
+      rawType === 'bridge_session' ||
+      rawType === 'bridge_heartbeat' ||
+      Array.isArray(raw.openDomains) ||
+      (typeof raw.platformsConnected === 'object' && raw.platformsConnected !== null)
+    ) {
+      this.recordBrowserBridgeHeartbeat(raw);
+    }
+
+    if (rawType === 'bridge_heartbeat') {
+      return {
+        eventId: `hb_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        type: 'bridge_session',
+        source: String(raw.source || 'chrome-extension'),
+        title: 'Extension Heartbeat',
+        prompt: '',
+        metadata: {
+          openDomains: Array.from(this.openCreatorDomains),
+        },
+      };
+    }
+
+    const targetPlatform = sourceTarget || 'dreamina';
     const prefix = BRIDGE_PLATFORM_INFO[targetPlatform]?.livePrefix || 'dreamina_live';
 
     const rawDataPayload =
@@ -2389,13 +2529,16 @@ export class McpStdioBridgeServer {
   // Bidirectional Live Browser Generation Queue (`/api/bridge/enqueue` & `/jobs/*`)
   // ============================================================================
 
-  public isBridgeSessionRecentlyActive(target: BridgeTargetPlatform, windowMs = 120_000): boolean {
+  public isBridgeSessionRecentlyActive(target: BridgeTargetPlatform, windowMs = 60_000): boolean {
     const lastSeen = this.lastBridgePlatformSeenAt.get(target) || 0;
     if (Date.now() - lastSeen <= windowMs) return true;
+    const closedAt = this.explicitlyClosedPlatformAt.get(target) || 0;
     const recentEvt = this.bridgeEvents.find((e) => {
       if (!e.timestamp) return false;
-      const age = Date.now() - new Date(e.timestamp).getTime();
-      return age <= windowMs && normalizeBridgeTarget(e.source) === target;
+      const evtTime = new Date(e.timestamp).getTime();
+      if (evtTime <= closedAt) return false;
+      const age = Date.now() - evtTime;
+      return age <= windowMs && tryNormalizeBridgeTarget(e.source) === target;
     });
     return Boolean(recentEvt);
   }
@@ -2919,6 +3062,7 @@ export class McpStdioBridgeServer {
       provider === 'dreamina-bridge' ||
       provider === 'flow-bridge' ||
       provider === 'higgsfield-bridge' ||
+      provider === 'sume-bridge' ||
       provider === 'kling-bridge' ||
       provider === 'openart-bridge' ||
       provider === 'imagineart-bridge' ||
@@ -2929,9 +3073,9 @@ export class McpStdioBridgeServer {
       const hasWsClient = this.bridgeWsClients.size > 0;
       const isRecentlySeen = this.isBridgeSessionRecentlyActive(targetPlatform);
       const recentSession = this.bridgeEvents.find(
-        (e) => normalizeBridgeTarget(e.source) === targetPlatform
+        (e) => tryNormalizeBridgeTarget(e.source) === targetPlatform
       );
-      const valid = hasWsClient || isRecentlySeen;
+      const valid = isRecentlySeen || hasWsClient;
       return {
         ok: valid,
         valid,
@@ -2942,7 +3086,7 @@ export class McpStdioBridgeServer {
         connectorUrl: `${this.getPublicBaseUrl()}/bridge-connector.js`,
         error: valid
           ? undefined
-          : `No live ${meta.name} browser tab connected yet. Open ${meta.studioUrl} with extensions/chrome-bridge v1.1.0 loaded or run import('${this.getPublicBaseUrl()}/bridge-connector.js') in DevTools Console.`,
+          : `No live ${meta.name} browser tab connected yet. Click "Sign In to ${meta.name}" or open ${meta.studioUrl} in the Connected Creator Browser.`,
       };
     }
 
@@ -3091,20 +3235,22 @@ export class McpStdioBridgeServer {
       }
     }
 
-    if (provider === 'openart' || provider === 'imagineart') {
+    if (provider === 'openart' || provider === 'imagineart' || provider === 'sume') {
       if (!apiKey) {
         return {
           ok: false,
           valid: false,
           provider,
-          error: `${provider === 'openart' ? 'OpenArt' : 'ImagineArt'} API key is required (or connect via Browser Session Bridge).`,
+          error: `${provider === 'openart' ? 'OpenArt' : provider === 'sume' ? 'Sume' : 'ImagineArt'} API key is required (or connect via Browser Session Bridge).`,
         };
       }
       try {
         const checkUrl =
           provider === 'openart'
             ? (baseUrl || 'https://openart.ai/api/v1/user').replace(/\/+$/, '')
-            : (baseUrl || 'https://api.vyro.ai/v2/models').replace(/\/+$/, '');
+            : provider === 'sume'
+              ? (baseUrl || 'https://api.sume.com/v1/models').replace(/\/+$/, '')
+              : (baseUrl || 'https://api.vyro.ai/v2/models').replace(/\/+$/, '');
         const res = await fetch(checkUrl, {
           method: 'GET',
           headers: {
@@ -3532,6 +3678,8 @@ export class McpStdioBridgeServer {
         return Boolean(process.env.OPENAI_API_KEY);
       case 'higgsfield':
         return Boolean(process.env.HIGGSFIELD_API_KEY);
+      case 'sume':
+        return Boolean(process.env.SUME_API_KEY);
       case 'dreamina':
         return Boolean(process.env.ARK_API_KEY || process.env.SEEDANCE_API_KEY);
       case 'fal':
@@ -3613,6 +3761,79 @@ export class McpStdioBridgeServer {
       platforms,
       bridgeClients: this.bridgeWsClients.size,
       mcpServers: allMcpServers,
+    };
+  }
+
+  public async getConnectionsStatus(): Promise<Record<string, unknown>> {
+    const catalog = await this.getPlatformsCatalogWithStatus();
+    const rawPlatforms = (Array.isArray(catalog.platforms) ? catalog.platforms : []) as Array<
+      Record<string, unknown> & { id: string; status?: Record<string, unknown> }
+    >;
+
+    const connectedBrowserPlatforms: string[] = [];
+    const connectedMcpPlatforms: string[] = [];
+    const configuredApiKeyPlatforms: string[] = [];
+    const byId: Record<string, Record<string, unknown>> = {};
+
+    const platformSummaries = rawPlatforms.map((p) => {
+      const id = String(p.id || '');
+      const st = (p.status || {}) as Record<string, unknown>;
+      const browserConnected = Boolean(st.browserBridgeActive);
+      const mcpConnected = Boolean(st.mcpConnected);
+      const serverEnvConfigured = Boolean(st.serverEnvConfigured);
+      const connected = Boolean(st.connected);
+      const via = mcpConnected
+        ? 'mcp'
+        : browserConnected
+          ? 'browser-bridge'
+          : serverEnvConfigured
+            ? 'api-key'
+            : null;
+
+      if (browserConnected) connectedBrowserPlatforms.push(id);
+      if (mcpConnected && id !== 'custom-mcp') connectedMcpPlatforms.push(id);
+      if (serverEnvConfigured) configuredApiKeyPlatforms.push(id);
+
+      const summary = {
+        id,
+        name: p.name,
+        shortName: p.shortName,
+        websiteUrl: p.websiteUrl,
+        creatorStudioUrl: p.creatorStudioUrl,
+        apiKeysUrl: p.apiKeysUrl || p.websiteUrl,
+        browserBridgeSupported: Boolean(p.browserBridgeSupported),
+        apiKeySupported: Boolean(p.apiKeySupported),
+        connected,
+        via,
+        browserConnected,
+        mcpConnected,
+        serverEnvConfigured,
+        mcpServerIds: Array.isArray(st.mcpServerIds) ? st.mcpServerIds : [],
+      };
+      byId[id] = summary;
+      return summary;
+    });
+
+    const detectedBrowser = this.browserSessionManager.detectBrowserBinary();
+    const extensionConnected =
+      this.bridgeWsClients.size > 0 || Date.now() - this.lastExtensionHeartbeatAt <= 25_000;
+
+    return {
+      ok: true,
+      extensionConnected,
+      bridgeClients: this.bridgeWsClients.size,
+      openDomains: Array.from(this.openCreatorDomains),
+      connectedBrowserPlatforms,
+      connectedMcpPlatforms,
+      configuredApiKeyPlatforms,
+      browserLauncher: {
+        available: Boolean(detectedBrowser),
+        browserName: detectedBrowser?.browserName || null,
+        extensionPath: this.browserSessionManager.resolveExtensionPath(),
+        profileDir: this.browserSessionManager.getProfileDir(),
+      },
+      platforms: platformSummaries,
+      byId,
     };
   }
 
@@ -3885,6 +4106,8 @@ export class McpStdioBridgeServer {
         apiKey = String(process.env.OPENART_API_KEY || '').trim();
       } else if (platformId === 'imagineart') {
         apiKey = String(process.env.IMAGINEART_API_KEY || process.env.VYRO_API_KEY || '').trim();
+      } else if (platformId === 'sume') {
+        apiKey = String(process.env.SUME_API_KEY || '').trim();
       }
     }
 
@@ -4533,7 +4756,7 @@ export class McpStdioBridgeServer {
           };
         }
 
-        if (platformId === 'openart' || platformId === 'imagineart') {
+        if (platformId === 'openart' || platformId === 'imagineart' || platformId === 'sume') {
           if (!apiKey) {
             const targetMeta = BRIDGE_PLATFORM_INFO[normalizeBridgeTarget(platformId)];
             throw new BridgeHttpError(
@@ -4545,7 +4768,9 @@ export class McpStdioBridgeServer {
           const apiEndpoint =
             platformId === 'openart'
               ? (baseUrl || 'https://openart.ai/api/v1/generations').replace(/\/+$/, '')
-              : (baseUrl || 'https://api.vyro.ai/v2/image/generations').replace(/\/+$/, '');
+              : platformId === 'sume'
+                ? (baseUrl || 'https://api.sume.com/v1/generations').replace(/\/+$/, '')
+                : (baseUrl || 'https://api.vyro.ai/v2/image/generations').replace(/\/+$/, '');
           const res = await fetch(apiEndpoint, {
             method: 'POST',
             headers: {
@@ -4633,12 +4858,13 @@ export class McpStdioBridgeServer {
     }
 
     // -------------------------------------------------------------------------
-    // Route 3: 7-Platform Browser Credit Bridge (`browser-bridge` or `auto` fallback)
+    // Route 3: 8-Platform Browser Credit Bridge (`browser-bridge` or `auto` fallback)
     // -------------------------------------------------------------------------
     const supportedBridgeIds = new Set([
       'dreamina',
       'google-flow',
       'higgsfield',
+      'sume',
       'kling',
       'openart',
       'imagineart',
@@ -4720,24 +4946,27 @@ export class McpStdioBridgeServer {
   const TARGET =
     host === 'higgsfield.ai' || host.endsWith('.higgsfield.ai') || host.includes('higgsfield')
       ? 'higgsfield'
-      : host === 'klingai.com' || host.endsWith('.klingai.com') || host.includes('kling')
-        ? 'kling'
-        : host === 'openart.ai' || host.endsWith('.openart.ai') || host.includes('openart')
-          ? 'openart'
-          : host === 'imagine.art' || host.endsWith('.imagine.art') || host.includes('imagineart')
-            ? 'imagineart'
-            : host === 'elevenlabs.io' || host.endsWith('.elevenlabs.io') || host.includes('elevenlabs')
-              ? 'elevenlabs'
-              : host.endsWith('dreamina.capcut.com') || host.includes('dreamina') || host.includes('capcut') || host.includes('jimeng')
-                ? 'dreamina'
-                : host === 'labs.google' || host === 'flow.google.com'
-                  ? 'google-flow'
-                  : 'google-flow';
+      : host === 'sume.com' || host.endsWith('.sume.com') || host.includes('sume')
+        ? 'sume'
+        : host === 'klingai.com' || host.endsWith('.klingai.com') || host.includes('kling')
+          ? 'kling'
+          : host === 'openart.ai' || host.endsWith('.openart.ai') || host.includes('openart')
+            ? 'openart'
+            : host === 'imagine.art' || host.endsWith('.imagine.art') || host.includes('imagineart')
+              ? 'imagineart'
+              : host === 'elevenlabs.io' || host.endsWith('.elevenlabs.io') || host.includes('elevenlabs')
+                ? 'elevenlabs'
+                : host.endsWith('dreamina.capcut.com') || host.includes('dreamina') || host.includes('capcut') || host.includes('jimeng')
+                  ? 'dreamina'
+                  : host === 'labs.google' || host === 'flow.google.com'
+                    ? 'google-flow'
+                    : 'google-flow';
 
   const TARGET_LABELS = {
     dreamina: 'Dreamina',
     'google-flow': 'Google Flow',
     higgsfield: 'Higgsfield',
+    sume: 'Sume.com',
     kling: 'Kling AI',
     openart: 'OpenArt',
     imagineart: 'ImagineArt',
@@ -5297,18 +5526,33 @@ export class McpStdioBridgeServer {
     }
   }
 
+  function sendConnectorHeartbeat(useFullSession) {
+    var payload = {
+      type: useFullSession ? 'bridge_session' : 'bridge_heartbeat',
+      source: TARGET,
+      platformsConnected: [TARGET],
+      openDomains: host ? [host] : [],
+      title: 'Live Browser Connector Active (' + TARGET + ')',
+    };
+    if (ws && ws.readyState === 1) {
+      try {
+        ws.send(JSON.stringify(payload));
+        return;
+      } catch (_e) {}
+    }
+    fetch(BRIDGE_HTTP + '/api/bridge/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(function () {});
+  }
+
   function connectWs() {
     try {
       ws = new WebSocket(BRIDGE_WS);
       ws.onopen = function () {
-        setStatus('Open-DreamFlow · ' + (TARGET === 'dreamina' ? 'Dreamina' : 'Flow') + ' Live', true);
-        ws.send(
-          JSON.stringify({
-            type: 'bridge_session',
-            source: TARGET === 'dreamina' ? 'dreamina' : 'flow',
-            title: 'Live Browser Connector Active (' + TARGET + ')',
-          })
-        );
+        setStatus('Open-DreamFlow · ' + TARGET_LABEL + ' Live', true);
+        sendConnectorHeartbeat(true);
       };
       ws.onmessage = function (ev) {
         try {
@@ -5333,6 +5577,10 @@ export class McpStdioBridgeServer {
 
   mountStatusBadge();
   connectWs();
+  sendConnectorHeartbeat(false);
+  setInterval(function () {
+    sendConnectorHeartbeat(false);
+  }, 4000);
   setInterval(pollPendingJobs, 2500);
   console.log('[Open-DreamFlow Bridge] Live connector active for target=' + TARGET + ' -> ' + BRIDGE_HTTP);
 })();
@@ -7446,6 +7694,64 @@ export class McpStdioBridgeServer {
           videoUrl: event.videoUrl,
           connectedClients: this.bridgeWsClients.size,
         });
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+        this.sendJson(res, status, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    // 4a-2. Stage 8A Heartbeat & Guided Creator Browser Profile Launcher
+    if (pathname === '/api/bridge/heartbeat' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const snapshot = this.recordBrowserBridgeHeartbeat(bodyObj);
+        this.sendJson(res, 200, {
+          ok: true,
+          ...snapshot,
+          connectedClients: this.bridgeWsClients.size,
+        });
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+        this.sendJson(res, status, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/connections/status' && req.method === 'GET') {
+      try {
+        const statusPayload = await this.getConnectionsStatus();
+        this.sendJson(res, 200, statusPayload);
+      } catch (err) {
+        this.sendJson(res, 500, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/connections/launch-browser' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const statusBefore = await this.getConnectionsStatus();
+        const result = this.browserSessionManager.launchCreatorBrowser({
+          platformId: typeof bodyObj.platformId === 'string' ? bodyObj.platformId : undefined,
+          platforms: Array.isArray(bodyObj.platforms)
+            ? bodyObj.platforms.map((item) => String(item || '').trim()).filter(Boolean)
+            : undefined,
+          dryRun: Boolean(bodyObj.dryRun),
+          activeTabsConnected: Array.isArray(statusBefore.connectedBrowserPlatforms)
+            ? (statusBefore.connectedBrowserPlatforms as string[])
+            : [],
+        });
+        this.sendJson(res, result.ok ? 200 : 400, result);
       } catch (err) {
         const status = err instanceof BridgeHttpError ? err.statusCode : 500;
         this.sendJson(res, status, {

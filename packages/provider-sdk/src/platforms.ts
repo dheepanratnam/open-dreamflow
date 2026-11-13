@@ -6,6 +6,7 @@
 
 export type PlatformId =
   | 'higgsfield'
+  | 'sume'
   | 'kling'
   | 'dreamina'
   | 'google-flow'
@@ -62,6 +63,7 @@ export interface PlatformDefinition {
   shortName: string;
   websiteUrl: string;
   creatorStudioUrl: string;
+  apiKeysUrl?: string;
   description: string;
   modalities: ModelModality[];
   supportedTransports: Exclude<ConnectionTransport, 'auto'>[];
@@ -77,6 +79,7 @@ export const BROWSER_BRIDGE_PLATFORM_IDS = [
   'dreamina',
   'google-flow',
   'higgsfield',
+  'sume',
   'kling',
   'openart',
   'imagineart',
@@ -98,6 +101,7 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
     shortName: 'Higgsfield',
     websiteUrl: 'https://higgsfield.ai',
     creatorStudioUrl: 'https://higgsfield.ai/create',
+    apiKeysUrl: 'https://cloud.higgsfield.ai',
     description:
       'Use your Higgsfield creator credits via Chrome Credit Bridge, MCP server, or Higgsfield Cloud API.',
     modalities: ['image', 'video'],
@@ -219,11 +223,93 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
     ],
   },
   {
+    id: 'sume',
+    name: 'Sume',
+    shortName: 'Sume',
+    websiteUrl: 'https://sume.com',
+    creatorStudioUrl: 'https://sume.com',
+    apiKeysUrl: 'https://sume.com',
+    description:
+      'Zero-markup pay-as-you-go creative wallet (365-day non-expiring credits) via Chrome Credit Bridge, MCP, or API Key.',
+    modalities: ['image', 'video'],
+    supportedTransports: ['browser-bridge', 'mcp', 'api-key'],
+    preferredTransport: 'browser-bridge',
+    browserBridgeSupported: true,
+    apiKeySupported: true,
+    authFields: [
+      {
+        key: 'apiKey',
+        label: 'Sume API Key (Optional if using Browser Session)',
+        placeholder: 'sume_...',
+        secret: true,
+      },
+    ],
+    models: [
+      {
+        id: 'sume-chatgpt-image',
+        label: 'ChatGPT Image 2.6',
+        modality: 'image',
+        platformId: 'sume',
+        supportsReferences: true,
+        maxReferences: 6,
+        aspectRatios: COMMON_IMAGE_RATIOS,
+        resolutions: COMMON_IMAGE_RESOLUTIONS,
+        defaultAspectRatio: '16:9',
+        defaultResolution: '2K',
+      },
+      {
+        id: 'sume-flux-pro',
+        label: 'Flux.1 Pro',
+        modality: 'image',
+        platformId: 'sume',
+        supportsReferences: true,
+        maxReferences: 4,
+        aspectRatios: COMMON_IMAGE_RATIOS,
+        resolutions: COMMON_IMAGE_RESOLUTIONS,
+        defaultAspectRatio: '16:9',
+        defaultResolution: '2K',
+      },
+      {
+        id: 'sume-seedance-2.5',
+        label: 'Seedance 2.5',
+        modality: 'video',
+        platformId: 'sume',
+        supportsReferences: true,
+        maxReferences: 6,
+        supportsStartEndFrames: true,
+        supportsNativeAudio: true,
+        aspectRatios: COMMON_VIDEO_RATIOS,
+        resolutions: COMMON_VIDEO_RESOLUTIONS,
+        durationsSec: COMMON_VIDEO_DURATIONS,
+        defaultAspectRatio: '16:9',
+        defaultResolution: '1080p',
+        defaultDurationSec: 5,
+      },
+      {
+        id: 'sume-kling-4.0',
+        label: 'Kling 4.0',
+        modality: 'video',
+        platformId: 'sume',
+        supportsReferences: true,
+        maxReferences: 4,
+        supportsStartEndFrames: true,
+        supportsNativeAudio: true,
+        aspectRatios: COMMON_VIDEO_RATIOS,
+        resolutions: COMMON_VIDEO_RESOLUTIONS,
+        durationsSec: COMMON_VIDEO_DURATIONS,
+        defaultAspectRatio: '16:9',
+        defaultResolution: '1080p',
+        defaultDurationSec: 5,
+      },
+    ],
+  },
+  {
     id: 'kling',
     name: 'Kling AI',
     shortName: 'Kling AI',
     websiteUrl: 'https://app.klingai.com',
     creatorStudioUrl: 'https://app.klingai.com/global/image-to-video/frame-mode',
+    apiKeysUrl: 'https://app.klingai.com/global/dev',
     description:
       'Chain upstream canvas images directly into Kling 4.0 / 3.0 Master via Browser Credits, MCP, or Kling Access+Secret JWT API.',
     modalities: ['video', 'image'],
@@ -434,6 +520,7 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
     shortName: 'Google Flow',
     websiteUrl: 'https://labs.google/fx/tools/flow',
     creatorStudioUrl: 'https://labs.google/fx/tools/flow',
+    apiKeysUrl: 'https://aistudio.google.com/apikey',
     description:
       'Use Google AI Ultra / Flow browser credits or direct Google AI Studio API Key (Veo 3.1, Imagen 4, Nano Banana 2).',
     modalities: ['image', 'video'],
@@ -698,6 +785,7 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
     shortName: 'ElevenLabs',
     websiteUrl: 'https://elevenlabs.io',
     creatorStudioUrl: 'https://elevenlabs.io/app/speech-synthesis/text-to-speech',
+    apiKeysUrl: 'https://elevenlabs.io/app/settings/api-keys',
     description:
       'Generate studio Voice TTS and Cinema Sound Effects via Official ElevenLabs API, @elevenlabs/elevenlabs-mcp, or Browser Bridge.',
     modalities: ['audio'],
@@ -753,6 +841,7 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
     shortName: 'OpenAI',
     websiteUrl: 'https://platform.openai.com',
     creatorStudioUrl: 'https://platform.openai.com',
+    apiKeysUrl: 'https://platform.openai.com/api-keys',
     description: 'Direct zero-markup OpenAI REST API for GPT-Image-1 and Sora 2.',
     modalities: ['image', 'video'],
     supportedTransports: ['api-key', 'mcp'],
@@ -804,6 +893,7 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
     shortName: 'Fal.ai',
     websiteUrl: 'https://fal.ai',
     creatorStudioUrl: 'https://fal.ai/models',
+    apiKeysUrl: 'https://fal.ai/dashboard/keys',
     description: 'Direct zero-markup Fal.ai queue pass-through for Flux, Recraft, Kling, and Veo.',
     modalities: ['image', 'video'],
     supportedTransports: ['api-key', 'mcp'],
@@ -883,6 +973,7 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
     shortName: 'Replicate',
     websiteUrl: 'https://replicate.com',
     creatorStudioUrl: 'https://replicate.com/explore',
+    apiKeysUrl: 'https://replicate.com/account/api-tokens',
     description: 'Direct zero-markup Replicate predictions API for Flux 1.1 Pro and Kling v2.0.',
     modalities: ['image', 'video'],
     supportedTransports: ['api-key', 'mcp'],

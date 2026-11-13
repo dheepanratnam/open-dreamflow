@@ -1,9 +1,10 @@
 /**
- * Open-DreamFlow Chrome Bridge — v1.1.0 Multi-Platform Popup Controller (`popup.js`)
+ * Open-DreamFlow Chrome Bridge — v1.2.0 Multi-Platform Popup Controller (`popup.js`)
  */
 
 const PLATFORM_IDS = [
   'higgsfield',
+  'sume',
   'kling',
   'dreamina',
   'google-flow',

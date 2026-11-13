@@ -1,15 +1,16 @@
 /**
- * Open-DreamFlow Chrome Bridge — Manifest V3 Background Service Worker (v1.1.0)
+ * Open-DreamFlow Chrome Bridge — Manifest V3 Background Service Worker (v1.2.0)
  *
  * Coordinates zero-markup job queuing & chained reference forwarding between
- * Open-DreamFlow Web Studio (`localhost` / `127.0.0.1`), 7 creator platforms:
+ * Open-DreamFlow Web Studio (`localhost` / `127.0.0.1`), 8 creator platforms:
  *   1. Dreamina (`dreamina.capcut.com`, `jimeng.jianying.com`)
  *   2. Google Flow (`labs.google`, `flow.google.com`)
  *   3. Higgsfield (`higgsfield.ai`)
- *   4. Kling AI (`app.klingai.com`, `klingai.com`)
- *   5. OpenArt (`openart.ai`)
- *   6. ImagineArt (`imagine.art`)
- *   7. ElevenLabs (`elevenlabs.io`)
+ *   4. Sume.com (`sume.com`)
+ *   5. Kling AI (`app.klingai.com`, `klingai.com`)
+ *   6. OpenArt (`openart.ai`)
+ *   7. ImagineArt (`imagine.art`)
+ *   8. ElevenLabs (`elevenlabs.io`)
  * and the Local Bridge Relay (`ws://localhost:3001/bridge` & `http://localhost:3001/api/bridge/*`).
  *
  * Preserves strict `isKnownJobId()` deduplication and provides `FETCH_REFERENCE_DATA_URL`
@@ -18,6 +19,7 @@
 
 const ALL_TARGETS = /** @type {const} */ ([
   'higgsfield',
+  'sume',
   'kling',
   'dreamina',
   'google-flow',
@@ -28,6 +30,7 @@ const ALL_TARGETS = /** @type {const} */ ([
 
 const TARGET_URLS = {
   higgsfield: 'https://higgsfield.ai/create',
+  sume: 'https://sume.com',
   kling: 'https://app.klingai.com/global/image-to-video/frame-mode',
   dreamina: 'https://dreamina.capcut.com/ai-tool/home',
   'google-flow': 'https://labs.google/fx/tools/flow',
@@ -38,6 +41,7 @@ const TARGET_URLS = {
 
 const TARGET_LABELS = {
   higgsfield: 'Higgsfield',
+  sume: 'Sume.com',
   kling: 'Kling AI',
   dreamina: 'Dreamina',
   'google-flow': 'Google Flow',
@@ -48,6 +52,7 @@ const TARGET_LABELS = {
 
 const LOCAL_RELAY_BASE = 'http://localhost:3001';
 const LOCAL_RELAY_HTTP_PUSH = `${LOCAL_RELAY_BASE}/api/bridge/push`;
+const LOCAL_RELAY_HTTP_HEARTBEAT = `${LOCAL_RELAY_BASE}/api/bridge/heartbeat`;
 const LOCAL_RELAY_WS_URL = 'ws://localhost:3001/bridge';
 
 /** @type {WebSocket | null} */
@@ -60,6 +65,7 @@ const STATE = {
   /** @type {Record<string, Record<string, any> | null>} */
   activeByTarget: {
     higgsfield: null,
+    sume: null,
     kling: null,
     dreamina: null,
     'google-flow': null,
@@ -72,6 +78,7 @@ const STATE = {
   /** @type {Record<string, Set<number>>} */
   tabs: {
     higgsfield: new Set(),
+    sume: new Set(),
     kling: new Set(),
     dreamina: new Set(),
     'google-flow': new Set(),
@@ -80,6 +87,8 @@ const STATE = {
     elevenlabs: new Set(),
     studio: new Set(),
   },
+  /** @type {Set<string>} */
+  openDomains: new Set(),
   stats: {
     completedCount: 0,
     savedEstimateUsd: 0,
@@ -141,13 +150,14 @@ function isKnownJobId(jobId) {
 }
 
 /**
- * Normalizes target aliases across all 7 creator platforms.
+ * Normalizes target aliases across all 8 creator platforms.
  * @param {string | undefined} rawTarget
- * @returns {'higgsfield' | 'kling' | 'dreamina' | 'google-flow' | 'openart' | 'imagineart' | 'elevenlabs'}
+ * @returns {'higgsfield' | 'sume' | 'kling' | 'dreamina' | 'google-flow' | 'openart' | 'imagineart' | 'elevenlabs'}
  */
 function normalizeTarget(rawTarget) {
   const lowered = String(rawTarget || 'google-flow').toLowerCase().trim();
   if (lowered.includes('higgsfield')) return 'higgsfield';
+  if (lowered.includes('sume')) return 'sume';
   if (lowered.includes('kling') && !lowered.includes('openart') && !lowered.includes('-hf')) {
     return 'kling';
   }
@@ -185,6 +195,7 @@ function detectTabPlatform(rawUrl) {
     return 'dreamina';
   }
   if (host === 'higgsfield.ai' || host.endsWith('.higgsfield.ai')) return 'higgsfield';
+  if (host === 'sume.com' || host.endsWith('.sume.com')) return 'sume';
   if (host === 'klingai.com' || host.endsWith('.klingai.com')) return 'kling';
   if (host === 'openart.ai' || host.endsWith('.openart.ai')) return 'openart';
   if (host === 'imagine.art' || host.endsWith('.imagine.art')) return 'imagineart';
@@ -193,34 +204,39 @@ function detectTabPlatform(rawUrl) {
 }
 
 /**
- * Sends per-platform session heartbeats over `ws://localhost:3001/bridge` for all
- * currently open creator platform tabs so `:3001` tracks active browser sessions accurately.
+ * Sends open-domain & platform snapshot heartbeats to `:3001` (`ws://localhost:3001/bridge`
+ * or fallback HTTP `/api/bridge/heartbeat`) so `:3001/api/connections/status` stays live.
+ * @param {{ fullSessionEvent?: boolean }} [options]
  */
-function sendRelayPlatformHeartbeats() {
-  if (!relaySocket || relaySocket.readyState !== WebSocket.OPEN) return;
-  try {
-    relaySocket.send(
-      JSON.stringify({
-        type: 'bridge_session',
-        source: 'chrome-extension',
-        title: 'Open-DreamFlow Universal Credit Bridge v1.1.0',
-        metadata: buildBridgeStatusPayload(),
-      })
-    );
-    for (const target of ALL_TARGETS) {
-      if (STATE.tabs[target].size > 0) {
-        relaySocket.send(
-          JSON.stringify({
-            type: 'bridge_session',
-            source: target,
-            title: `${TARGET_LABELS[target]} Tab Ready`,
-          })
-        );
-      }
+function sendRelayPlatformHeartbeats(options = {}) {
+  const payload = buildBridgeStatusPayload();
+  const heartbeatPacket = {
+    type: options.fullSessionEvent ? 'bridge_session' : 'bridge_heartbeat',
+    source: 'chrome-extension',
+    fullSnapshot: true,
+    extensionVersion: '1.2.0',
+    openDomains: payload.openDomains,
+    platformsConnected: payload.platformsConnected,
+    title: 'Open-DreamFlow Universal Credit Bridge v1.2.0',
+    metadata: payload,
+  };
+
+  if (relaySocket && relaySocket.readyState === WebSocket.OPEN) {
+    try {
+      relaySocket.send(JSON.stringify(heartbeatPacket));
+      return;
+    } catch {
+      // Fall through to HTTP heartbeat
     }
-  } catch {
-    // Ignore transient WS frame error
   }
+
+  fetch(LOCAL_RELAY_HTTP_HEARTBEAT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(heartbeatPacket),
+  }).catch(() => {
+    // Local relay may be offline when user opens popup standalone
+  });
 }
 
 /**
@@ -242,7 +258,9 @@ function ensureLocalRelaySocket() {
 
     ws.onopen = () => {
       relayConnected = true;
-      sendRelayPlatformHeartbeats();
+      void refreshConnectedTabs().then(() => {
+        sendRelayPlatformHeartbeats({ fullSessionEvent: true });
+      });
       void pollLocalServerPendingJobs();
     };
 
@@ -412,12 +430,21 @@ async function refreshConnectedTabs() {
     for (const key of Object.keys(STATE.tabs)) {
       STATE.tabs[key].clear();
     }
+    STATE.openDomains.clear();
 
     for (const tab of allTabs) {
       if (!tab.id || !tab.url) continue;
       const detected = detectTabPlatform(tab.url);
       if (detected && STATE.tabs[detected]) {
         STATE.tabs[detected].add(tab.id);
+        if (detected !== 'studio') {
+          try {
+            const hostname = new URL(tab.url).hostname.toLowerCase();
+            if (hostname) STATE.openDomains.add(hostname);
+          } catch {
+            // Ignore malformed URL
+          }
+        }
       }
     }
   } catch {
@@ -440,16 +467,18 @@ function buildBridgeStatusPayload() {
   }
 
   return {
-    extensionVersion: '1.1.0',
+    extensionVersion: '1.2.0',
     flowConnected: platformsConnected['google-flow'],
     dreaminaConnected: platformsConnected.dreamina,
     higgsfieldConnected: platformsConnected.higgsfield,
+    sumeConnected: platformsConnected.sume,
     klingConnected: platformsConnected.kling,
     openartConnected: platformsConnected.openart,
     imagineartConnected: platformsConnected.imagineart,
     elevenlabsConnected: platformsConnected.elevenlabs,
     platformsConnected,
     platformTabCounts,
+    openDomains: Array.from(STATE.openDomains),
     relayConnected,
     studioTabsCount: STATE.tabs.studio.size,
     flowTabsCount: STATE.tabs['google-flow'].size,
@@ -625,18 +654,31 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   for (const set of Object.values(STATE.tabs)) {
     set.delete(tabId);
   }
-  broadcastToStudio('DREAMFLOW_BRIDGE_STATUS', buildBridgeStatusPayload());
+  refreshConnectedTabs().then(() => {
+    sendRelayPlatformHeartbeats();
+    broadcastToStudio('DREAMFLOW_BRIDGE_STATUS', buildBridgeStatusPayload());
+  });
 });
 
 chrome.alarms.create('dreamflow-queue-watchdog', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'dreamflow-queue-watchdog') {
     ensureLocalRelaySocket();
-    sendRelayPlatformHeartbeats();
+    refreshConnectedTabs().then(() => {
+      sendRelayPlatformHeartbeats();
+    });
     void pollLocalServerPendingJobs();
     processQueue();
   }
 });
+
+// 4-second live creator tab heartbeat while the MV3 service worker is awake
+setInterval(() => {
+  ensureLocalRelaySocket();
+  void refreshConnectedTabs().then(() => {
+    sendRelayPlatformHeartbeats();
+  });
+}, 4000);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
@@ -649,7 +691,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (sender.tab?.id) {
           STATE.tabs[target].add(sender.tab.id);
         }
-        sendRelayPlatformHeartbeats();
+        await refreshConnectedTabs();
+        sendRelayPlatformHeartbeats({ fullSessionEvent: true });
         void pollLocalServerPendingJobs(target);
         const status = buildBridgeStatusPayload();
         await broadcastToStudio('DREAMFLOW_BRIDGE_STATUS', status);
