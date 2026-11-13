@@ -1,9 +1,10 @@
 /**
- * Open-DreamFlow Chrome Bridge — Google Flow Consumer Session Driver (`content-flow.js`)
+ * Open-DreamFlow Chrome Bridge — Google Flow Live Session Driver (`content-flow.js`)
  *
- * Automates zero-API-cost prompt + `@Element` Ingredient injection and streams
- * newly synthesized `<video>` URLs from `https://flow.google.com/*` back to
- * Open-DreamFlow Studio via `MutationObserver`.
+ * Automates zero-API-cost prompt + `@Element` Ingredient injection across
+ * `https://labs.google/*` (`labs.google/fx/tools/flow`) and `https://flow.google.com/*`,
+ * capturing newly synthesized `<video>` streams AND high-res `<img>` frames (`>= 512px`)
+ * as authenticated Base64 `dataUrl` payloads back to Open-DreamFlow Studio.
  */
 
 (function initGoogleFlowBridge() {
@@ -24,13 +25,24 @@
   registerSession();
   setInterval(registerSession, 25000);
 
-  /**
-   * Converts a data URL or HTTPS image URL into a browser `File` object suitable
-   * for `DataTransfer` injection into Google Flow's Ingredients uploader.
-   * @param {string | { image?: string, url?: string, dataUrl?: string, name?: string }} ref
-   * @param {number} index
-   * @returns {Promise<File | null>}
-   */
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function isVisible(el) {
+    if (!el || !(el instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(el);
+    if (
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      Number(style.opacity) === 0
+    ) {
+      return false;
+    }
+    const rect = el.getBoundingClientRect();
+    return rect.width > 8 && rect.height > 8;
+  }
+
   async function referenceToFile(ref, index) {
     const rawSource =
       typeof ref === 'string'
@@ -50,11 +62,6 @@
     }
   }
 
-  /**
-   * Injects up to 6 `@Element` Ingredient reference files into Flow's `<input type="file">`
-   * or primary composer dropzone via `DataTransfer`.
-   * @param {Array<any>} referenceImages
-   */
   async function injectElementReferences(referenceImages) {
     if (!Array.isArray(referenceImages) || referenceImages.length === 0) return 0;
 
@@ -80,8 +87,9 @@
     }
 
     const dropTarget =
-      document.querySelector('[data-testid*="ingredient"], [aria-label*="Ingredient"], [role="textbox"]') ||
-      document.body;
+      document.querySelector(
+        '[data-testid*="ingredient"], [aria-label*="Ingredient"], [role="textbox"]'
+      ) || document.body;
     dropTarget.dispatchEvent(
       new DragEvent('drop', {
         bubbles: true,
@@ -92,18 +100,14 @@
     return files.length;
   }
 
-  /**
-   * Populates Google Flow's prompt textarea or contenteditable surface in a
-   * framework-compatible way (React / Lit / Angular signals).
-   * @param {string} promptText
-   */
   function injectPromptText(promptText) {
-    const textarea = /** @type {HTMLTextAreaElement | null} */ (
-      document.querySelector(
-        'textarea[placeholder*="Generate"], textarea[placeholder*="prompt"], textarea[aria-label*="prompt"], textarea'
+    const textareaCandidates = Array.from(
+      document.querySelectorAll(
+        'textarea[placeholder*="Generate" i], textarea[placeholder*="prompt" i], textarea[aria-label*="prompt" i], textarea:not([disabled])'
       )
     );
-    if (textarea) {
+    const textarea = textareaCandidates.find(isVisible);
+    if (textarea instanceof HTMLTextAreaElement) {
       textarea.focus();
       const nativeSetter = Object.getOwnPropertyDescriptor(
         window.HTMLTextAreaElement.prototype,
@@ -119,13 +123,31 @@
       return true;
     }
 
-    const editable = /** @type {HTMLElement | null} */ (
-      document.querySelector('[contenteditable="true"][role="textbox"], [contenteditable="true"]')
+    const editableCandidates = Array.from(
+      document.querySelectorAll(
+        '.ProseMirror[contenteditable="true"], [contenteditable="true"][role="textbox"], [contenteditable="true"]'
+      )
     );
-    if (editable) {
+    const editable = editableCandidates.find(isVisible);
+    if (editable instanceof HTMLElement) {
       editable.focus();
-      editable.textContent = promptText;
-      editable.dispatchEvent(new InputEvent('input', { bubbles: true, data: promptText }));
+      try {
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(editable);
+        if (sel) {
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+        document.execCommand('selectAll', false);
+        document.execCommand('insertText', false, promptText);
+      } catch {
+        // Fallback below
+      }
+      if (!String(editable.textContent || '').trim()) {
+        editable.textContent = promptText;
+        editable.dispatchEvent(new InputEvent('input', { bubbles: true, data: promptText }));
+      }
       return true;
     }
 
@@ -135,10 +157,11 @@
   function clickGenerateButton() {
     const candidates = Array.from(
       document.querySelectorAll('button, [role="button"]')
-    );
+    ).filter(isVisible);
+
     const generateBtn = candidates.find((el) => {
       const label = (
-        el.textContent +
+        (el.textContent || '') +
         ' ' +
         (el.getAttribute('aria-label') || '') +
         ' ' +
@@ -162,74 +185,137 @@
     return false;
   }
 
-  function collectExistingVideoUrls() {
-    const urls = new Set();
+  function snapshotExistingMedia() {
+    const videos = new Set();
     for (const video of document.querySelectorAll('video')) {
-      if (video.currentSrc) urls.add(video.currentSrc);
-      if (video.src) urls.add(video.src);
+      if (video.currentSrc) videos.add(video.currentSrc);
+      if (video.src) videos.add(video.src);
       for (const source of video.querySelectorAll('source')) {
-        if (source.src) urls.add(source.src);
+        if (source.src) videos.add(source.src);
       }
     }
-    return urls;
-  }
-
-  /**
-   * Converts same-origin `blob:` URLs to Base64 data URLs when small enough so
-   * localhost Web Studio can load them across origins, or returns HTTPS signed URLs directly.
-   * @param {string} rawUrl
-   * @returns {Promise<string>}
-   */
-  async function resolveTransferableVideoUrl(rawUrl) {
-    if (!rawUrl.startsWith('blob:')) return rawUrl;
-    try {
-      const res = await fetch(rawUrl);
-      const blob = await res.blob();
-      if (blob.size > 45 * 1024 * 1024) return rawUrl;
-      return await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : rawUrl);
-        reader.onerror = () => resolve(rawUrl);
-        reader.readAsDataURL(blob);
-      });
-    } catch {
-      return rawUrl;
+    const images = new Set();
+    for (const img of document.querySelectorAll('img')) {
+      if (img.currentSrc) images.add(img.currentSrc);
+      if (img.src) images.add(img.src);
     }
+    return { videos, images };
   }
 
-  /**
-   * Watches the DOM via `MutationObserver` until Google Flow mounts a newly synthesized `<video>`.
-   * @param {string} jobId
-   * @param {Set<string>} baselineUrls
-   * @param {number} timeoutMs
-   */
-  function waitForNewVideoUrl(jobId, baselineUrls, timeoutMs = 180000) {
+  async function extractFlowMediaDataUrl(element, rawUrl) {
+    if (!rawUrl) return null;
+    if (rawUrl.startsWith('data:')) return rawUrl;
+
+    try {
+      const res = await fetch(rawUrl, { credentials: 'include' });
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob.size > 64 && blob.size <= 48 * 1024 * 1024) {
+          const dataUrl = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () =>
+              resolve(typeof reader.result === 'string' ? reader.result : null);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+          });
+          if (dataUrl) return dataUrl;
+        }
+      }
+    } catch {
+      // Fallback to offscreen canvas for cross-origin <img>
+    }
+
+    if (
+      element instanceof HTMLImageElement &&
+      element.naturalWidth > 0 &&
+      element.naturalHeight > 0
+    ) {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = element.naturalWidth;
+        canvas.height = element.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(element, 0, 0);
+          return canvas.toDataURL('image/png');
+        }
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  function waitForFlowMedia(job, baseline, timeoutMs = 180000) {
+    const jobId = job.jobId;
+    const mode = String(job.mode || '').toLowerCase();
+
     return new Promise((resolve, reject) => {
       let settled = false;
+      let scanning = false;
 
-      const checkVideos = async () => {
-        if (settled) return;
-        const videos = Array.from(document.querySelectorAll('video'));
-        for (const video of videos) {
-          const candidate =
-            video.currentSrc ||
-            video.src ||
-            video.querySelector('source')?.src ||
-            '';
-          if (candidate && !baselineUrls.has(candidate)) {
-            settled = true;
-            observer.disconnect();
-            clearInterval(poller);
-            clearTimeout(timer);
-            const transferable = await resolveTransferableVideoUrl(candidate);
-            resolve(transferable);
-            return;
+      const checkMedia = async () => {
+        if (settled || scanning) return;
+        scanning = true;
+        try {
+          const videos = Array.from(document.querySelectorAll('video'));
+          for (const video of videos) {
+            const candidate =
+              video.currentSrc ||
+              video.src ||
+              video.querySelector('source')?.src ||
+              '';
+            if (
+              candidate &&
+              !baseline.videos.has(candidate) &&
+              (video.readyState >= 2 || video.videoWidth > 0 || candidate.startsWith('http'))
+            ) {
+              settled = true;
+              observer.disconnect();
+              clearInterval(poller);
+              clearTimeout(timer);
+              const dataUrl = await extractFlowMediaDataUrl(video, candidate);
+              resolve({
+                videoUrl: candidate.startsWith('http') ? candidate : null,
+                imageUrl: null,
+                dataUrl,
+              });
+              return;
+            }
           }
+
+          if (mode !== 'video') {
+            for (const img of document.querySelectorAll('img')) {
+              const candidate = img.currentSrc || img.src || '';
+              if (
+                candidate &&
+                !baseline.images.has(candidate) &&
+                img.complete &&
+                img.naturalWidth >= 512 &&
+                img.naturalHeight >= 384
+              ) {
+                settled = true;
+                observer.disconnect();
+                clearInterval(poller);
+                clearTimeout(timer);
+                const dataUrl = await extractFlowMediaDataUrl(img, candidate);
+                resolve({
+                  videoUrl: null,
+                  imageUrl: candidate.startsWith('http') ? candidate : null,
+                  dataUrl,
+                });
+                return;
+              }
+            }
+          }
+        } finally {
+          scanning = false;
         }
       };
 
       const observer = new MutationObserver(() => {
-        checkVideos();
+        void checkMedia();
       });
       observer.observe(document.documentElement || document.body, {
         childList: true,
@@ -239,25 +325,29 @@
       });
 
       const poller = setInterval(() => {
-        chrome.runtime.sendMessage({
-          type: 'TARGET_JOB_PROGRESS',
-          payload: {
-            jobId,
-            target: TARGET,
-            status: 'generating',
-            progress: 0.6,
-            message: 'Waiting for Google Flow <video> stream...',
-          },
-        });
-        checkVideos();
-      }, 3000);
+        try {
+          chrome.runtime.sendMessage({
+            type: 'TARGET_JOB_PROGRESS',
+            payload: {
+              jobId,
+              target: TARGET,
+              status: 'generating',
+              progress: 0.6,
+              message: 'Waiting for Google Flow synthesis output...',
+            },
+          });
+        } catch {
+          // Ignore service worker sleep
+        }
+        void checkMedia();
+      }, 2000);
 
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
         observer.disconnect();
         clearInterval(poller);
-        reject(new Error('Timed out waiting for Google Flow video synthesis (180s).'));
+        reject(new Error('Timed out waiting for Google Flow synthesis output (180s).'));
       }, timeoutMs);
     });
   }
@@ -270,34 +360,41 @@
 
     (async () => {
       try {
-        const baselineUrls = collectExistingVideoUrls();
+        const baseline = snapshotExistingMedia();
 
         if (Array.isArray(job.referenceImages) && job.referenceImages.length > 0) {
           await injectElementReferences(job.referenceImages);
-          await new Promise((r) => setTimeout(r, 600));
+          await sleep(600);
         }
 
         const promptOk = injectPromptText(job.prompt || '');
         if (!promptOk) {
           throw new Error(
-            'Google Flow prompt composer not found. Ensure you are signed in on flow.google.com inside an active project.'
+            'Google Flow prompt composer not found. Sign in on labs.google/fx/tools/flow inside an active project.'
           );
         }
 
-        await new Promise((r) => setTimeout(r, 350));
-        const clicked = clickGenerateButton();
+        await sleep(400);
+        let clicked = false;
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          clicked = clickGenerateButton();
+          if (clicked) break;
+          await sleep(250);
+        }
         if (!clicked) {
           throw new Error('Could not locate an enabled Generate button on Google Flow.');
         }
 
-        const videoUrl = await waitForNewVideoUrl(job.jobId, baselineUrls);
+        const media = await waitForFlowMedia(job, baseline);
         chrome.runtime.sendMessage({
           type: 'TARGET_JOB_COMPLETE',
           payload: {
             jobId: job.jobId,
             target: TARGET,
             status: 'succeeded',
-            videoUrl,
+            videoUrl: media.videoUrl,
+            imageUrl: media.imageUrl,
+            dataUrl: media.dataUrl,
           },
         });
       } catch (err) {

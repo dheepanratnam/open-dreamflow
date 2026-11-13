@@ -155,6 +155,65 @@ export interface GeminiOmniVideoResult {
   rawResponse: Record<string, unknown>;
 }
 
+export const GOOGLE_GENERATIVE_LANGUAGE_BASE =
+  'https://generativelanguage.googleapis.com/v1beta';
+
+export const GOOGLE_PREFERRED_VEO_MODELS = [
+  'veo-3.1-fast-generate-preview',
+  'veo-3.1-generate-preview',
+  'veo-3.0-fast-generate-001',
+  'veo-3.0-generate-preview',
+  'veo-2.0-generate-001',
+] as const;
+
+export const GOOGLE_PREFERRED_IMAGE_MODELS = [
+  'gemini-3.1-flash-image-preview',
+  'gemini-2.5-flash-image-preview',
+  'gemini-2.5-flash-image',
+  'gemini-2.0-flash-exp-image-generation',
+  'imagen-3.0-generate-002',
+] as const;
+
+export interface GoogleLiveModelSummary {
+  models: string[];
+  videoModels: string[];
+  imageModels: string[];
+  allCount: number;
+}
+
+export interface GeminiNativeImageRequest {
+  prompt: string;
+  model?: string;
+  aspectRatio?: string;
+  referenceImages?: Array<{ data: string; mimeType: string }>;
+  signal?: AbortSignal;
+}
+
+export interface GeminiNativeImageResult {
+  base64Data: string;
+  mimeType: string;
+  model: string;
+  textResponse?: string;
+}
+
+export interface GoogleVeoVideoRequest {
+  prompt: string;
+  model?: string;
+  aspectRatio?: string;
+  durationSeconds?: number;
+  startImage?: { bytesBase64Encoded: string; mimeType: string };
+  endImage?: { bytesBase64Encoded: string; mimeType: string };
+  onProgress?: (status: { operationName: string; done: boolean; elapsedMs: number }) => void;
+  signal?: AbortSignal;
+}
+
+export interface GoogleVeoVideoResult {
+  videoBytes: Uint8Array;
+  mimeType: string;
+  model: string;
+  operationName: string;
+}
+
 export interface GeminiOmniClientConfig {
   apiKey: string;
   endpoint?: string;
@@ -747,6 +806,516 @@ export class GeminiOmniClient {
         ),
       },
       rawResponse: raw,
+    };
+  }
+
+  /**
+   * Queries real Google AI Studio `GET /v1beta/models` for this API key and returns
+   * discovered `veo*` video models and `gemini-*-image*` / `imagen*` native image models.
+   */
+  public async listAvailableModels(signal?: AbortSignal): Promise<GoogleLiveModelSummary> {
+    const url = `${GOOGLE_GENERATIVE_LANGUAGE_BASE}/models?pageSize=200&key=${encodeURIComponent(this.apiKey)}`;
+    const res = await this.fetchImpl(url, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal,
+    });
+
+    const body = await this.safeParseJson(res);
+    if (!res.ok) {
+      throw new GeminiOmniError(
+        `Google AI Studio models check failed (${res.status}): ${this.extractErrorMessage(body)}`,
+        res.status,
+        body
+      );
+    }
+
+    const rawModels = Array.isArray(body.models)
+      ? (body.models as Array<Record<string, unknown>>)
+      : [];
+    const models = rawModels
+      .map((m) => String(m.name || '').replace(/^models\//, '').trim())
+      .filter(Boolean);
+
+    const prioritize = (items: string[], preferred: readonly string[]): string[] => {
+      const unique = Array.from(new Set(items));
+      return unique.sort((a, b) => {
+        const ia = preferred.indexOf(a);
+        const ib = preferred.indexOf(b);
+        if (ia !== -1 && ib !== -1) return ia - ib;
+        if (ia !== -1) return -1;
+        if (ib !== -1) return 1;
+        return a.localeCompare(b);
+      });
+    };
+
+    const videoModels = prioritize(
+      models.filter((m) => /^veo/i.test(m)),
+      GOOGLE_PREFERRED_VEO_MODELS
+    );
+    const imageModels = prioritize(
+      models.filter((m) => /image|imagen/i.test(m)),
+      GOOGLE_PREFERRED_IMAGE_MODELS
+    );
+
+    return {
+      models,
+      videoModels,
+      imageModels,
+      allCount: models.length,
+    };
+  }
+
+  /**
+   * Real Google Gemini Native Image Generation (`:generateContent` with `responseModalities: ["TEXT", "IMAGE"]`,
+   * plus automatic fallback across `gemini-3.1-flash-image-preview`, `gemini-2.5-flash-image-preview`,
+   * `gemini-2.0-flash-exp-image-generation`, and `imagen-3.0-generate-002:predict`).
+   */
+  public async generateNativeImage(
+    req: GeminiNativeImageRequest
+  ): Promise<GeminiNativeImageResult> {
+    const prompt = String(req.prompt || '').trim();
+    if (!prompt) {
+      throw new GeminiOmniError('Prompt is required for Gemini native image generation.');
+    }
+
+    const requestedModel = req.model
+      ? req.model.replace(/^models\//, '').trim()
+      : '';
+
+    const geminiImageCandidates = Array.from(
+      new Set(
+        [
+          requestedModel && !/^imagen/i.test(requestedModel) && !/^gemini-omni/i.test(requestedModel)
+            ? requestedModel
+            : '',
+          'gemini-3.1-flash-image-preview',
+          'gemini-2.5-flash-image-preview',
+          'gemini-2.5-flash-image',
+          'gemini-2.0-flash-exp-image-generation',
+        ].filter(Boolean)
+      )
+    );
+
+    const inlineRefParts = (req.referenceImages || []).slice(0, 6).map((ref) => ({
+      inlineData: {
+        mimeType: ref.mimeType || 'image/png',
+        data: ref.data.replace(/^data:[^;,]+;base64,/i, '').replace(/\s+/g, ''),
+      },
+    }));
+
+    const effectivePrompt =
+      req.aspectRatio && !prompt.includes(req.aspectRatio)
+        ? `${prompt}\n(Target aspect ratio: ${req.aspectRatio})`
+        : prompt;
+
+    let lastStatus: number | undefined;
+    let lastErrorMsg = 'No Gemini native image model returned image bytes.';
+    let lastBody: unknown;
+
+    for (const model of geminiImageCandidates) {
+      const url = `${GOOGLE_GENERATIVE_LANGUAGE_BASE}/models/${encodeURIComponent(model)}:generateContent`;
+      const res = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': this.apiKey,
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [...inlineRefParts, { text: effectivePrompt }],
+            },
+          ],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+          },
+        }),
+        signal: req.signal,
+      });
+
+      const body = await this.safeParseJson(res);
+      if (!res.ok) {
+        const msg = this.extractErrorMessage(body);
+        lastStatus = res.status;
+        lastErrorMsg = `Gemini ${model} failed (${res.status}): ${msg}`;
+        lastBody = body;
+
+        // Fail fast on invalid API key / authentication rejection
+        if (
+          res.status === 401 ||
+          res.status === 403 ||
+          (res.status === 400 && /API[_\s-]?KEY|key not valid/i.test(msg))
+        ) {
+          throw new GeminiOmniError(lastErrorMsg, res.status, body);
+        }
+        continue;
+      }
+
+      const candidates = Array.isArray(body.candidates)
+        ? (body.candidates as Array<Record<string, unknown>>)
+        : [];
+      let textResponse = '';
+      for (const cand of candidates) {
+        const content = cand.content as Record<string, unknown> | undefined;
+        const parts = Array.isArray(content?.parts)
+          ? (content.parts as Array<Record<string, unknown>>)
+          : [];
+        for (const part of parts) {
+          if (typeof part.text === 'string') {
+            textResponse += (textResponse ? '\n' : '') + part.text;
+          }
+          const inline =
+            (part.inlineData as Record<string, unknown> | undefined) ||
+            (part.inline_data as Record<string, unknown> | undefined);
+          const b64 = typeof inline?.data === 'string' ? inline.data.trim() : '';
+          if (b64.length > 64) {
+            const mimeType = String(
+              inline?.mimeType || inline?.mime_type || 'image/png'
+            ).toLowerCase();
+            return {
+              base64Data: b64,
+              mimeType,
+              model,
+              textResponse: textResponse || undefined,
+            };
+          }
+        }
+      }
+
+      lastErrorMsg = `Gemini ${model} returned text without inline image data${
+        textResponse ? `: ${textResponse.slice(0, 180)}` : ''
+      }`;
+    }
+
+    // Fallback to Imagen 3 `:predict` when pure text-to-image is requested
+    if (inlineRefParts.length === 0) {
+      const imagenModels = Array.from(
+        new Set(
+          [
+            requestedModel && /^imagen/i.test(requestedModel) ? requestedModel : '',
+            'imagen-3.0-generate-002',
+            'imagen-3.0-generate-001',
+          ].filter(Boolean)
+        )
+      );
+      const validImagenAspect =
+        req.aspectRatio === '9:16' ||
+        req.aspectRatio === '1:1' ||
+        req.aspectRatio === '4:3' ||
+        req.aspectRatio === '3:4'
+          ? req.aspectRatio
+          : '16:9';
+
+      for (const imagenModel of imagenModels) {
+        const url = `${GOOGLE_GENERATIVE_LANGUAGE_BASE}/models/${encodeURIComponent(imagenModel)}:predict`;
+        const res = await this.fetchImpl(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': this.apiKey,
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            instances: [{ prompt }],
+            parameters: {
+              sampleCount: 1,
+              aspectRatio: validImagenAspect,
+            },
+          }),
+          signal: req.signal,
+        });
+
+        const body = await this.safeParseJson(res);
+        if (!res.ok) {
+          lastStatus = res.status;
+          lastErrorMsg = `Imagen ${imagenModel} failed (${res.status}): ${this.extractErrorMessage(body)}`;
+          lastBody = body;
+          continue;
+        }
+
+        const predictions = Array.isArray(body.predictions)
+          ? (body.predictions as Array<Record<string, unknown>>)
+          : [];
+        const firstPred = predictions[0];
+        const b64 =
+          typeof firstPred?.bytesBase64Encoded === 'string'
+            ? firstPred.bytesBase64Encoded.trim()
+            : '';
+        if (b64.length > 64) {
+          return {
+            base64Data: b64,
+            mimeType: String(firstPred?.mimeType || 'image/png').toLowerCase(),
+            model: imagenModel,
+          };
+        }
+      }
+    }
+
+    throw new GeminiOmniError(lastErrorMsg, lastStatus, lastBody);
+  }
+
+  /**
+   * Real Google Veo 3.1 / 3.0 / 2.0 Video Generation via `:predictLongRunning` + operation polling + MP4 download.
+   */
+  public async generateVeoVideo(req: GoogleVeoVideoRequest): Promise<GoogleVeoVideoResult> {
+    const prompt = String(req.prompt || '').trim();
+    if (!prompt) {
+      throw new GeminiOmniError('Prompt is required for Google Veo video generation.');
+    }
+
+    // 1. Discover available `veo*` models on this Google AI Studio key (also validates API key upfront)
+    const summary = await this.listAvailableModels(req.signal);
+    const requestedModel = req.model ? req.model.replace(/^models\//, '').trim() : '';
+    const veoCandidates = Array.from(
+      new Set(
+        [
+          requestedModel && /^veo/i.test(requestedModel) ? requestedModel : '',
+          ...summary.videoModels,
+          ...GOOGLE_PREFERRED_VEO_MODELS,
+        ].filter(Boolean)
+      )
+    );
+
+    const normalizedAspect = req.aspectRatio === '9:16' ? '9:16' : '16:9';
+    const rawDur = Number(req.durationSeconds || 6);
+    const snappedDuration = rawDur <= 4 ? 4 : rawDur <= 6 ? 6 : 8;
+
+    let selectedModel = veoCandidates[0] || 'veo-3.1-fast-generate-preview';
+    let operationName = '';
+    let lastStatus: number | undefined;
+    let lastErr = 'Unable to start Veo predictLongRunning operation.';
+    let lastBody: unknown;
+
+    for (const candidateModel of veoCandidates) {
+      const url = `${GOOGLE_GENERATIVE_LANGUAGE_BASE}/models/${encodeURIComponent(candidateModel)}:predictLongRunning`;
+      const isVeo2 = /veo-2/i.test(candidateModel);
+      const durationForModel = isVeo2 ? Math.max(5, Math.min(8, Math.round(rawDur || 6))) : snappedDuration;
+
+      const instanceObj: Record<string, unknown> = { prompt };
+      if (req.startImage?.bytesBase64Encoded) {
+        instanceObj.image = {
+          bytesBase64Encoded: req.startImage.bytesBase64Encoded
+            .replace(/^data:[^;,]+;base64,/i, '')
+            .replace(/\s+/g, ''),
+          mimeType: req.startImage.mimeType || 'image/jpeg',
+        };
+      }
+
+      const paramsObj: Record<string, unknown> = {
+        sampleCount: 1,
+        aspectRatio: normalizedAspect,
+        durationSeconds: durationForModel,
+      };
+      if (req.endImage?.bytesBase64Encoded) {
+        paramsObj.lastFrame = {
+          bytesBase64Encoded: req.endImage.bytesBase64Encoded
+            .replace(/^data:[^;,]+;base64,/i, '')
+            .replace(/\s+/g, ''),
+          mimeType: req.endImage.mimeType || 'image/jpeg',
+        };
+      }
+
+      let res = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': this.apiKey,
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          instances: [instanceObj],
+          parameters: paramsObj,
+        }),
+        signal: req.signal,
+      });
+
+      let body = await this.safeParseJson(res);
+
+      // Retry without optional durationSeconds/lastFrame if a specific Veo variant rejects optional parameters
+      if (!res.ok && res.status === 400 && (paramsObj.lastFrame || paramsObj.durationSeconds)) {
+        const minimalParams: Record<string, unknown> = {
+          aspectRatio: normalizedAspect,
+        };
+        const retryRes = await this.fetchImpl(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': this.apiKey,
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            instances: [instanceObj],
+            parameters: minimalParams,
+          }),
+          signal: req.signal,
+        });
+        const retryBody = await this.safeParseJson(retryRes);
+        if (retryRes.ok) {
+          res = retryRes;
+          body = retryBody;
+        }
+      }
+
+      if (!res.ok) {
+        lastStatus = res.status;
+        lastErr = `Google Veo (${candidateModel}) failed (${res.status}): ${this.extractErrorMessage(body)}`;
+        lastBody = body;
+        if (res.status === 401 || res.status === 403 || res.status === 429) {
+          throw new GeminiOmniError(lastErr, res.status, body);
+        }
+        continue;
+      }
+
+      if (typeof body.name === 'string' && body.name.trim()) {
+        selectedModel = candidateModel;
+        operationName = body.name.trim();
+        break;
+      }
+    }
+
+    if (!operationName) {
+      throw new GeminiOmniError(lastErr, lastStatus, lastBody);
+    }
+
+    // 2. Poll GET /v1beta/${operationName} until done === true
+    const pollDelayMs = Math.max(4_000, this.pollIntervalMs);
+    const startedAt = Date.now();
+    let finalOp: Record<string, unknown> = {};
+
+    while (true) {
+      if (req.signal?.aborted) {
+        throw new GeminiOmniError('Google Veo operation polling aborted by caller.');
+      }
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs > this.maxWaitMs) {
+        throw new GeminiOmniError(
+          `Timed out waiting for Google Veo operation ${operationName} after ${this.maxWaitMs}ms.`
+        );
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, pollDelayMs));
+
+      const opUrl = `${GOOGLE_GENERATIVE_LANGUAGE_BASE}/${operationName.replace(/^\/+/, '')}`;
+      const pollRes = await this.fetchImpl(opUrl, {
+        method: 'GET',
+        headers: {
+          'x-goog-api-key': this.apiKey,
+          Accept: 'application/json',
+        },
+        signal: req.signal,
+      });
+
+      const pollBody = await this.safeParseJson(pollRes);
+      if (!pollRes.ok) {
+        throw new GeminiOmniError(
+          `Google Veo operation poll failed (${pollRes.status}): ${this.extractErrorMessage(pollBody)}`,
+          pollRes.status,
+          pollBody
+        );
+      }
+
+      const isDone = Boolean(pollBody.done);
+      req.onProgress?.({
+        operationName,
+        done: isDone,
+        elapsedMs: Date.now() - startedAt,
+      });
+
+      if (pollBody.error) {
+        throw new GeminiOmniError(
+          `Google Veo generation failed: ${this.extractErrorMessage(pollBody)}`,
+          undefined,
+          pollBody
+        );
+      }
+
+      if (isDone) {
+        finalOp = pollBody;
+        break;
+      }
+    }
+
+    // 3. Extract video URI or inline base64 from operation response
+    const opResponse = (finalOp.response || {}) as Record<string, unknown>;
+    const genVideoResp = (opResponse.generateVideoResponse || {}) as Record<string, unknown>;
+    const samples = Array.isArray(genVideoResp.generatedSamples)
+      ? (genVideoResp.generatedSamples as Array<Record<string, unknown>>)
+      : Array.isArray(opResponse.generatedSamples)
+        ? (opResponse.generatedSamples as Array<Record<string, unknown>>)
+        : [];
+    const videosArr = Array.isArray(opResponse.videos)
+      ? (opResponse.videos as Array<Record<string, unknown>>)
+      : [];
+
+    const firstVideoObj =
+      (samples[0]?.video as Record<string, unknown> | undefined) ||
+      videosArr[0] ||
+      (opResponse.video as Record<string, unknown> | undefined);
+
+    const inlineB64 =
+      typeof firstVideoObj?.bytesBase64Encoded === 'string'
+        ? firstVideoObj.bytesBase64Encoded.trim()
+        : '';
+
+    if (inlineB64.length > 64) {
+      const bytes =
+        typeof Buffer !== 'undefined'
+          ? new Uint8Array(Buffer.from(inlineB64, 'base64'))
+          : Uint8Array.from(atob(inlineB64), (ch) => ch.charCodeAt(0));
+      return {
+        videoBytes: bytes,
+        mimeType: String(firstVideoObj?.mimeType || 'video/mp4'),
+        model: selectedModel,
+        operationName,
+      };
+    }
+
+    const videoUri =
+      typeof firstVideoObj?.uri === 'string' ? firstVideoObj.uri.trim() : '';
+
+    if (!videoUri) {
+      const raiReasons = genVideoResp.raiMediaFilteredReasons;
+      const reasonSuffix = Array.isArray(raiReasons) && raiReasons.length > 0
+        ? ` (Filtered: ${raiReasons.join('; ')})`
+        : '';
+      throw new GeminiOmniError(
+        `Google Veo operation ${operationName} completed without a downloadable video URI${reasonSuffix}.`,
+        undefined,
+        finalOp
+      );
+    }
+
+    let dlRes = await this.fetchImpl(videoUri, {
+      method: 'GET',
+      headers: { 'x-goog-api-key': this.apiKey },
+      redirect: 'follow',
+      signal: req.signal,
+    });
+
+    if (!dlRes.ok && (dlRes.status === 401 || dlRes.status === 403)) {
+      const sep = videoUri.includes('?') ? '&' : '?';
+      dlRes = await this.fetchImpl(`${videoUri}${sep}key=${encodeURIComponent(this.apiKey)}`, {
+        method: 'GET',
+        redirect: 'follow',
+        signal: req.signal,
+      });
+    }
+
+    if (!dlRes.ok) {
+      throw new GeminiOmniError(
+        `Failed to download generated Veo MP4 (${dlRes.status}) from ${videoUri}`,
+        dlRes.status
+      );
+    }
+
+    const videoBytes = new Uint8Array(await dlRes.arrayBuffer());
+    return {
+      videoBytes,
+      mimeType: dlRes.headers.get('content-type')?.split(';')[0]?.trim() || 'video/mp4',
+      model: selectedModel,
+      operationName,
     };
   }
 

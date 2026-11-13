@@ -352,7 +352,7 @@ const CANONICAL_TOOL_BLUEPRINTS: Record<
     title: 'MCP · Keyframe Bridge (A → B)',
     category: 'video-generation',
     icon: '🌉',
-    accentColor: '#20D5EC',
+    accentColor: '#C89F81',
     inputPorts: [
       { id: 'startImageUrl', label: 'Frame A (Start)', dataType: 'image', required: true },
       { id: 'endImageUrl', label: 'Frame B (End)', dataType: 'image', required: true },
@@ -366,7 +366,7 @@ const CANONICAL_TOOL_BLUEPRINTS: Record<
     title: 'MCP · Audio & Voiceover Synthesis',
     category: 'audio-synthesis',
     icon: '🔊',
-    accentColor: '#20D5EC',
+    accentColor: '#C89F81',
     inputPorts: [
       { id: 'prompt', label: 'Soundscape / Voice Prompt', dataType: 'prompt', required: true },
     ],

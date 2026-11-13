@@ -1,9 +1,19 @@
 /**
- * Open-DreamFlow Chrome Bridge — Dreamina / Seedance Session Driver (`content-dreamina.js`)
+ * Open-DreamFlow Chrome Bridge — Dreamina / Seedance Live Session Driver (`content-dreamina.js`)
  *
- * Automates zero-API-cost multi-frame keyframe sequences (2–10 frames), `@Element`
- * reference image uploads, and 9-grid contact sheet / `<video>` capture on
- * `https://dreamina.capcut.com/*` via `MutationObserver`.
+ * Supports BOTH Dreamina AI Canvas (`https://dreamina.capcut.com/ai-tool/ai-canvas/*`)
+ * AND standalone Dreamina Image/Video generators:
+ *   1. Auto-opens the floating Prompt Dock on Dreamina Canvas by selecting an existing
+ *      `Images` / `Videos` node or clicking the Left Dock `Image` / `Video` button when
+ *      `.tiptap.ProseMirror` is not yet mounted.
+ *   2. Injects `job.prompt` into `.tiptap.ProseMirror` (`div[contenteditable="true"]`) via
+ *      `selectAll` + `insertText` (with `<p>` + `InputEvent` fallback) or `<textarea>`.
+ *   3. Waits for `button[aria-label="Generate"]` / `form button.rounded-full:not([disabled])`
+ *      to become enabled and triggers generation.
+ *   4. Polls every 2000ms (plus `MutationObserver`) up to 180s for NEW high-res canvas images
+ *      (`naturalWidth >= 512` or Dreamina/ByteImg CDN `>= 384`, ignoring avatars/icons `< 256px`)
+ *      or NEW `<video>` streams, extracts Base64 `dataUrl` inside page context, and reports
+ *      `TARGET_JOB_COMPLETE` back to the Open-DreamFlow background relay.
  */
 
 (function initDreaminaBridge() {
@@ -23,6 +33,31 @@
 
   registerSession();
   setInterval(registerSession, 25000);
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function escapeHtml(raw) {
+    return String(raw)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function isVisible(el) {
+    if (!el || !(el instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(el);
+    if (
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      Number(style.opacity) === 0
+    ) {
+      return false;
+    }
+    const rect = el.getBoundingClientRect();
+    return rect.width > 8 && rect.height > 8;
+  }
 
   async function sourceToFile(item, index, prefix = 'keyframe') {
     const rawUrl =
@@ -89,61 +124,170 @@
     return files.length;
   }
 
-  function injectDreaminaPrompt(promptText) {
-    const textarea = /** @type {HTMLTextAreaElement | null} */ (
-      document.querySelector(
-        'textarea[placeholder*="Describe"], textarea[placeholder*="prompt"], textarea'
-      )
+  function findDreaminaPromptEditor() {
+    const selectors = [
+      '.tiptap.ProseMirror[contenteditable="true"]',
+      'div.ProseMirror[contenteditable="true"]',
+      'div[contenteditable="true"][role="textbox"]',
+      'textarea[placeholder*="Describe" i]',
+      'textarea[placeholder*="prompt" i]',
+      'textarea[placeholder*="描述" i]',
+      'textarea:not([disabled])',
+      'div[contenteditable="true"]',
+    ];
+    for (const sel of selectors) {
+      const candidates = Array.from(document.querySelectorAll(sel));
+      const visible = candidates.find(isVisible);
+      if (visible instanceof HTMLElement) {
+        return visible;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Ensures the floating Prompt Dock is mounted on Dreamina AI Canvas (`ai-canvas/*`).
+   * Clicks a matching `Images` / `Videos` canvas generator node or the 48px Left Dock button.
+   */
+  async function ensureDreaminaPromptMounted(mode) {
+    let editor = findDreaminaPromptEditor();
+    if (editor) return editor;
+
+    const wantVideo = String(mode || '').toLowerCase() === 'video';
+    const nodeLabelPattern = wantVideo ? /^(videos?|视频)$/i : /^(images?|图片)$/i;
+
+    const interactive = Array.from(
+      document.querySelectorAll('button, [role="button"], div[class*="node"], span')
     );
-    if (textarea) {
-      textarea.focus();
+    for (const el of interactive) {
+      if (!(el instanceof HTMLElement) || !isVisible(el)) continue;
+      const label = (
+        el.getAttribute('aria-label') ||
+        el.getAttribute('title') ||
+        el.textContent ||
+        ''
+      ).trim();
+      if (nodeLabelPattern.test(label)) {
+        el.click();
+        await sleep(650);
+        editor = findDreaminaPromptEditor();
+        if (editor) return editor;
+      }
+    }
+
+    // Fallback: click 48px Left Dock Image / Video tool icon on Dreamina AI Canvas
+    const leftDockButtons = Array.from(
+      document.querySelectorAll('button, [role="button"]')
+    ).filter((btn) => {
+      if (!(btn instanceof HTMLElement) || !isVisible(btn)) return false;
+      const rect = btn.getBoundingClientRect();
+      return rect.left >= 0 && rect.left < 88 && rect.top > 80 && rect.width <= 64 && rect.height <= 64;
+    });
+
+    if (leftDockButtons.length > 0) {
+      const targetBtn =
+        wantVideo && leftDockButtons[1] instanceof HTMLElement
+          ? leftDockButtons[1]
+          : leftDockButtons[0];
+      if (targetBtn instanceof HTMLElement) {
+        targetBtn.click();
+        await sleep(700);
+        editor = findDreaminaPromptEditor();
+      }
+    }
+
+    return editor;
+  }
+
+  function injectDreaminaPrompt(editor, promptText) {
+    if (!editor) return false;
+    editor.focus();
+
+    if (editor instanceof HTMLTextAreaElement) {
       const setter = Object.getOwnPropertyDescriptor(
         window.HTMLTextAreaElement.prototype,
         'value'
       )?.set;
       if (setter) {
-        setter.call(textarea, promptText);
+        setter.call(editor, promptText);
       } else {
-        textarea.value = promptText;
+        editor.value = promptText;
       }
-      textarea.dispatchEvent(new InputEvent('input', { bubbles: true, data: promptText }));
-      textarea.dispatchEvent(new Event('change', { bubbles: true }));
+      editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: promptText }));
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
     }
 
-    const editable = /** @type {HTMLElement | null} */ (
-      document.querySelector('[contenteditable="true"]')
-    );
-    if (editable) {
-      editable.focus();
-      editable.textContent = promptText;
-      editable.dispatchEvent(new InputEvent('input', { bubbles: true, data: promptText }));
-      return true;
+    // TipTap / ProseMirror contenteditable injection
+    try {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      if (selection) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      document.execCommand('selectAll', false);
+      document.execCommand('insertText', false, promptText);
+    } catch {
+      // Fallback below if execCommand is restricted
     }
 
-    return false;
+    if (!String(editor.textContent || '').trim()) {
+      editor.innerHTML = `<p>${escapeHtml(promptText)}</p>`;
+      editor.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: promptText,
+        })
+      );
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    return true;
   }
 
-  function triggerDreaminaGenerate() {
-    const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
-    const submitBtn = buttons.find((el) => {
-      const text = (
-        (el.textContent || '') +
-        ' ' +
-        (el.getAttribute('aria-label') || '')
-      ).toLowerCase();
-      const disabled =
-        el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true';
-      return (
-        !disabled &&
-        (text.includes('generate') || text.includes('create') || text.includes('生成'))
-      );
-    });
-    if (submitBtn instanceof HTMLElement) {
-      submitBtn.click();
-      return true;
+  function findActiveDreaminaGenerateButton(editor) {
+    const isEnabled = (el) =>
+      el instanceof HTMLElement &&
+      isVisible(el) &&
+      !el.hasAttribute('disabled') &&
+      el.getAttribute('aria-disabled') !== 'true';
+
+    const ariaExact = Array.from(
+      document.querySelectorAll(
+        'button[aria-label="Generate"], button[aria-label*="Generate" i]'
+      )
+    ).find(isEnabled);
+    if (ariaExact instanceof HTMLElement) return ariaExact;
+
+    const parentForm = editor?.closest('form');
+    if (parentForm) {
+      const roundedSubmit = Array.from(
+        parentForm.querySelectorAll('button.rounded-full, button[type="submit"], button')
+      ).filter(isEnabled);
+      if (roundedSubmit.length > 0) {
+        const lastBtn = roundedSubmit[roundedSubmit.length - 1];
+        if (lastBtn instanceof HTMLElement) return lastBtn;
+      }
     }
-    return false;
+
+    const buttons = Array.from(document.querySelectorAll('button, [role="button"]')).filter(
+      isEnabled
+    );
+    const matched = buttons.find((el) => {
+      const text = (
+        (el.getAttribute('aria-label') || '') +
+        ' ' +
+        (el.textContent || '')
+      )
+        .trim()
+        .toLowerCase();
+      return text.includes('generate') || text.includes('create') || text.includes('生成');
+    });
+    return matched instanceof HTMLElement ? matched : null;
   }
 
   function snapshotExistingMedia() {
@@ -151,6 +295,8 @@
     for (const v of document.querySelectorAll('video')) {
       if (v.currentSrc) videos.add(v.currentSrc);
       if (v.src) videos.add(v.src);
+      const sourceEl = v.querySelector('source');
+      if (sourceEl?.src) videos.add(sourceEl.src);
     }
     const images = new Set();
     for (const img of document.querySelectorAll('img')) {
@@ -160,45 +306,126 @@
     return { videos, images };
   }
 
-  function waitForDreaminaMedia(jobId, baseline, timeoutMs = 180000) {
-    return new Promise((resolve, reject) => {
-      let done = false;
+  /**
+   * Fetches a rendered Dreamina image/video inside the authenticated page context
+   * into a Base64 `dataUrl` so localhost `:3001` receives exact bytes even when
+   * ByteImg / CapCut CDNs require cookies or `blob:` URLs.
+   */
+  async function extractMediaDataUrl(element, rawUrl) {
+    if (!rawUrl) return null;
+    if (rawUrl.startsWith('data:')) return rawUrl;
 
-      const scan = () => {
-        if (done) return;
-
-        for (const video of document.querySelectorAll('video')) {
-          const url = video.currentSrc || video.src || video.querySelector('source')?.src || '';
-          if (url && !baseline.videos.has(url)) {
-            done = true;
-            observer.disconnect();
-            clearInterval(poller);
-            clearTimeout(timer);
-            resolve({ videoUrl: url, imageUrl: null });
-            return;
-          }
+    try {
+      const res = await fetch(rawUrl, { credentials: 'include' });
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob.size > 64 && blob.size <= 48 * 1024 * 1024) {
+          const dataUrl = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () =>
+              resolve(typeof reader.result === 'string' ? reader.result : null);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+          });
+          if (dataUrl) return dataUrl;
         }
+      }
+    } catch {
+      // Fallback to offscreen canvas for cross-origin <img> elements
+    }
 
-        // Also capture high-res Seedream 9-grid / 4-angle contact sheet images when operating in image mode
-        for (const img of document.querySelectorAll('img')) {
-          const url = img.currentSrc || img.src || '';
-          if (
-            url &&
-            !baseline.images.has(url) &&
-            img.naturalWidth >= 512 &&
-            img.naturalHeight >= 512
-          ) {
-            done = true;
-            observer.disconnect();
-            clearInterval(poller);
-            clearTimeout(timer);
-            resolve({ videoUrl: null, imageUrl: url });
-            return;
+    if (
+      element instanceof HTMLImageElement &&
+      element.naturalWidth > 0 &&
+      element.naturalHeight > 0
+    ) {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = element.naturalWidth;
+        canvas.height = element.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(element, 0, 0);
+          return canvas.toDataURL('image/png');
+        }
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  function waitForDreaminaMedia(job, baseline, timeoutMs = 180000) {
+    const jobId = job.jobId;
+    const mode = String(job.mode || '').toLowerCase();
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let scanning = false;
+
+      const scan = async () => {
+        if (settled || scanning) return;
+        scanning = true;
+        try {
+          for (const video of document.querySelectorAll('video')) {
+            const url =
+              video.currentSrc || video.src || video.querySelector('source')?.src || '';
+            if (
+              url &&
+              !baseline.videos.has(url) &&
+              (video.readyState >= 2 || video.videoWidth > 0 || url.startsWith('http'))
+            ) {
+              settled = true;
+              observer.disconnect();
+              clearInterval(poller);
+              clearTimeout(timer);
+              const dataUrl = await extractMediaDataUrl(video, url);
+              resolve({
+                videoUrl: url.startsWith('http') ? url : null,
+                imageUrl: null,
+                dataUrl,
+              });
+              return;
+            }
           }
+
+          if (mode !== 'video') {
+            for (const img of document.querySelectorAll('img')) {
+              const url = img.currentSrc || img.src || '';
+              if (!url || baseline.images.has(url) || !img.complete) continue;
+
+              // Ignore tiny icons, toolbar glyphs, and user avatars (< 256px)
+              if (img.naturalWidth < 256 || img.naturalHeight < 256) continue;
+
+              const isDreaminaCdn = /byteimg|ibytedtos|capcut|dreamina|jimeng/i.test(url);
+              const qualifies =
+                (img.naturalWidth >= 512 && img.naturalHeight >= 384) ||
+                (isDreaminaCdn && img.naturalWidth >= 384 && img.naturalHeight >= 384);
+
+              if (qualifies) {
+                settled = true;
+                observer.disconnect();
+                clearInterval(poller);
+                clearTimeout(timer);
+                const dataUrl = await extractMediaDataUrl(img, url);
+                resolve({
+                  videoUrl: null,
+                  imageUrl: url.startsWith('http') ? url : null,
+                  dataUrl,
+                });
+                return;
+              }
+            }
+          }
+        } finally {
+          scanning = false;
         }
       };
 
-      const observer = new MutationObserver(scan);
+      const observer = new MutationObserver(() => {
+        void scan();
+      });
       observer.observe(document.documentElement || document.body, {
         childList: true,
         subtree: true,
@@ -207,22 +434,26 @@
       });
 
       const poller = setInterval(() => {
-        chrome.runtime.sendMessage({
-          type: 'TARGET_JOB_PROGRESS',
-          payload: {
-            jobId,
-            target: TARGET,
-            status: 'generating',
-            progress: 0.65,
-            message: 'Synthesizing Seedance / Seedream output on Dreamina...',
-          },
-        });
-        scan();
-      }, 3000);
+        try {
+          chrome.runtime.sendMessage({
+            type: 'TARGET_JOB_PROGRESS',
+            payload: {
+              jobId,
+              target: TARGET,
+              status: 'generating',
+              progress: 0.65,
+              message: 'Synthesizing Seedance / Seedream output on Dreamina...',
+            },
+          });
+        } catch {
+          // Ignore service worker sleep
+        }
+        void scan();
+      }, 2000);
 
       const timer = setTimeout(() => {
-        if (done) return;
-        done = true;
+        if (settled) return;
+        settled = true;
         observer.disconnect();
         clearInterval(poller);
         reject(new Error('Timed out waiting for Dreamina synthesis output (180s).'));
@@ -238,24 +469,39 @@
 
     (async () => {
       try {
-        const baseline = snapshotExistingMedia();
-        await injectDreaminaFrames(job);
-        await new Promise((r) => setTimeout(r, 500));
-
-        const okPrompt = injectDreaminaPrompt(job.prompt || '');
-        if (!okPrompt) {
+        const editor = await ensureDreaminaPromptMounted(job.mode);
+        if (!editor) {
           throw new Error(
-            'Dreamina prompt input not found. Sign in at dreamina.capcut.com and open the Video/Image generator.'
+            'Dreamina prompt input (.tiptap.ProseMirror) not found. Sign in at dreamina.capcut.com/ai-tool/ai-canvas and open a canvas.'
           );
         }
 
-        await new Promise((r) => setTimeout(r, 350));
-        const clicked = triggerDreaminaGenerate();
-        if (!clicked) {
-          throw new Error('Could not locate an active Generate button on Dreamina.');
+        const baseline = snapshotExistingMedia();
+        await injectDreaminaFrames(job);
+        await sleep(350);
+
+        const okPrompt = injectDreaminaPrompt(editor, job.prompt || '');
+        if (!okPrompt) {
+          throw new Error('Failed to inject prompt into Dreamina editor.');
         }
 
-        const media = await waitForDreaminaMedia(job.jobId, baseline);
+        await sleep(400);
+        let genBtn = null;
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          genBtn = findActiveDreaminaGenerateButton(editor);
+          if (genBtn) break;
+          await sleep(250);
+        }
+
+        if (!genBtn) {
+          throw new Error(
+            'Could not locate an enabled Generate button on Dreamina. Verify you are signed in and have available credits.'
+          );
+        }
+
+        genBtn.click();
+
+        const media = await waitForDreaminaMedia(job, baseline);
         chrome.runtime.sendMessage({
           type: 'TARGET_JOB_COMPLETE',
           payload: {
@@ -264,6 +510,7 @@
             status: 'succeeded',
             videoUrl: media.videoUrl,
             imageUrl: media.imageUrl,
+            dataUrl: media.dataUrl,
           },
         });
       } catch (err) {

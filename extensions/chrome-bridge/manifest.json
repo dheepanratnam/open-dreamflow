@@ -39,7 +39,7 @@
     {
       "matches": [
         "https://flow.google.com/*",
-        "https://labs.google/fx/tools/flow*"
+        "https://labs.google/*"
       ],
       "js": [
         "content-flow.js"

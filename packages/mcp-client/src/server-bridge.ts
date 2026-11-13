@@ -161,6 +161,120 @@ export interface BridgeRelayEvent {
   metadata?: Record<string, unknown>;
 }
 
+export interface BridgeJobRecord {
+  jobId: string;
+  target: 'dreamina' | 'google-flow';
+  mode: 'image' | 'video';
+  prompt: string;
+  aspectRatio: string;
+  durationSec: number;
+  referenceImages: string[];
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  createdAt: string;
+  claimedAt?: string | null;
+  completedAt?: string | null;
+  mediaUrl?: string | null;
+  imageUrl?: string | null;
+  videoUrl?: string | null;
+  fullUrl?: string | null;
+  error?: string | null;
+  creditsRemaining?: number | null;
+}
+
+export type NormalizedProviderChoice =
+  | 'ffmpeg-local'
+  | 'gemini'
+  | 'fal'
+  | 'replicate'
+  | 'seedance'
+  | 'comfyui'
+  | 'dreamina-bridge'
+  | 'flow-bridge';
+
+export class BridgeHttpError extends Error {
+  public readonly statusCode: number;
+
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.name = 'BridgeHttpError';
+    this.statusCode = statusCode;
+  }
+}
+
+export function normalizeProviderChoice(
+  rawProvider: unknown,
+  rawApiKey?: string
+): NormalizedProviderChoice {
+  const lowered = String(rawProvider || '')
+    .trim()
+    .toLowerCase();
+
+  if (!lowered || lowered === 'local' || lowered === 'ffmpeg' || lowered === 'ffmpeg-local') {
+    if (rawApiKey && /^AIza[0-9A-Za-z_-]{20,}$/.test(rawApiKey.trim())) {
+      return 'gemini';
+    }
+    return 'ffmpeg-local';
+  }
+
+  if (
+    lowered === 'gemini' ||
+    lowered === 'gemini-api' ||
+    lowered === 'gemini-omni' ||
+    lowered === 'google' ||
+    lowered === 'google-ai' ||
+    lowered === 'veo' ||
+    lowered.startsWith('veo-')
+  ) {
+    return 'gemini';
+  }
+
+  if (
+    lowered === 'dreamina-bridge' ||
+    lowered === 'dreamina-browser' ||
+    lowered === 'dreamina-web' ||
+    lowered === 'chrome-bridge-dreamina'
+  ) {
+    return 'dreamina-bridge';
+  }
+
+  if (
+    lowered === 'flow-bridge' ||
+    lowered === 'google-flow' ||
+    lowered === 'google-flow-bridge' ||
+    lowered === 'flow-browser' ||
+    lowered === 'chrome-bridge-flow' ||
+    lowered === 'flow'
+  ) {
+    return 'flow-bridge';
+  }
+
+  if (lowered === 'comfyui' || lowered === 'comfy' || lowered === 'comfy-local') {
+    return 'comfyui';
+  }
+
+  if (lowered === 'fal' || lowered === 'fal-ai' || lowered === 'fal.ai') {
+    return 'fal';
+  }
+
+  if (lowered === 'replicate') {
+    return 'replicate';
+  }
+
+  if (
+    lowered === 'seedance' ||
+    lowered === 'seedream' ||
+    lowered === 'dreamina' ||
+    lowered === 'dreamina-api'
+  ) {
+    return 'seedance';
+  }
+
+  throw new BridgeHttpError(
+    400,
+    `Unsupported provider "${String(rawProvider)}". Expected one of: gemini, dreamina-bridge, flow-bridge, comfyui, fal, replicate, seedance, ffmpeg-local.`
+  );
+}
+
 export const BUILTIN_DREAMFLOW_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'generate_video',
@@ -604,6 +718,11 @@ export class McpStdioBridgeServer {
   private readonly sseClients = new Map<string, SseClientRecord>();
   private readonly pendingStdioCalls = new Map<string, PendingStdioCall>();
   private bridgeEvents: BridgeRelayEvent[] = [];
+  private readonly bridgeJobs = new Map<string, BridgeJobRecord>();
+  private readonly bridgeJobWaiters = new Map<
+    string,
+    Array<{ resolve: (job: BridgeJobRecord) => void; timer: ReturnType<typeof setTimeout> }>
+  >();
 
   constructor(options: McpStdioBridgeOptions = {}) {
     this.port = options.port ?? 3001;
@@ -720,6 +839,11 @@ export class McpStdioBridgeServer {
     for (const [, pending] of this.pendingStdioCalls) clearTimeout(pending.timer);
     this.pendingStdioCalls.clear();
 
+    for (const [, waiters] of this.bridgeJobWaiters) {
+      for (const w of waiters) clearTimeout(w.timer);
+    }
+    this.bridgeJobWaiters.clear();
+
     for (const [, client] of this.wsClients) {
       try {
         client.socket.destroy();
@@ -753,6 +877,7 @@ export class McpStdioBridgeServer {
     }
 
     if (this.httpServer) {
+      this.httpServer.closeAllConnections?.();
       await new Promise<void>((resolve) => {
         this.httpServer!.close(() => resolve());
       });
@@ -988,7 +1113,7 @@ export class McpStdioBridgeServer {
   public async inpaintImage(params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const prompt = String(params.prompt || 'Cinematic relight & detail synthesis').trim();
     const rawApiKey = typeof params.apiKey === 'string' ? params.apiKey.trim() : '';
-    const providerName = String(params.provider || '').toLowerCase();
+    const providerChoice = normalizeProviderChoice(params.provider, rawApiKey);
 
     const rawSource =
       params.imageUrl ??
@@ -1002,40 +1127,120 @@ export class McpStdioBridgeServer {
       params.maskImage ??
       params.mask;
 
-    // 1. Optional Zero-Markup BYOK Cloud Pass-Through
-    if (rawApiKey && rawApiKey !== 'local' && rawApiKey !== 'ffmpeg') {
-      try {
-        const sdkPath = path.resolve(
-          path.dirname(fileURLToPath(import.meta.url)),
-          '../../provider-sdk/dist/index.js'
-        );
-        if (fs.existsSync(sdkPath)) {
-          const sdk = (await import(pathToFileURL(sdkPath).href)) as Record<string, any>;
-          if (sdk.SeedanceClient && (providerName.includes('seedance') || providerName.includes('dreamina') || !providerName)) {
-            const client = new sdk.SeedanceClient({ apiKey: rawApiKey });
-            const cloudOut = await client.smartInpaint({
-              sourceImage: String(rawSource || ''),
-              maskImage: String(rawMask || rawSource || ''),
-              prompt,
-            });
-            if (cloudOut?.imageUrl) {
-              return {
-                ok: true,
-                status: 'COMPLETED',
-                tool: 'inpaint_frame',
-                imageUrl: cloudOut.imageUrl,
-                fullUrl: cloudOut.imageUrl,
-                prompt,
-                engine: 'seedance-zero-markup',
-              };
-            }
-          }
-        }
-      } catch (cloudErr) {
-        this.log(
-          `BYOK cloud inpaint failed (${cloudErr instanceof Error ? cloudErr.message : String(cloudErr)}); falling back to ffmpeg-local.`
+    if (providerChoice === 'dreamina-bridge' || providerChoice === 'flow-bridge') {
+      const bridgeOut = await this.enqueueBridgeJob({
+        target: providerChoice === 'dreamina-bridge' ? 'dreamina' : 'google-flow',
+        mode: 'image',
+        prompt,
+        referenceImages: rawSource ? [String(rawSource)] : [],
+        waitForResult: params.waitForResult !== false,
+        timeoutMs: params.timeoutMs,
+      });
+      return {
+        ...bridgeOut,
+        tool: 'inpaint_frame',
+        prompt,
+        engine: providerChoice,
+      };
+    }
+
+    if (providerChoice === 'gemini') {
+      if (!rawApiKey) {
+        throw new BridgeHttpError(
+          400,
+          'Google AI Studio API key is required when provider="gemini" is selected.'
         );
       }
+      const tempCloudFiles: string[] = [];
+      try {
+        const srcPath = await this.resolveImageOrFallback(rawSource, tempCloudFiles);
+        const maskPath = rawMask ? await this.resolveInputMediaPath(rawMask, tempCloudFiles) : null;
+        const refs: Array<{ data: string; mimeType: string }> = [];
+        const srcInline = this.readFileAsBase64Inline(srcPath);
+        refs.push({ data: srcInline.bytesBase64Encoded, mimeType: srcInline.mimeType });
+        if (maskPath) {
+          const maskInline = this.readFileAsBase64Inline(maskPath);
+          refs.push({ data: maskInline.bytesBase64Encoded, mimeType: maskInline.mimeType });
+        }
+
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.GeminiOmniClient({ apiKey: rawApiKey });
+        const editPrompt = maskPath
+          ? `Edit the first image only inside the painted white mask region shown in the second image: ${prompt}. Preserve surrounding composition and lighting.`
+          : `Edit this image cleanly: ${prompt}.`;
+        const out = await client.generateNativeImage({
+          prompt: editPrompt,
+          model: typeof params.model === 'string' ? params.model : undefined,
+          referenceImages: refs,
+        });
+        const saved = await this.writeGoogleLiveImagePng(out.base64Data, out.mimeType);
+        return {
+          ok: true,
+          status: 'COMPLETED',
+          tool: 'inpaint_frame',
+          imageUrl: saved.imageUrl,
+          mediaUrl: saved.imageUrl,
+          fullUrl: saved.fullUrl,
+          bytes: saved.bytes,
+          model: out.model,
+          prompt,
+          masked: Boolean(maskPath),
+          engine: 'google-gemini-live',
+        };
+      } catch (err) {
+        if (err instanceof BridgeHttpError) throw err;
+        throw new BridgeHttpError(502, err instanceof Error ? err.message : String(err));
+      } finally {
+        for (const tmp of tempCloudFiles) {
+          try {
+            if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+          } catch {
+            // Ignore
+          }
+        }
+      }
+    }
+
+    if (providerChoice === 'seedance') {
+      if (!rawApiKey) {
+        throw new BridgeHttpError(
+          400,
+          'Seedance API key is required when provider="seedance" is selected.'
+        );
+      }
+      try {
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.SeedanceClient({ apiKey: rawApiKey });
+        const cloudOut = await client.smartInpaint({
+          sourceImage: String(rawSource || ''),
+          maskImage: String(rawMask || rawSource || ''),
+          prompt,
+        });
+        if (!cloudOut?.imageUrl) {
+          throw new BridgeHttpError(502, 'Seedance smartInpaint returned no imageUrl.');
+        }
+        const saved = await this.ingestExternalMediaToDisk(cloudOut.imageUrl, 'seedance_live');
+        return {
+          ok: true,
+          status: 'COMPLETED',
+          tool: 'inpaint_frame',
+          imageUrl: saved.mediaUrl,
+          fullUrl: saved.fullUrl,
+          bytes: saved.bytes,
+          prompt,
+          engine: 'seedance-live',
+        };
+      } catch (err) {
+        if (err instanceof BridgeHttpError) throw err;
+        throw new BridgeHttpError(502, err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    if (providerChoice !== 'ffmpeg-local') {
+      throw new BridgeHttpError(
+        400,
+        `Inpaint is not supported without credentials for provider="${providerChoice}". Select Google AI Studio (gemini), Dreamina/Flow Bridge, or Local FFmpeg.`
+      );
     }
 
     if (!this.ffmpegAvailable) {
@@ -1152,6 +1357,91 @@ export class McpStdioBridgeServer {
    * Expands source image to `16:9` (1920x1080), `9:16` (1080x1920), `21:9` (2520x1080), or `1:1` (1440x1440).
    */
   public async outpaintImage(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const rawApiKey = typeof params.apiKey === 'string' ? params.apiKey.trim() : '';
+    const providerChoice = normalizeProviderChoice(params.provider, rawApiKey);
+    const targetAspectRaw = String(
+      params.targetAspect || params.target_aspect || params.aspectRatio || '16:9'
+    ).trim();
+    const rawSource =
+      params.imageUrl ??
+      params.source_image ??
+      params.sourceImage ??
+      params.image;
+    const prompt = String(
+      params.prompt || `Outpaint and seamlessly expand the scene framing to ${targetAspectRaw} aspect ratio`
+    ).trim();
+
+    if (providerChoice === 'dreamina-bridge' || providerChoice === 'flow-bridge') {
+      const bridgeOut = await this.enqueueBridgeJob({
+        target: providerChoice === 'dreamina-bridge' ? 'dreamina' : 'google-flow',
+        mode: 'image',
+        prompt,
+        aspectRatio: targetAspectRaw,
+        referenceImages: rawSource ? [String(rawSource)] : [],
+        waitForResult: params.waitForResult !== false,
+        timeoutMs: params.timeoutMs,
+      });
+      return {
+        ...bridgeOut,
+        tool: 'outpaint_expand',
+        targetAspect: targetAspectRaw,
+        engine: providerChoice,
+      };
+    }
+
+    if (providerChoice === 'gemini') {
+      if (!rawApiKey) {
+        throw new BridgeHttpError(
+          400,
+          'Google AI Studio API key is required when provider="gemini" is selected.'
+        );
+      }
+      const tempCloudFiles: string[] = [];
+      try {
+        const srcPath = await this.resolveImageOrFallback(rawSource, tempCloudFiles);
+        const srcInline = this.readFileAsBase64Inline(srcPath);
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.GeminiOmniClient({ apiKey: rawApiKey });
+        const out = await client.generateNativeImage({
+          prompt: `Outpaint and expand the edges of this photograph naturally to a wide ${targetAspectRaw} composition while preserving the exact central subject, lens depth, and lighting: ${prompt}`,
+          model: typeof params.model === 'string' ? params.model : undefined,
+          aspectRatio: targetAspectRaw,
+          referenceImages: [{ data: srcInline.bytesBase64Encoded, mimeType: srcInline.mimeType }],
+        });
+        const saved = await this.writeGoogleLiveImagePng(out.base64Data, out.mimeType);
+        return {
+          ok: true,
+          status: 'COMPLETED',
+          tool: 'outpaint_expand',
+          imageUrl: saved.imageUrl,
+          mediaUrl: saved.imageUrl,
+          fullUrl: saved.fullUrl,
+          bytes: saved.bytes,
+          model: out.model,
+          targetAspect: targetAspectRaw,
+          engine: 'google-gemini-live',
+        };
+      } catch (err) {
+        if (err instanceof BridgeHttpError) throw err;
+        throw new BridgeHttpError(502, err instanceof Error ? err.message : String(err));
+      } finally {
+        for (const tmp of tempCloudFiles) {
+          try {
+            if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+          } catch {
+            // Ignore
+          }
+        }
+      }
+    }
+
+    if (providerChoice !== 'ffmpeg-local') {
+      throw new BridgeHttpError(
+        400,
+        `Outpaint requires Google AI Studio (gemini), Dreamina/Flow Bridge, or Local FFmpeg (received provider="${providerChoice}").`
+      );
+    }
+
     if (!this.ffmpegAvailable) {
       throw new Error(`FFmpeg binary not found at ${this.ffmpegPath}`);
     }
@@ -1160,16 +1450,7 @@ export class McpStdioBridgeServer {
     const tempFiles: string[] = [];
 
     try {
-      const rawSource =
-        params.imageUrl ??
-        params.source_image ??
-        params.sourceImage ??
-        params.image;
       const sourcePath = await this.resolveImageOrFallback(rawSource, tempFiles);
-
-      const targetAspectRaw = String(
-        params.targetAspect || params.target_aspect || params.aspectRatio || '16:9'
-      ).trim();
 
       const dimensionsByAspect: Record<string, { width: number; height: number; aspect: string }> = {
         '16:9': { width: 1920, height: 1080, aspect: '16:9' },
@@ -1609,6 +1890,1646 @@ export class McpStdioBridgeServer {
     return eventRecord;
   }
 
+  public broadcastBridgeWsPayload(payload: Record<string, unknown>): void {
+    const wsFrame = encodeWebSocketTextFrame(JSON.stringify(payload));
+    for (const [clientId, client] of this.bridgeWsClients) {
+      try {
+        client.socket.write(wsFrame);
+      } catch {
+        this.bridgeWsClients.delete(clientId);
+      }
+    }
+  }
+
+  /**
+   * Sniffs common image/video magic headers so downloaded CDN buffers or raw base64 payloads
+   * always receive a valid file extension (`.png`, `.jpg`, `.webp`, `.gif`, `.mp4`, `.webm`).
+   */
+  private detectExtensionFromBufferOrMime(
+    buf: Buffer,
+    mimeHint?: string,
+    urlPathHint?: string
+  ): { ext: string; isVideo: boolean } {
+    if (buf.length >= 12) {
+      if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+        return { ext: '.png', isVideo: false };
+      }
+      if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+        return { ext: '.jpg', isVideo: false };
+      }
+      if (
+        buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
+        buf.subarray(8, 12).toString('ascii') === 'WEBP'
+      ) {
+        return { ext: '.webp', isVideo: false };
+      }
+      if (buf.subarray(0, 3).toString('ascii') === 'GIF') {
+        return { ext: '.gif', isVideo: false };
+      }
+      if (buf.subarray(4, 8).toString('ascii') === 'ftyp') {
+        return { ext: '.mp4', isVideo: true };
+      }
+      if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) {
+        return { ext: '.webm', isVideo: true };
+      }
+    }
+
+    const cleanMime = (mimeHint || '').split(';')[0].trim().toLowerCase();
+    if (cleanMime && EXT_BY_MIME[cleanMime]) {
+      const ext = EXT_BY_MIME[cleanMime];
+      return { ext, isVideo: /\.(mp4|webm|mov)$/i.test(ext) };
+    }
+
+    if (urlPathHint) {
+      const pathExt = path.extname(urlPathHint).toLowerCase();
+      if (pathExt && MIME_BY_EXT[pathExt]) {
+        return { ext: pathExt, isVideo: /\.(mp4|webm|mov)$/i.test(pathExt) };
+      }
+    }
+
+    if (cleanMime.startsWith('video/')) {
+      return { ext: '.mp4', isVideo: true };
+    }
+    return { ext: '.png', isVideo: false };
+  }
+
+  /**
+   * Decodes `data:...;base64,...` / raw base64 OR downloads remote `https://` CDN media
+   * (Dreamina `byteimg`/`ibytedtos`, Google `storage.googleapis.com`, Fal, Replicate)
+   * into `apps/web-studio/public/media/${prefix}_${ts}.${ext}` (+ mirrors to `dist/media/`).
+   */
+  public async ingestExternalMediaToDisk(
+    rawInput: string,
+    prefix = 'bridge_live',
+    explicitMimeType?: string
+  ): Promise<{
+    mediaUrl: string;
+    imageUrl?: string;
+    videoUrl?: string;
+    fullUrl: string;
+    filename: string;
+    bytes: number;
+    isVideo: boolean;
+  }> {
+    const trimmed = String(rawInput || '').trim();
+    if (!trimmed) {
+      throw new BridgeHttpError(400, 'Cannot ingest empty media payload.');
+    }
+
+    fs.mkdirSync(this.mediaDir, { recursive: true });
+    const safePrefix =
+      prefix.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'bridge_live';
+
+    // 1. Already a local `/media/<file>` path on disk
+    if (trimmed.startsWith('/media/')) {
+      const existingName = path.basename(decodeURIComponent(trimmed.replace(/^\/media\/+/, '')));
+      const existingPath = path.join(this.mediaDir, existingName);
+      if (existingName && fs.existsSync(existingPath) && fs.statSync(existingPath).isFile()) {
+        const resident = this.preferResidentMediaPath(existingPath);
+        const bytes = fs.statSync(resident).size;
+        const isVideo = /\.(mp4|webm|mov)$/i.test(existingName);
+        const mediaUrl = `/media/${existingName}`;
+        return {
+          mediaUrl,
+          imageUrl: isVideo ? undefined : mediaUrl,
+          videoUrl: isVideo ? mediaUrl : undefined,
+          fullUrl: `${this.getPublicBaseUrl()}${mediaUrl}`,
+          filename: existingName,
+          bytes,
+          isVideo,
+        };
+      }
+    }
+
+    // 2. Localhost `/media/<file>` URL already stored in `this.mediaDir`
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/media\//i.test(trimmed)) {
+      const u = new URL(trimmed);
+      const existingName = path.basename(decodeURIComponent(u.pathname.replace(/^\/media\/+/, '')));
+      const existingPath = path.join(this.mediaDir, existingName);
+      if (existingName && fs.existsSync(existingPath) && fs.statSync(existingPath).isFile()) {
+        const resident = this.preferResidentMediaPath(existingPath);
+        const bytes = fs.statSync(resident).size;
+        const isVideo = /\.(mp4|webm|mov)$/i.test(existingName);
+        const mediaUrl = `/media/${existingName}`;
+        return {
+          mediaUrl,
+          imageUrl: isVideo ? undefined : mediaUrl,
+          videoUrl: isVideo ? mediaUrl : undefined,
+          fullUrl: `${this.getPublicBaseUrl()}${mediaUrl}`,
+          filename: existingName,
+          bytes,
+          isVideo,
+        };
+      }
+    }
+
+    let buf: Buffer;
+    let detectedMime = explicitMimeType || '';
+    let urlPathname = '';
+
+    // 3. `data:<mime>;base64,<payload>` URI
+    const dataMatch = /^data:([^;,]+)?(?:;base64)?,(.*)$/s.exec(trimmed);
+    if (dataMatch) {
+      if (!detectedMime && dataMatch[1]) {
+        detectedMime = dataMatch[1].trim().toLowerCase();
+      }
+      buf = Buffer.from(dataMatch[2].replace(/\s+/g, ''), 'base64');
+    } else if (/^https?:\/\//i.test(trimmed)) {
+      // 4. Remote HTTPS/HTTP CDN download
+      const parsedUrl = new URL(trimmed);
+      urlPathname = parsedUrl.pathname;
+      const res = await fetch(trimmed, {
+        method: 'GET',
+        headers: {
+          Accept: 'image/*,video/*,*/*',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!res.ok) {
+        throw new BridgeHttpError(
+          502,
+          `Failed to download remote media (${res.status}) from ${trimmed.slice(0, 140)}`
+        );
+      }
+      if (!detectedMime) {
+        detectedMime = res.headers.get('content-type') || '';
+      }
+      buf = Buffer.from(await res.arrayBuffer());
+    } else {
+      // 5. Raw base64 payload
+      buf = Buffer.from(trimmed.replace(/\s+/g, ''), 'base64');
+    }
+
+    if (buf.length < 16) {
+      throw new BridgeHttpError(400, 'Ingested media payload is empty or truncated (<16 bytes).');
+    }
+
+    const { ext, isVideo } = this.detectExtensionFromBufferOrMime(buf, detectedMime, urlPathname);
+    const filename = `${safePrefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
+    const outFullPath = path.join(this.mediaDir, filename);
+    fs.writeFileSync(outFullPath, buf);
+    this.mirrorToDistMedia(filename, outFullPath);
+
+    const mediaUrl = `/media/${filename}`;
+    const fullUrl = `${this.getPublicBaseUrl()}${mediaUrl}`;
+
+    return {
+      mediaUrl,
+      imageUrl: isVideo ? undefined : mediaUrl,
+      videoUrl: isVideo ? mediaUrl : undefined,
+      fullUrl,
+      filename,
+      bytes: buf.length,
+      isVideo,
+    };
+  }
+
+  /**
+   * Async bridge event ingest + broadcast: automatically downloads remote CDN URLs or Base64 `dataUrl`
+   * payloads to local `/media/` before recording and broadcasting to Studio WebSocket clients.
+   */
+  public async recordAndBroadcastBridgeEventAsync(
+    raw: Record<string, unknown>
+  ): Promise<BridgeRelayEvent> {
+    const hydrated: Record<string, unknown> = { ...raw };
+    const sourceLower = String(raw.source || 'manual').toLowerCase();
+    const prefix = sourceLower.includes('flow') ? 'flow_live' : 'dreamina_live';
+
+    const rawDataPayload =
+      (typeof raw.dataUrl === 'string' && raw.dataUrl.trim()) ||
+      (typeof raw.dataBase64 === 'string' && raw.dataBase64.trim()) ||
+      '';
+    const rawMime = typeof raw.mimeType === 'string' ? raw.mimeType : undefined;
+
+    try {
+      if (rawDataPayload) {
+        const saved = await this.ingestExternalMediaToDisk(rawDataPayload, prefix, rawMime);
+        hydrated.mediaUrl = saved.mediaUrl;
+        if (saved.isVideo) hydrated.videoUrl = saved.videoUrl;
+        else hydrated.imageUrl = saved.imageUrl;
+      } else {
+        const candidateUrl =
+          (typeof raw.videoUrl === 'string' && raw.videoUrl.trim()) ||
+          (typeof raw.imageUrl === 'string' && raw.imageUrl.trim()) ||
+          (typeof raw.mediaUrl === 'string' && raw.mediaUrl.trim()) ||
+          '';
+        if (
+          candidateUrl &&
+          (candidateUrl.startsWith('data:') ||
+            (/^https?:\/\//i.test(candidateUrl) &&
+              !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/media\//i.test(candidateUrl)))
+        ) {
+          const saved = await this.ingestExternalMediaToDisk(candidateUrl, prefix, rawMime);
+          hydrated.mediaUrl = saved.mediaUrl;
+          if (saved.isVideo) {
+            hydrated.videoUrl = saved.videoUrl;
+          } else {
+            hydrated.imageUrl = saved.imageUrl;
+          }
+        }
+      }
+    } catch (err) {
+      this.log(
+        `Warning: could not mirror external bridge asset locally (${
+          err instanceof Error ? err.message : String(err)
+        })`
+      );
+    }
+
+    delete hydrated.dataUrl;
+    delete hydrated.dataBase64;
+    return this.recordAndBroadcastBridgeEvent(hydrated);
+  }
+
+  // ============================================================================
+  // Bidirectional Live Browser Generation Queue (`/api/bridge/enqueue` & `/jobs/*`)
+  // ============================================================================
+
+  public async enqueueBridgeJob(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const rawTarget = String(params.target || params.provider || 'dreamina').toLowerCase();
+    const target: 'dreamina' | 'google-flow' =
+      rawTarget.includes('flow') || rawTarget.includes('google') ? 'google-flow' : 'dreamina';
+
+    const rawMode = String(params.mode || 'image').toLowerCase();
+    const mode: 'image' | 'video' = rawMode === 'video' ? 'video' : 'image';
+
+    const prompt = String(params.prompt || '').trim();
+    if (!prompt) {
+      throw new BridgeHttpError(400, 'Prompt is required to enqueue a live browser bridge job.');
+    }
+
+    const aspectRatio = String(params.aspectRatio || params.aspect_ratio || '16:9').trim();
+    const durationSec = Math.max(
+      2,
+      Math.min(15, Math.round(Number(params.durationSec ?? params.durationSeconds ?? 5) || 5))
+    );
+    const referenceImages = Array.isArray(params.referenceImages)
+      ? params.referenceImages.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      : [];
+
+    const jobId =
+      typeof params.jobId === 'string' && params.jobId.trim()
+        ? params.jobId.trim()
+        : `bjob_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+    const job: BridgeJobRecord = {
+      jobId,
+      target,
+      mode,
+      prompt,
+      aspectRatio,
+      durationSec,
+      referenceImages,
+      status: 'queued',
+      createdAt: new Date().toISOString(),
+      claimedAt: null,
+      completedAt: null,
+      mediaUrl: null,
+      imageUrl: null,
+      videoUrl: null,
+      fullUrl: null,
+      error: null,
+      creditsRemaining: null,
+    };
+
+    this.bridgeJobs.set(jobId, job);
+
+    // Keep map bounded to recent 200 jobs
+    if (this.bridgeJobs.size > 200) {
+      const oldestKey = this.bridgeJobs.keys().next().value;
+      if (oldestKey) this.bridgeJobs.delete(oldestKey);
+    }
+
+    this.broadcastBridgeWsPayload({
+      type: 'dispatch_bridge_job',
+      job,
+    });
+
+    if (params.waitForResult === false) {
+      return {
+        ok: true,
+        queued: true,
+        jobId: job.jobId,
+        job,
+        connectedClients: this.bridgeWsClients.size,
+      };
+    }
+
+    const timeoutMs = Math.max(
+      1_500,
+      Math.min(300_000, Number(params.timeoutMs) || 180_000)
+    );
+
+    const finishedJob = await new Promise<BridgeJobRecord>((resolve) => {
+      const timer = setTimeout(() => {
+        const list = this.bridgeJobWaiters.get(jobId) || [];
+        this.bridgeJobWaiters.set(
+          jobId,
+          list.filter((item) => item.timer !== timer)
+        );
+        const current = this.bridgeJobs.get(jobId) || job;
+        if (current.status === 'queued' || current.status === 'running') {
+          current.status = 'failed';
+          current.completedAt = new Date().toISOString();
+          current.error =
+            current.status === 'failed' && current.claimedAt
+              ? `Live ${target} browser tab claimed job ${jobId} but timed out after ${Math.round(timeoutMs / 1000)}s before media finished rendering.`
+              : `No active ${target === 'dreamina' ? 'Dreamina (dreamina.capcut.com)' : 'Google Flow (labs.google)'} browser bridge responded within ${Math.round(timeoutMs / 1000)}s. Open ${target === 'dreamina' ? 'https://dreamina.capcut.com/ai-tool/ai-canvas' : 'https://labs.google/fx/tools/flow'} with the Open-DreamFlow Chrome Extension loaded, or run import('${this.getPublicBaseUrl()}/bridge-connector.js') in DevTools Console.`;
+        }
+        resolve(current);
+      }, timeoutMs);
+
+      const list = this.bridgeJobWaiters.get(jobId) || [];
+      list.push({ resolve, timer });
+      this.bridgeJobWaiters.set(jobId, list);
+    });
+
+    if (finishedJob.status !== 'succeeded') {
+      throw new BridgeHttpError(
+        502,
+        finishedJob.error || `Live ${target} browser generation failed.`
+      );
+    }
+
+    return {
+      ok: true,
+      status: 'COMPLETED',
+      jobId: finishedJob.jobId,
+      job: finishedJob,
+      mediaUrl: finishedJob.mediaUrl,
+      imageUrl: finishedJob.imageUrl,
+      videoUrl: finishedJob.videoUrl,
+      fullUrl: finishedJob.fullUrl,
+      engine: target === 'dreamina' ? 'dreamina-bridge' : 'flow-bridge',
+    };
+  }
+
+  public listPendingBridgeJobs(options: {
+    target?: string | null;
+    claim?: boolean;
+  }): BridgeJobRecord[] {
+    const filterTarget = options.target ? options.target.trim().toLowerCase() : '';
+    const normalizedFilter: 'dreamina' | 'google-flow' | '' = filterTarget
+      ? filterTarget.includes('flow') || filterTarget.includes('google')
+        ? 'google-flow'
+        : 'dreamina'
+      : '';
+
+    const matched: BridgeJobRecord[] = [];
+    for (const job of this.bridgeJobs.values()) {
+      if (job.status !== 'queued') continue;
+      if (normalizedFilter && job.target !== normalizedFilter) continue;
+      if (options.claim) {
+        job.status = 'running';
+        job.claimedAt = new Date().toISOString();
+      }
+      matched.push({ ...job });
+    }
+    return matched;
+  }
+
+  public getBridgeJob(jobId: string): BridgeJobRecord | null {
+    return this.bridgeJobs.get(jobId) || null;
+  }
+
+  public async completeBridgeJob(
+    jobId: string,
+    payload: Record<string, unknown>
+  ): Promise<BridgeJobRecord> {
+    let job = this.bridgeJobs.get(jobId);
+    if (!job) {
+      const inferredTarget: 'dreamina' | 'google-flow' = String(
+        payload.target || 'dreamina'
+      )
+        .toLowerCase()
+        .includes('flow')
+        ? 'google-flow'
+        : 'dreamina';
+      job = {
+        jobId,
+        target: inferredTarget,
+        mode: payload.videoUrl ? 'video' : 'image',
+        prompt: String(payload.prompt || ''),
+        aspectRatio: '16:9',
+        durationSec: 5,
+        referenceImages: [],
+        status: 'running',
+        createdAt: new Date().toISOString(),
+      };
+      this.bridgeJobs.set(jobId, job);
+    }
+
+    const rawStatus = String(payload.status || '').toLowerCase();
+    const hasError = Boolean(payload.error) || rawStatus === 'failed' || rawStatus === 'error';
+    const prefix = job.target === 'google-flow' ? 'flow_live' : 'dreamina_live';
+
+    if (hasError) {
+      job.status = 'failed';
+      job.error = String(payload.error || `Live ${job.target} browser job failed.`);
+      job.completedAt = new Date().toISOString();
+    } else {
+      const rawMediaCandidate =
+        (typeof payload.dataUrl === 'string' && payload.dataUrl.trim()) ||
+        (typeof payload.dataBase64 === 'string' && payload.dataBase64.trim()) ||
+        (typeof payload.videoUrl === 'string' && payload.videoUrl.trim()) ||
+        (typeof payload.imageUrl === 'string' && payload.imageUrl.trim()) ||
+        (typeof payload.mediaUrl === 'string' && payload.mediaUrl.trim()) ||
+        '';
+
+      if (!rawMediaCandidate) {
+        throw new BridgeHttpError(
+          400,
+          `Bridge job ${jobId} completion requires imageUrl, videoUrl, dataUrl, or dataBase64.`
+        );
+      }
+
+      const explicitMime = typeof payload.mimeType === 'string' ? payload.mimeType : undefined;
+      const saved = await this.ingestExternalMediaToDisk(rawMediaCandidate, prefix, explicitMime);
+
+      job.status = 'succeeded';
+      job.mediaUrl = saved.mediaUrl;
+      job.imageUrl = saved.isVideo ? null : saved.mediaUrl;
+      job.videoUrl = saved.isVideo ? saved.mediaUrl : null;
+      job.fullUrl = saved.fullUrl;
+      job.error = null;
+      job.completedAt = new Date().toISOString();
+      if (typeof payload.creditsRemaining === 'number') {
+        job.creditsRemaining = payload.creditsRemaining;
+      }
+
+      // Record in bridge inbox & push real-time `bridge_asset` event to Studio
+      this.recordAndBroadcastBridgeEvent({
+        type: 'bridge_asset',
+        source: job.target === 'google-flow' ? 'flow' : 'dreamina',
+        mediaUrl: job.mediaUrl,
+        videoUrl: job.videoUrl,
+        imageUrl: job.imageUrl,
+        title:
+          job.target === 'google-flow'
+            ? 'Google Flow · Live Capture'
+            : 'Dreamina · Live Capture',
+        prompt: job.prompt,
+        metadata: {
+          jobId: job.jobId,
+          mode: job.mode,
+          aspectRatio: job.aspectRatio,
+          creditsRemaining: job.creditsRemaining,
+        },
+      });
+    }
+
+    // Wake any waiting `/api/bridge/enqueue` HTTP caller immediately
+    const waiters = this.bridgeJobWaiters.get(jobId);
+    if (waiters && waiters.length > 0) {
+      this.bridgeJobWaiters.delete(jobId);
+      for (const w of waiters) {
+        clearTimeout(w.timer);
+        w.resolve(job);
+      }
+    }
+
+    this.broadcastBridgeWsPayload({
+      type: 'bridge_job_complete',
+      job,
+    });
+
+    return job;
+  }
+
+  // ============================================================================
+  // Live Cloud Provider Verification & Real Image Generation (`/api/verify-provider`, `/api/generate-image`)
+  // ============================================================================
+
+  private async loadProviderSdk(): Promise<Record<string, any>> {
+    const sdkPath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '../../provider-sdk/dist/index.js'
+    );
+    if (!fs.existsSync(sdkPath)) {
+      throw new BridgeHttpError(
+        500,
+        `@open-dreamflow/provider-sdk build not found at ${sdkPath}. Run npm run build:sdk first.`
+      );
+    }
+    return (await import(pathToFileURL(sdkPath).href)) as Record<string, any>;
+  }
+
+  private readFileAsBase64Inline(filePath: string): {
+    bytesBase64Encoded: string;
+    mimeType: string;
+  } {
+    const resident = this.preferResidentMediaPath(filePath);
+    const buf = fs.readFileSync(resident);
+    const ext = path.extname(resident).toLowerCase();
+    const mimeType =
+      ext === '.jpg' || ext === '.jpeg'
+        ? 'image/jpeg'
+        : ext === '.webp'
+          ? 'image/webp'
+          : 'image/png';
+    return {
+      bytesBase64Encoded: buf.toString('base64'),
+      mimeType,
+    };
+  }
+
+  private async writeGoogleLiveImagePng(
+    base64Data: string,
+    mimeType: string
+  ): Promise<{ filename: string; imageUrl: string; fullUrl: string; bytes: number }> {
+    fs.mkdirSync(this.mediaDir, { recursive: true });
+    const rawBuf = Buffer.from(base64Data.replace(/\s+/g, ''), 'base64');
+    const filename = `google_live_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.png`;
+    const outFullPath = path.join(this.mediaDir, filename);
+
+    const isAlreadyPng =
+      rawBuf.length > 8 &&
+      rawBuf[0] === 0x89 &&
+      rawBuf[1] === 0x50 &&
+      rawBuf[2] === 0x4e &&
+      rawBuf[3] === 0x47;
+
+    if (isAlreadyPng || !this.ffmpegAvailable) {
+      fs.writeFileSync(outFullPath, rawBuf);
+    } else {
+      const inExt = EXT_BY_MIME[mimeType.toLowerCase()] || '.jpg';
+      const tmpIn = path.join(
+        os.tmpdir(),
+        `df_gimg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${inExt}`
+      );
+      try {
+        fs.writeFileSync(tmpIn, rawBuf);
+        await runSubprocess(this.ffmpegPath, [
+          '-y',
+          '-i',
+          tmpIn,
+          '-frames:v',
+          '1',
+          outFullPath,
+          '-loglevel',
+          'error',
+        ]);
+      } finally {
+        try {
+          if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn);
+        } catch {
+          // Ignore
+        }
+      }
+    }
+
+    const bytes = fs.statSync(outFullPath).size;
+    this.mirrorToDistMedia(filename, outFullPath);
+    const imageUrl = `/media/${filename}`;
+    return {
+      filename,
+      imageUrl,
+      fullUrl: `${this.getPublicBaseUrl()}${imageUrl}`,
+      bytes,
+    };
+  }
+
+  /**
+   * `POST /api/verify-provider`:
+   * Honest live credential & connectivity check for Google AI Studio (Veo + Gemini Image),
+   * ComfyUI, Fal.ai, Replicate, Seedance, and Live Browser Bridge sessions.
+   */
+  public async verifyProvider(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const rawProvider = String(params.provider || '').trim();
+    if (!rawProvider) {
+      return {
+        ok: false,
+        valid: false,
+        error: 'Missing "provider" field in /api/verify-provider request.',
+      };
+    }
+
+    let provider: NormalizedProviderChoice;
+    try {
+      provider = normalizeProviderChoice(rawProvider);
+    } catch (err) {
+      return {
+        ok: false,
+        valid: false,
+        provider: rawProvider,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    const apiKey = typeof params.apiKey === 'string' ? params.apiKey.trim() : '';
+    const baseUrl = typeof params.baseUrl === 'string' ? params.baseUrl.trim() : '';
+
+    if (provider === 'gemini') {
+      if (!apiKey) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'gemini',
+          error: 'Google AI Studio API key is required.',
+        };
+      }
+      try {
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.GeminiOmniClient({ apiKey });
+        const summary = await client.listAvailableModels(AbortSignal.timeout(12_000));
+        return {
+          ok: true,
+          valid: true,
+          provider: 'gemini',
+          videoModels: summary.videoModels,
+          imageModels: summary.imageModels,
+          allCount: summary.allCount,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'gemini',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    if (provider === 'comfyui') {
+      const cleanBase = (baseUrl || 'http://127.0.0.1:8188').replace(/\/+$/, '');
+      try {
+        const res = await fetch(`${cleanBase}/system_stats`, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: AbortSignal.timeout(4_500),
+        });
+        if (!res.ok) {
+          return {
+            ok: false,
+            valid: false,
+            provider: 'comfyui',
+            baseUrl: cleanBase,
+            error: `ComfyUI server responded with HTTP ${res.status} at ${cleanBase}/system_stats`,
+          };
+        }
+        const stats = (await res.json()) as Record<string, unknown>;
+        return {
+          ok: true,
+          valid: true,
+          provider: 'comfyui',
+          baseUrl: cleanBase,
+          stats,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'comfyui',
+          baseUrl: cleanBase,
+          error: `Unable to reach ComfyUI at ${cleanBase}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        };
+      }
+    }
+
+    if (provider === 'dreamina-bridge' || provider === 'flow-bridge') {
+      const targetLabel = provider === 'dreamina-bridge' ? 'dreamina' : 'flow';
+      const hasWsClient = this.bridgeWsClients.size > 0;
+      const recentSession = this.bridgeEvents.find((e) =>
+        String(e.source || '')
+          .toLowerCase()
+          .includes(targetLabel)
+      );
+      const valid = hasWsClient || Boolean(recentSession);
+      return {
+        ok: valid,
+        valid,
+        provider,
+        connectedClients: this.bridgeWsClients.size,
+        lastSeenAt: recentSession?.timestamp || null,
+        connectorUrl: `${this.getPublicBaseUrl()}/bridge-connector.js`,
+        error: valid
+          ? undefined
+          : `No live ${provider === 'dreamina-bridge' ? 'Dreamina' : 'Google Flow'} browser tab connected yet. Load extensions/chrome-bridge or run import('${this.getPublicBaseUrl()}/bridge-connector.js') in the tab's DevTools Console.`,
+      };
+    }
+
+    if (provider === 'replicate') {
+      if (!apiKey) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'replicate',
+          error: 'Replicate API token is required.',
+        };
+      }
+      try {
+        const res = await fetch('https://api.replicate.com/v1/account', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            Accept: 'application/json',
+          },
+          signal: AbortSignal.timeout(8_000),
+        });
+        if (!res.ok) {
+          return {
+            ok: false,
+            valid: false,
+            provider: 'replicate',
+            error: `Replicate authentication failed (HTTP ${res.status}).`,
+          };
+        }
+        const acct = (await res.json()) as Record<string, unknown>;
+        return {
+          ok: true,
+          valid: true,
+          provider: 'replicate',
+          username: acct.username || null,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'replicate',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    if (provider === 'fal') {
+      if (!apiKey) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'fal',
+          error: 'Fal.ai API key is required.',
+        };
+      }
+      try {
+        const res = await fetch(
+          'https://queue.fal.run/fal-ai/fast-sdxl/requests/00000000-0000-0000-0000-000000000000/status',
+          {
+            method: 'GET',
+            headers: {
+              Authorization: `Key ${apiKey}`,
+              Accept: 'application/json',
+            },
+            signal: AbortSignal.timeout(8_000),
+          }
+        );
+        if (res.status === 401 || res.status === 403) {
+          return {
+            ok: false,
+            valid: false,
+            provider: 'fal',
+            error: `Fal.ai rejected API key (HTTP ${res.status}).`,
+          };
+        }
+        return {
+          ok: true,
+          valid: true,
+          provider: 'fal',
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'fal',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    if (provider === 'seedance') {
+      if (!apiKey) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'seedance',
+          error: 'Seedance / Volcengine Ark API key is required.',
+        };
+      }
+      const endpoint = (baseUrl || 'https://ark.cn-beijing.volces.com/api/v3').replace(/\/+$/, '');
+      try {
+        const res = await fetch(`${endpoint}/models`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            Accept: 'application/json',
+          },
+          signal: AbortSignal.timeout(8_000),
+        });
+        if (res.status === 401 || res.status === 403) {
+          return {
+            ok: false,
+            valid: false,
+            provider: 'seedance',
+            error: `Seedance endpoint rejected API key (HTTP ${res.status}).`,
+          };
+        }
+        if (!res.ok) {
+          return {
+            ok: false,
+            valid: false,
+            provider: 'seedance',
+            error: `Seedance endpoint returned HTTP ${res.status}.`,
+          };
+        }
+        return {
+          ok: true,
+          valid: true,
+          provider: 'seedance',
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'seedance',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    return {
+      ok: this.ffmpegAvailable,
+      valid: this.ffmpegAvailable,
+      provider: 'ffmpeg-local',
+      ffmpegPath: this.ffmpegPath,
+      error: this.ffmpegAvailable ? undefined : `FFmpeg not found at ${this.ffmpegPath}`,
+    };
+  }
+
+  /**
+   * `POST /api/generate-image`:
+   * Real native image synthesis via Google Gemini (`gemini-3.1-flash-image-preview` / `imagen-3.0`),
+   * Live Browser Bridge (`dreamina-bridge` / `flow-bridge`), ComfyUI, or explicit local FFmpeg fallback.
+   * NEVER silently fakes cloud generations with FFmpeg when a cloud/bridge provider is selected.
+   */
+  public async generateImage(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const prompt = String(params.prompt || '').trim();
+    if (!prompt) {
+      throw new BridgeHttpError(400, 'Prompt is required for /api/generate-image.');
+    }
+
+    const rawApiKey = typeof params.apiKey === 'string' ? params.apiKey.trim() : '';
+    const providerChoice = normalizeProviderChoice(params.provider, rawApiKey);
+    const aspectRatio = String(params.aspectRatio || params.aspect_ratio || '16:9').trim();
+    const requestedModel = typeof params.model === 'string' ? params.model.trim() : undefined;
+
+    if (providerChoice === 'dreamina-bridge' || providerChoice === 'flow-bridge') {
+      const bridgeOut = await this.enqueueBridgeJob({
+        target: providerChoice === 'dreamina-bridge' ? 'dreamina' : 'google-flow',
+        mode: 'image',
+        prompt,
+        aspectRatio,
+        referenceImages: Array.isArray(params.referenceImages) ? params.referenceImages : [],
+        waitForResult: params.waitForResult !== false,
+        timeoutMs: params.timeoutMs,
+      });
+      return {
+        ...bridgeOut,
+        tool: 'generate_image',
+        prompt,
+        aspectRatio,
+        engine: providerChoice,
+      };
+    }
+
+    if (providerChoice === 'gemini') {
+      if (!rawApiKey) {
+        throw new BridgeHttpError(
+          400,
+          'Google AI Studio API key is required when provider="gemini" is selected. Open Provider Settings to paste your key or switch to Live Browser Bridge / Local FFmpeg.'
+        );
+      }
+
+      const tempFiles: string[] = [];
+      try {
+        const rawRefs = Array.isArray(params.referenceImages) ? params.referenceImages : [];
+        if (params.imageUrl && typeof params.imageUrl === 'string') {
+          rawRefs.unshift(params.imageUrl);
+        }
+        const referenceImages: Array<{ data: string; mimeType: string }> = [];
+        for (const r of rawRefs.slice(0, 6)) {
+          const resolved = await this.resolveInputMediaPath(r, tempFiles);
+          if (resolved) {
+            const inline = this.readFileAsBase64Inline(resolved);
+            referenceImages.push({
+              data: inline.bytesBase64Encoded,
+              mimeType: inline.mimeType,
+            });
+          }
+        }
+
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.GeminiOmniClient({ apiKey: rawApiKey });
+        const result = await client.generateNativeImage({
+          prompt,
+          model: requestedModel,
+          aspectRatio,
+          referenceImages,
+        });
+
+        const saved = await this.writeGoogleLiveImagePng(result.base64Data, result.mimeType);
+        return {
+          ok: true,
+          status: 'COMPLETED',
+          tool: 'generate_image',
+          imageUrl: saved.imageUrl,
+          mediaUrl: saved.imageUrl,
+          fullUrl: saved.fullUrl,
+          filename: saved.filename,
+          bytes: saved.bytes,
+          model: result.model,
+          textResponse: result.textResponse,
+          prompt,
+          aspectRatio,
+          engine: 'google-gemini-live',
+        };
+      } catch (err) {
+        if (err instanceof BridgeHttpError) throw err;
+        const status =
+          typeof (err as { statusCode?: number })?.statusCode === 'number' &&
+          ((err as { statusCode: number }).statusCode === 401 ||
+            (err as { statusCode: number }).statusCode === 403 ||
+            (err as { statusCode: number }).statusCode === 400)
+            ? (err as { statusCode: number }).statusCode
+            : 502;
+        throw new BridgeHttpError(status, err instanceof Error ? err.message : String(err));
+      } finally {
+        for (const tmp of tempFiles) {
+          try {
+            if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+          } catch {
+            // Ignore
+          }
+        }
+      }
+    }
+
+    if (providerChoice === 'seedance') {
+      if (!rawApiKey) {
+        throw new BridgeHttpError(
+          400,
+          'Seedance API key is required when provider="seedance" is selected (or choose "dreamina-bridge" for $0 browser subscription credits).'
+        );
+      }
+      try {
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.SeedanceClient({
+          apiKey: rawApiKey,
+          baseUrl: typeof params.baseUrl === 'string' && params.baseUrl ? params.baseUrl : undefined,
+        });
+        const sheet = await client.generateContactSheet9Grid({
+          prompt,
+          grid: '2x2',
+        });
+        const firstUrl = sheet.panelUrls?.[0] || sheet.sheetImageUrl;
+        if (!firstUrl) {
+          throw new BridgeHttpError(502, 'Seedance API returned no image URL.');
+        }
+        const saved = await this.ingestExternalMediaToDisk(firstUrl, 'seedance_live');
+        return {
+          ok: true,
+          status: 'COMPLETED',
+          tool: 'generate_image',
+          imageUrl: saved.mediaUrl,
+          mediaUrl: saved.mediaUrl,
+          fullUrl: saved.fullUrl,
+          bytes: saved.bytes,
+          prompt,
+          aspectRatio,
+          engine: 'seedance-live',
+        };
+      } catch (err) {
+        if (err instanceof BridgeHttpError) throw err;
+        throw new BridgeHttpError(502, err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    if (providerChoice === 'comfyui' || providerChoice === 'fal' || providerChoice === 'replicate') {
+      if ((providerChoice === 'fal' || providerChoice === 'replicate') && !rawApiKey) {
+        throw new BridgeHttpError(
+          400,
+          `API key is required when provider="${providerChoice}" is selected.`
+        );
+      }
+      throw new BridgeHttpError(
+        400,
+        `Provider "${providerChoice}" requires a configured image model endpoint or use provider="gemini" / "dreamina-bridge" / "flow-bridge" / "ffmpeg-local".`
+      );
+    }
+
+    // Explicit Local Offline FFmpeg Reference Plate Synthesis (`provider === 'ffmpeg-local'`)
+    if (!this.ffmpegAvailable) {
+      throw new BridgeHttpError(500, `FFmpeg binary not found at ${this.ffmpegPath}`);
+    }
+
+    fs.mkdirSync(this.mediaDir, { recursive: true });
+    const tempFiles: string[] = [];
+    try {
+      const lower = prompt.toLowerCase();
+      const refCandidate =
+        lower.includes('cliff') || lower.includes('coast') || lower.includes('ocean')
+          ? 'real_coastal_cliffs.jpg'
+          : lower.includes('atelier') || lower.includes('interior') || lower.includes('room')
+            ? 'real_atelier_interior.jpg'
+            : lower.includes('alpine') || lower.includes('mountain')
+              ? 'real_alpine_road.jpg'
+              : lower.includes('kyoto') || lower.includes('timber')
+                ? 'real_kyoto_timber.jpg'
+                : 'real_courtyard_sun.jpg';
+
+      const sourcePath = await this.resolveImageOrFallback(
+        params.imageUrl || refCandidate,
+        tempFiles
+      );
+      const dims: Record<string, { w: number; h: number }> = {
+        '16:9': { w: 1600, h: 900 },
+        '9:16': { w: 900, h: 1600 },
+        '21:9': { w: 1890, h: 810 },
+        '1:1': { w: 1200, h: 1200 },
+      };
+      const spec = dims[aspectRatio] || dims['16:9'];
+      const outFilename = `local_frame_${Date.now()}.png`;
+      const outFullPath = path.join(this.mediaDir, outFilename);
+
+      await runSubprocess(this.ffmpegPath, [
+        '-y',
+        '-i',
+        sourcePath,
+        '-vf',
+        `trim=end_frame=1,setpts=PTS-STARTPTS,scale=${spec.w}:${spec.h}:force_original_aspect_ratio=increase,crop=${spec.w}:${spec.h},colorbalance=rs=0.04:gs=0.015:bs=-0.02,unsharp=5:5:0.75:3:3:0.3,format=rgb24`,
+        '-frames:v',
+        '1',
+        outFullPath,
+        '-loglevel',
+        'error',
+      ]);
+
+      const bytes = fs.statSync(outFullPath).size;
+      this.mirrorToDistMedia(outFilename, outFullPath);
+      const imageUrl = `/media/${outFilename}`;
+      return {
+        ok: true,
+        status: 'COMPLETED',
+        tool: 'generate_image',
+        imageUrl,
+        mediaUrl: imageUrl,
+        fullUrl: `${this.getPublicBaseUrl()}${imageUrl}`,
+        filename: outFilename,
+        bytes,
+        prompt,
+        aspectRatio,
+        engine: 'ffmpeg-local',
+      };
+    } finally {
+      for (const tmp of tempFiles) {
+        try {
+          if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+        } catch {
+          // Ignore
+        }
+      }
+    }
+  }
+
+  /**
+   * Self-contained Browser Live-Bridge Connector (`GET /bridge-connector.js`):
+   * Can be loaded via `import('http://localhost:3001/bridge-connector.js')` or Userscript
+   * directly inside `https://dreamina.capcut.com/*` or `https://labs.google/*` (`flow.google.com`).
+   */
+  public buildBrowserBridgeConnectorScript(): string {
+    const origin = this.getPublicBaseUrl();
+    const wsUrl = `${origin.replace(/^http/i, 'ws')}/bridge`;
+
+    return `/**
+ * Open-DreamFlow Live Browser Bridge Connector
+ * Origin: ${origin}
+ */
+(function () {
+  if (typeof window === 'undefined') return;
+  if (window.__OPEN_DREAMFLOW_CONNECTOR_ACTIVE__) {
+    console.log('[Open-DreamFlow Bridge] Already active on this tab.');
+    return;
+  }
+  window.__OPEN_DREAMFLOW_CONNECTOR_ACTIVE__ = true;
+
+  const BRIDGE_HTTP = ${JSON.stringify(origin)};
+  const BRIDGE_WS = ${JSON.stringify(wsUrl)};
+  const host = String(location.hostname || '').toLowerCase();
+  const TARGET =
+    host.includes('dreamina') || host.includes('capcut') || host.includes('jimeng')
+      ? 'dreamina'
+      : 'google-flow';
+
+  let busy = false;
+  const handledIds = new Set();
+  let ws = null;
+  let badgeTextEl = null;
+  let badgeDotEl = null;
+
+  function setStatus(label, ok) {
+    if (badgeTextEl) badgeTextEl.textContent = label;
+    if (badgeDotEl) {
+      badgeDotEl.style.background = ok === false ? '#D97757' : '#65A36E';
+    }
+  }
+
+  function mountStatusBadge() {
+    if (document.getElementById('open-dreamflow-live-connector-pill')) return;
+    const pill = document.createElement('div');
+    pill.id = 'open-dreamflow-live-connector-pill';
+    pill.style.cssText = [
+      'position:fixed',
+      'right:16px',
+      'bottom:16px',
+      'z-index:2147483646',
+      'display:flex',
+      'align-items:center',
+      'gap:8px',
+      'padding:8px 12px',
+      'border-radius:999px',
+      'background:rgba(25,25,25,0.94)',
+      'border:1px solid rgba(255,255,255,0.14)',
+      'color:#ECEAE4',
+      'font:500 12px/1.2 -apple-system,BlinkMacSystemFont,"Inter",sans-serif',
+      'box-shadow:0 8px 24px rgba(0,0,0,0.42)',
+      'backdrop-filter:blur(10px)',
+    ].join(';');
+
+    const dot = document.createElement('span');
+    dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:#65A36E;flex-shrink:0;';
+    badgeDotEl = dot;
+
+    const text = document.createElement('span');
+    text.textContent = 'Open-DreamFlow · ' + (TARGET === 'dreamina' ? 'Dreamina' : 'Google Flow') + ' Ready';
+    badgeTextEl = text;
+
+    const sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.textContent = 'Push Latest';
+    sendBtn.style.cssText = [
+      'margin-left:4px',
+      'padding:4px 8px',
+      'border-radius:999px',
+      'border:1px solid rgba(200,159,129,0.45)',
+      'background:rgba(200,159,129,0.18)',
+      'color:#F3EDE4',
+      'font:600 11px/1 -apple-system,BlinkMacSystemFont,sans-serif',
+      'cursor:pointer',
+    ].join(';');
+    sendBtn.onclick = function () {
+      pushLatestVisibleAsset();
+    };
+
+    pill.appendChild(dot);
+    pill.appendChild(text);
+    pill.appendChild(sendBtn);
+    (document.body || document.documentElement).appendChild(pill);
+  }
+
+  function sleep(ms) {
+    return new Promise(function (r) { setTimeout(r, ms); });
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function isVisible(el) {
+    if (!el || !(el instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+      return false;
+    }
+    const rect = el.getBoundingClientRect();
+    return rect.width > 8 && rect.height > 8;
+  }
+
+  async function extractElementDataUrl(el) {
+    const src = el.currentSrc || el.src || '';
+    if (!src) return '';
+    if (src.startsWith('data:')) return src;
+
+    try {
+      const resp = await fetch(src, { credentials: 'include' });
+      if (resp.ok) {
+        const blob = await resp.blob();
+        if (blob.size > 64 && blob.size < 48 * 1024 * 1024) {
+          return await new Promise(function (resolve) {
+            const reader = new FileReader();
+            reader.onloadend = function () {
+              resolve(typeof reader.result === 'string' ? reader.result : '');
+            };
+            reader.onerror = function () { resolve(''); };
+            reader.readAsDataURL(blob);
+          });
+        }
+      }
+    } catch (_e) {
+      // Fallback to canvas for cross-origin images with CORS enabled
+    }
+
+    if (el.tagName === 'IMG' && el.naturalWidth > 0 && el.naturalHeight > 0) {
+      try {
+        const c = document.createElement('canvas');
+        c.width = el.naturalWidth;
+        c.height = el.naturalHeight;
+        const ctx = c.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(el, 0, 0);
+          return c.toDataURL('image/png');
+        }
+      } catch (_e2) {
+        return '';
+      }
+    }
+    return '';
+  }
+
+  function snapshotExistingMedia() {
+    const imgs = new Set();
+    const vids = new Set();
+    document.querySelectorAll('img').forEach(function (img) {
+      const s = img.currentSrc || img.src;
+      if (s) imgs.add(s);
+    });
+    document.querySelectorAll('video, video source').forEach(function (v) {
+      const s = v.currentSrc || v.src;
+      if (s) vids.add(s);
+    });
+    return { imgs: imgs, vids: vids };
+  }
+
+  function findPromptEditor() {
+    const selectors = [
+      '.tiptap.ProseMirror[contenteditable="true"]',
+      'div.ProseMirror[contenteditable="true"]',
+      'div[contenteditable="true"][role="textbox"]',
+      'textarea[placeholder*="Describe" i]',
+      'textarea[placeholder*="prompt" i]',
+      'textarea[placeholder*="描述" i]',
+      'textarea:not([disabled])',
+      'div[contenteditable="true"]',
+    ];
+    for (let i = 0; i < selectors.length; i++) {
+      const nodes = Array.from(document.querySelectorAll(selectors[i]));
+      const visible = nodes.find(isVisible);
+      if (visible) return visible;
+    }
+    return null;
+  }
+
+  async function ensureDreaminaCanvasPromptOpen(mode) {
+    let editor = findPromptEditor();
+    if (editor) return editor;
+
+    const wantVideo = mode === 'video';
+    const labelRegex = wantVideo ? /^(videos?|视频)$/i : /^(images?|图片)$/i;
+
+    // 1. Try clicking an existing Images / Videos generator card or left-dock button
+    const candidates = Array.from(
+      document.querySelectorAll('button, [role="button"], div[class*="node"], span')
+    );
+    for (let i = 0; i < candidates.length; i++) {
+      const el = candidates[i];
+      if (!isVisible(el)) continue;
+      const label = (
+        (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) ||
+        el.textContent ||
+        ''
+      ).trim();
+      if (labelRegex.test(label)) {
+        el.click();
+        await sleep(750);
+        editor = findPromptEditor();
+        if (editor) return editor;
+      }
+    }
+
+    // 2. Fallback: left dock 48px icon buttons on Dreamina AI Canvas
+    const leftRailBtns = Array.from(document.querySelectorAll('button, [role="button"]')).filter(
+      function (b) {
+        if (!isVisible(b)) return false;
+        const r = b.getBoundingClientRect();
+        return r.left >= 0 && r.left < 88 && r.top > 80 && r.width <= 64 && r.height <= 64;
+      }
+    );
+    if (leftRailBtns.length > 0) {
+      const pick = wantVideo && leftRailBtns[1] ? leftRailBtns[1] : leftRailBtns[0];
+      pick.click();
+      await sleep(800);
+      editor = findPromptEditor();
+    }
+    return editor;
+  }
+
+  function injectPromptIntoEditor(editor, prompt) {
+    editor.focus();
+    if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
+      const proto =
+        editor instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (setter) setter.call(editor, prompt);
+      else editor.value = prompt;
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
+      return;
+    }
+
+    try {
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      document.execCommand('selectAll', false, undefined);
+      document.execCommand('insertText', false, prompt);
+    } catch (_e) {
+      // Fallback below
+    }
+
+    if (!String(editor.textContent || '').trim()) {
+      editor.innerHTML = '<p>' + escapeHtml(prompt) + '</p>';
+      editor.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: prompt,
+        })
+      );
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+
+  function findActiveGenerateButton(editor) {
+    const isEnabled = function (btn) {
+      return (
+        btn &&
+        isVisible(btn) &&
+        !btn.disabled &&
+        btn.getAttribute('aria-disabled') !== 'true'
+      );
+    };
+
+    const ariaExact = Array.from(
+      document.querySelectorAll(
+        'button[aria-label="Generate"], button[aria-label*="Generate" i], button[aria-label*="Create" i]'
+      )
+    ).find(isEnabled);
+    if (ariaExact) return ariaExact;
+
+    const form = editor && editor.closest ? editor.closest('form') : null;
+    if (form) {
+      const formBtns = Array.from(
+        form.querySelectorAll('button[type="submit"], button.rounded-full, button')
+      ).filter(isEnabled);
+      if (formBtns.length > 0) {
+        return formBtns[formBtns.length - 1];
+      }
+    }
+
+    const allBtns = Array.from(document.querySelectorAll('button, [role="button"]')).filter(
+      isEnabled
+    );
+    return (
+      allBtns.find(function (b) {
+        const txt = ((b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '')).trim();
+        return /^(generate|create|make|submit|生成|立即生成)/i.test(txt);
+      }) || null
+    );
+  }
+
+  async function executeJobInDom(job) {
+    setStatus('Running ' + job.mode + ' job…', true);
+    const baseline = snapshotExistingMedia();
+
+    const editor =
+      TARGET === 'dreamina'
+        ? await ensureDreaminaCanvasPromptOpen(job.mode)
+        : findPromptEditor();
+
+    if (!editor) {
+      throw new Error(
+        'Prompt input not visible on ' +
+          TARGET +
+          '. Ensure you are signed in and have opened the canvas or generator.'
+      );
+    }
+
+    injectPromptIntoEditor(editor, job.prompt);
+    await sleep(450);
+
+    let genBtn = null;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      genBtn = findActiveGenerateButton(editor);
+      if (genBtn) break;
+      await sleep(250);
+    }
+    if (!genBtn) {
+      throw new Error(
+        'Generate button remained disabled or hidden on ' +
+          TARGET +
+          '. Check credits or sign-in status.'
+      );
+    }
+
+    genBtn.click();
+    setStatus('Synthesizing on ' + (TARGET === 'dreamina' ? 'Dreamina' : 'Flow') + '…', true);
+
+    const deadline = Date.now() + 175000;
+    while (Date.now() < deadline) {
+      await sleep(2000);
+
+      // 1. Check for newly rendered <video>
+      const videos = Array.from(document.querySelectorAll('video'));
+      for (let vIdx = 0; vIdx < videos.length; vIdx++) {
+        const v = videos[vIdx];
+        const srcEl = v.querySelector('source');
+        const vSrc = v.currentSrc || v.src || (srcEl ? srcEl.src : '');
+        if (!vSrc || baseline.vids.has(vSrc)) continue;
+        if (v.readyState >= 2 || v.videoWidth > 0 || vSrc.startsWith('http')) {
+          const dataUrl = await extractElementDataUrl(v);
+          return {
+            status: 'succeeded',
+            videoUrl: vSrc.startsWith('http') ? vSrc : undefined,
+            dataUrl: dataUrl || undefined,
+          };
+        }
+      }
+
+      // 2. If mode === 'image' (or Flow image card), check for newly rendered high-res <img>
+      if (job.mode !== 'video') {
+        const imgs = Array.from(document.querySelectorAll('img'));
+        for (let iIdx = 0; iIdx < imgs.length; iIdx++) {
+          const img = imgs[iIdx];
+          const iSrc = img.currentSrc || img.src || '';
+          if (!iSrc || baseline.imgs.has(iSrc)) continue;
+          if (!img.complete) continue;
+          const isCdn = /byteimg|ibytedtos|dreamina|capcut|googleapis|googleusercontent/i.test(iSrc);
+          const bigEnough =
+            (img.naturalWidth >= 512 && img.naturalHeight >= 384) ||
+            (isCdn && img.naturalWidth >= 384 && img.naturalHeight >= 384);
+          if (!bigEnough) continue;
+
+          const dataUrl = await extractElementDataUrl(img);
+          return {
+            status: 'succeeded',
+            imageUrl: iSrc.startsWith('http') ? iSrc : undefined,
+            dataUrl: dataUrl || undefined,
+          };
+        }
+      }
+    }
+
+    throw new Error('Timed out after 175s waiting for new media element in ' + TARGET + ' DOM.');
+  }
+
+  async function runClaimedJob(job) {
+    if (!job || !job.jobId || handledIds.has(job.jobId)) return;
+    handledIds.add(job.jobId);
+    busy = true;
+    try {
+      const out = await executeJobInDom(job);
+      await fetch(BRIDGE_HTTP + '/api/bridge/jobs/' + encodeURIComponent(job.jobId) + '/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({ target: TARGET }, out)),
+      });
+      setStatus('Delivered to Studio ✓', true);
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      setStatus('Error: ' + msg.slice(0, 34), false);
+      try {
+        await fetch(BRIDGE_HTTP + '/api/bridge/jobs/' + encodeURIComponent(job.jobId) + '/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'failed', target: TARGET, error: msg }),
+        });
+      } catch (_e) {}
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function pushLatestVisibleAsset() {
+    try {
+      const vids = Array.from(document.querySelectorAll('video')).filter(function (v) {
+        return Boolean(v.currentSrc || v.src);
+      });
+      if (vids.length > 0) {
+        const lastV = vids[vids.length - 1];
+        const dataUrl = await extractElementDataUrl(lastV);
+        await fetch(BRIDGE_HTTP + '/api/bridge/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'bridge_asset',
+            source: TARGET === 'dreamina' ? 'dreamina' : 'flow',
+            videoUrl: (lastV.currentSrc || lastV.src || '').startsWith('http')
+              ? lastV.currentSrc || lastV.src
+              : undefined,
+            dataUrl: dataUrl || undefined,
+            title: (TARGET === 'dreamina' ? 'Dreamina' : 'Google Flow') + ' · Live Video',
+          }),
+        });
+        setStatus('Pushed video to Studio ✓', true);
+        return;
+      }
+
+      const imgs = Array.from(document.querySelectorAll('img')).filter(function (img) {
+        return img.complete && img.naturalWidth >= 384 && img.naturalHeight >= 384;
+      });
+      if (imgs.length > 0) {
+        const lastImg = imgs[imgs.length - 1];
+        const dataUrl = await extractElementDataUrl(lastImg);
+        await fetch(BRIDGE_HTTP + '/api/bridge/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'bridge_asset',
+            source: TARGET === 'dreamina' ? 'dreamina' : 'flow',
+            imageUrl: (lastImg.currentSrc || lastImg.src || '').startsWith('http')
+              ? lastImg.currentSrc || lastImg.src
+              : undefined,
+            dataUrl: dataUrl || undefined,
+            title: (TARGET === 'dreamina' ? 'Dreamina' : 'Google Flow') + ' · Live Frame',
+          }),
+        });
+        setStatus('Pushed image to Studio ✓', true);
+      }
+    } catch (e) {
+      setStatus('Push failed', false);
+    }
+  }
+
+  async function pollPendingJobs() {
+    if (busy) return;
+    try {
+      const res = await fetch(
+        BRIDGE_HTTP + '/api/bridge/jobs/pending?target=' + encodeURIComponent(TARGET) + '&claim=1'
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && Array.isArray(data.jobs) && data.jobs.length > 0) {
+        await runClaimedJob(data.jobs[0]);
+      }
+    } catch (_e) {
+      // Server temporarily unreachable
+    }
+  }
+
+  function connectWs() {
+    try {
+      ws = new WebSocket(BRIDGE_WS);
+      ws.onopen = function () {
+        setStatus('Open-DreamFlow · ' + (TARGET === 'dreamina' ? 'Dreamina' : 'Flow') + ' Live', true);
+        ws.send(
+          JSON.stringify({
+            type: 'bridge_session',
+            source: TARGET === 'dreamina' ? 'dreamina' : 'flow',
+            title: 'Live Browser Connector Active (' + TARGET + ')',
+          })
+        );
+      };
+      ws.onmessage = function (ev) {
+        try {
+          const msg = JSON.parse(String(ev.data || '{}'));
+          if (
+            msg.type === 'dispatch_bridge_job' &&
+            msg.job &&
+            msg.job.target === TARGET &&
+            !busy
+          ) {
+            pollPendingJobs();
+          }
+        } catch (_e) {}
+      };
+      ws.onclose = function () {
+        setTimeout(connectWs, 4000);
+      };
+    } catch (_e) {
+      setTimeout(connectWs, 4000);
+    }
+  }
+
+  mountStatusBadge();
+  connectWs();
+  setInterval(pollPendingJobs, 2500);
+  console.log('[Open-DreamFlow Bridge] Live connector active for target=' + TARGET + ' -> ' + BRIDGE_HTTP);
+})();
+`;
+  }
+
   // ============================================================================
   // Stage 5 Keyframe Bridge, Audio/Voiceover TTS + Waveform, Video & Timeline
   // ============================================================================
@@ -1680,89 +3601,221 @@ export class McpStdioBridgeServer {
       params.lastFrame ??
       params.endFrame;
 
-    // Optional Zero-Markup BYOK Cloud Pass-Through
+    // Live Cloud & Browser Bridge Routing (Strict No-Fake Policy when explicit provider is selected)
     const rawApiKey = typeof params.apiKey === 'string' ? params.apiKey.trim() : '';
-    const providerName = String(params.provider || '').toLowerCase();
-    if (rawApiKey && rawApiKey !== 'local' && rawApiKey !== 'ffmpeg') {
-      try {
-        const sdkPath = path.resolve(
-          path.dirname(fileURLToPath(import.meta.url)),
-          '../../provider-sdk/dist/index.js'
-        );
-        if (fs.existsSync(sdkPath)) {
-          const sdk = (await import(pathToFileURL(sdkPath).href)) as Record<string, any>;
-          const startStr = String(rawStartInput || '/media/real_courtyard_sun.jpg');
-          const endStr = String(rawEndInput || '/media/real_coastal_cliffs.jpg');
+    const providerChoice = normalizeProviderChoice(params.provider, rawApiKey);
+    const aspectRatio = String(params.aspectRatio || params.aspect_ratio || '16:9').trim();
 
-          if (providerName.includes('seedance') && sdk.SeedanceClient) {
-            const client = new sdk.SeedanceClient({ apiKey: rawApiKey });
-            const out = await client.synthesizeKeyframeSequence({
-              prompt,
-              keyframes: [{ imageUrl: startStr }, { imageUrl: endStr }],
-            });
-            return {
-              ok: true,
-              status: 'COMPLETED',
-              tool: toolName,
-              interactionId,
-              previousInteractionId,
-              videoUrl: out.videoUrl,
-              fullUrl: out.videoUrl,
-              durationSec,
-              motionCurve,
-              engine: 'seedance-zero-markup',
-            };
-          }
-          if (providerName.includes('fal') && sdk.FalClient) {
-            const client = new sdk.FalClient({ apiKey: rawApiKey });
-            const out = await client.generateOpenWeightVideo({
-              family: 'wan-2.1-i2v',
-              prompt,
-              imageUrl: startStr,
-            });
-            return {
-              ok: true,
-              status: 'COMPLETED',
-              tool: toolName,
-              interactionId,
-              previousInteractionId,
-              videoUrl: out.videoUrl,
-              fullUrl: out.videoUrl,
-              durationSec,
-              motionCurve,
-              engine: 'fal-zero-markup',
-            };
-          }
-          if (sdk.GeminiOmniClient) {
-            const client = new sdk.GeminiOmniClient({ apiKey: rawApiKey });
-            const out = await client.generateVideo({
-              prompt,
-              durationSeconds: Math.max(3, durationSec),
-              firstFrame: startStr,
-              lastFrame: endStr,
-              previousInteractionId: previousInteractionId || undefined,
-            });
-            return {
-              ok: true,
-              status: 'COMPLETED',
-              tool: toolName,
-              interactionId: out.interactionId || interactionId,
-              previousInteractionId,
-              videoUrl: out.videoUrl,
-              fullUrl: out.videoUrl,
-              durationSec,
-              motionCurve,
-              engine: 'gemini-omni-zero-markup',
-            };
-          }
-        }
-      } catch (cloudErr) {
-        if (params.allowLocalFallback === false) {
-          throw cloudErr;
-        }
-        this.log(
-          `Cloud BYOK keyframeBridge failed (${cloudErr instanceof Error ? cloudErr.message : String(cloudErr)}); falling back to ffmpeg-local.`
+    if (providerChoice === 'dreamina-bridge' || providerChoice === 'flow-bridge') {
+      const refs = [rawStartInput, rawEndInput]
+        .filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+      const bridgeOut = await this.enqueueBridgeJob({
+        target: providerChoice === 'dreamina-bridge' ? 'dreamina' : 'google-flow',
+        mode: 'video',
+        prompt,
+        aspectRatio,
+        durationSec,
+        referenceImages: refs,
+        waitForResult: params.waitForResult !== false,
+        timeoutMs: params.timeoutMs,
+      });
+      return {
+        ...bridgeOut,
+        tool: toolName,
+        interactionId: String(bridgeOut.jobId || interactionId),
+        previousInteractionId,
+        durationSec,
+        durationSeconds: durationSec,
+        motionCurve,
+        engine: providerChoice,
+      };
+    }
+
+    if (providerChoice === 'gemini') {
+      if (!rawApiKey) {
+        throw new BridgeHttpError(
+          400,
+          'Google AI Studio API key is required when provider="gemini" is selected. Enter your key in Provider Settings or switch to Live Browser Bridge / Local FFmpeg.'
         );
+      }
+      const tempCloudFiles: string[] = [];
+      try {
+        const startResolved = rawStartInput
+          ? await this.resolveInputMediaPath(rawStartInput, tempCloudFiles)
+          : null;
+        const endResolved = rawEndInput
+          ? await this.resolveInputMediaPath(rawEndInput, tempCloudFiles)
+          : null;
+
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.GeminiOmniClient({ apiKey: rawApiKey });
+        const veoOut = await client.generateVeoVideo({
+          prompt,
+          model: typeof params.model === 'string' ? params.model : undefined,
+          aspectRatio,
+          durationSeconds: durationSec,
+          startImage: startResolved ? this.readFileAsBase64Inline(startResolved) : undefined,
+          endImage: endResolved ? this.readFileAsBase64Inline(endResolved) : undefined,
+        });
+
+        fs.mkdirSync(this.mediaDir, { recursive: true });
+        const veoFilename = `google_veo_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.mp4`;
+        const veoFullPath = path.join(this.mediaDir, veoFilename);
+        fs.writeFileSync(veoFullPath, Buffer.from(veoOut.videoBytes));
+        this.mirrorToDistMedia(veoFilename, veoFullPath);
+
+        const videoUrl = `/media/${veoFilename}`;
+        const fullUrl = `${this.getPublicBaseUrl()}${videoUrl}`;
+        return {
+          ok: true,
+          status: 'COMPLETED',
+          tool: toolName,
+          interactionId: veoOut.operationName || interactionId,
+          operationName: veoOut.operationName,
+          model: veoOut.model,
+          previousInteractionId,
+          videoUrl,
+          mediaUrl: videoUrl,
+          fullUrl,
+          durationSec,
+          durationSeconds: durationSec,
+          motionCurve,
+          bytes: veoOut.videoBytes.byteLength,
+          engine: 'google-veo-live',
+        };
+      } catch (err) {
+        if (err instanceof BridgeHttpError) throw err;
+        const status =
+          typeof (err as { statusCode?: number })?.statusCode === 'number' &&
+          ((err as { statusCode: number }).statusCode === 401 ||
+            (err as { statusCode: number }).statusCode === 403 ||
+            (err as { statusCode: number }).statusCode === 400)
+            ? (err as { statusCode: number }).statusCode
+            : 502;
+        throw new BridgeHttpError(status, err instanceof Error ? err.message : String(err));
+      } finally {
+        for (const tmp of tempCloudFiles) {
+          try {
+            if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+          } catch {
+            // Ignore
+          }
+        }
+      }
+    }
+
+    if (providerChoice !== 'ffmpeg-local') {
+      if (providerChoice !== 'comfyui' && !rawApiKey) {
+        throw new BridgeHttpError(
+          400,
+          `API key is required when provider="${providerChoice}" is selected.`
+        );
+      }
+      try {
+        const sdk = await this.loadProviderSdk();
+        const startStr = String(rawStartInput || '');
+        const endStr = String(rawEndInput || '');
+
+        if (providerChoice === 'seedance') {
+          const client = new sdk.SeedanceClient({
+            apiKey: rawApiKey,
+            baseUrl: typeof params.baseUrl === 'string' && params.baseUrl ? params.baseUrl : undefined,
+          });
+          const out = await client.synthesizeKeyframeSequence({
+            prompt,
+            keyframes: [{ imageUrl: startStr }, { imageUrl: endStr }],
+          });
+          const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'seedance_live');
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            tool: toolName,
+            interactionId,
+            previousInteractionId,
+            videoUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            bytes: saved.bytes,
+            durationSec,
+            motionCurve,
+            engine: 'seedance-live',
+          };
+        }
+
+        if (providerChoice === 'fal') {
+          const client = new sdk.FalClient({ apiKey: rawApiKey });
+          const out = await client.generateOpenWeightVideo({
+            family: 'wan-2.1-i2v',
+            prompt,
+            imageUrl: startStr || undefined,
+          });
+          const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'fal_live');
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            tool: toolName,
+            interactionId,
+            previousInteractionId,
+            videoUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            bytes: saved.bytes,
+            durationSec,
+            motionCurve,
+            engine: 'fal-live',
+          };
+        }
+
+        if (providerChoice === 'replicate') {
+          const client = new sdk.ReplicateClient({ apiToken: rawApiKey });
+          const out = await client.generateOpenWeightVideo({
+            family: 'ltx-video',
+            prompt,
+          });
+          const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'replicate_live');
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            tool: toolName,
+            interactionId,
+            previousInteractionId,
+            videoUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            bytes: saved.bytes,
+            durationSec,
+            motionCurve,
+            engine: 'replicate-live',
+          };
+        }
+
+        if (providerChoice === 'comfyui') {
+          const cleanBase = (typeof params.baseUrl === 'string' && params.baseUrl.trim()
+            ? params.baseUrl.trim()
+            : 'http://127.0.0.1:8188');
+          const client = new sdk.ComfyUIClient({ baseUrl: cleanBase });
+          const out = await client.generateVideo({
+            family: 'wan-2.1-t2v',
+            prompt,
+          });
+          if (!out.videoUrl) {
+            throw new BridgeHttpError(502, 'ComfyUI execution finished without a video output.');
+          }
+          const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'comfy_live');
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            tool: toolName,
+            interactionId,
+            previousInteractionId,
+            videoUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            bytes: saved.bytes,
+            durationSec,
+            motionCurve,
+            engine: 'comfyui-live',
+          };
+        }
+      } catch (err) {
+        if (err instanceof BridgeHttpError) throw err;
+        throw new BridgeHttpError(502, err instanceof Error ? err.message : String(err));
       }
     }
 
@@ -2260,114 +4313,224 @@ export class McpStdioBridgeServer {
       (params.previous_interaction_id as string | undefined) ||
       null;
 
-    // Optional Zero-Markup BYOK Cloud Pass-Through via @open-dreamflow/provider-sdk
+    // Live Cloud & Browser Bridge Routing (Strict No-Fake Policy when explicit provider is selected)
     const rawApiKey = typeof params.apiKey === 'string' ? params.apiKey.trim() : '';
-    const providerName = String(params.provider || '').toLowerCase();
-    if (rawApiKey && rawApiKey !== 'local' && rawApiKey !== 'ffmpeg') {
+    const providerChoice = normalizeProviderChoice(params.provider, rawApiKey);
+
+    if (providerChoice === 'dreamina-bridge' || providerChoice === 'flow-bridge') {
+      const refs =
+        typeof rawStartCandidate === 'string' && rawStartCandidate.trim()
+          ? [rawStartCandidate.trim()]
+          : [];
+      const bridgeOut = await this.enqueueBridgeJob({
+        target: providerChoice === 'dreamina-bridge' ? 'dreamina' : 'google-flow',
+        mode: 'video',
+        prompt,
+        aspectRatio,
+        durationSec,
+        referenceImages: refs,
+        waitForResult: params.waitForResult !== false,
+        timeoutMs: params.timeoutMs,
+      });
+      return {
+        ...bridgeOut,
+        tool: 'generate_video',
+        interactionId: String(bridgeOut.jobId || interactionId),
+        previousInteractionId,
+        durationSec,
+        durationSeconds: durationSec,
+        resolution,
+        aspectRatio,
+        engine: providerChoice,
+      };
+    }
+
+    if (providerChoice === 'gemini') {
+      if (!rawApiKey) {
+        throw new BridgeHttpError(
+          400,
+          'Google AI Studio API key is required when provider="gemini" is selected. Open Provider Settings to paste your key or switch to Live Browser Bridge / Local FFmpeg.'
+        );
+      }
+      const tempCloudFiles: string[] = [];
       try {
-        const sdkPath = path.resolve(
-          path.dirname(fileURLToPath(import.meta.url)),
-          '../../provider-sdk/dist/index.js'
-        );
-        if (fs.existsSync(sdkPath)) {
-          const sdk = (await import(pathToFileURL(sdkPath).href)) as Record<string, any>;
-          if (providerName.includes('fal') && sdk.FalClient) {
-            const client = new sdk.FalClient({ apiKey: rawApiKey });
-            const out = await client.generateOpenWeightVideo({
-              family: 'wan-2.1-i2v',
-              prompt,
-              imageUrl: rawStartCandidate,
-            });
-            return {
-              ok: true,
-              status: 'COMPLETED',
-              tool: 'generate_video',
-              interactionId,
-              previousInteractionId,
-              videoUrl: out.videoUrl,
-              fullUrl: out.videoUrl,
-              durationSec,
-              durationSeconds: durationSec,
-              resolution,
-              aspectRatio,
-              engine: 'fal-zero-markup',
-            };
-          }
-          if (providerName.includes('replicate') && sdk.ReplicateClient) {
-            const client = new sdk.ReplicateClient({ apiToken: rawApiKey });
-            const out = await client.generateOpenWeightVideo({
-              family: 'ltx-video',
-              prompt,
-            });
-            return {
-              ok: true,
-              status: 'COMPLETED',
-              tool: 'generate_video',
-              interactionId,
-              previousInteractionId,
-              videoUrl: out.videoUrl,
-              fullUrl: out.videoUrl,
-              durationSec,
-              durationSeconds: durationSec,
-              resolution,
-              aspectRatio,
-              engine: 'replicate-zero-markup',
-            };
-          }
-          if (providerName.includes('seedance') && sdk.SeedanceClient) {
-            const client = new sdk.SeedanceClient({ apiKey: rawApiKey });
-            const startImg = String(rawStartCandidate || '');
-            const out = await client.synthesizeKeyframeSequence({
-              prompt,
-              keyframes: [{ imageUrl: startImg }, { imageUrl: startImg }],
-            });
-            return {
-              ok: true,
-              status: 'COMPLETED',
-              tool: 'generate_video',
-              interactionId,
-              previousInteractionId,
-              videoUrl: out.videoUrl,
-              fullUrl: out.videoUrl,
-              durationSec,
-              durationSeconds: durationSec,
-              resolution,
-              aspectRatio,
-              engine: 'seedance-zero-markup',
-            };
-          }
-          if (sdk.GeminiOmniClient) {
-            const client = new sdk.GeminiOmniClient({ apiKey: rawApiKey });
-            const out = await client.generateVideo({
-              prompt,
-              durationSeconds: Math.max(3, durationSec),
-              resolution: resolution as any,
-              aspectRatio: aspectRatio as any,
-              previousInteractionId: previousInteractionId || undefined,
-            });
-            return {
-              ok: true,
-              status: 'COMPLETED',
-              tool: 'generate_video',
-              interactionId: out.interactionId || interactionId,
-              previousInteractionId,
-              videoUrl: out.videoUrl,
-              fullUrl: out.videoUrl,
-              durationSec,
-              durationSeconds: durationSec,
-              resolution,
-              aspectRatio,
-              engine: 'gemini-omni-zero-markup',
-            };
+        const startResolved = rawStartCandidate
+          ? await this.resolveInputMediaPath(rawStartCandidate, tempCloudFiles)
+          : null;
+
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.GeminiOmniClient({ apiKey: rawApiKey });
+        const veoOut = await client.generateVeoVideo({
+          prompt,
+          model: typeof params.model === 'string' ? params.model : undefined,
+          aspectRatio,
+          durationSeconds: durationSec,
+          startImage: startResolved ? this.readFileAsBase64Inline(startResolved) : undefined,
+        });
+
+        fs.mkdirSync(this.mediaDir, { recursive: true });
+        const veoFilename = `google_veo_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.mp4`;
+        const veoFullPath = path.join(this.mediaDir, veoFilename);
+        fs.writeFileSync(veoFullPath, Buffer.from(veoOut.videoBytes));
+        this.mirrorToDistMedia(veoFilename, veoFullPath);
+
+        const videoUrl = `/media/${veoFilename}`;
+        const fullUrl = `${this.getPublicBaseUrl()}${videoUrl}`;
+        return {
+          ok: true,
+          status: 'COMPLETED',
+          tool: 'generate_video',
+          interactionId: veoOut.operationName || interactionId,
+          operationName: veoOut.operationName,
+          model: veoOut.model,
+          previousInteractionId,
+          videoUrl,
+          mediaUrl: videoUrl,
+          fullUrl,
+          durationSec,
+          durationSeconds: durationSec,
+          resolution,
+          aspectRatio,
+          bytes: veoOut.videoBytes.byteLength,
+          engine: 'google-veo-live',
+        };
+      } catch (err) {
+        if (err instanceof BridgeHttpError) throw err;
+        const status =
+          typeof (err as { statusCode?: number })?.statusCode === 'number' &&
+          ((err as { statusCode: number }).statusCode === 401 ||
+            (err as { statusCode: number }).statusCode === 403 ||
+            (err as { statusCode: number }).statusCode === 400)
+            ? (err as { statusCode: number }).statusCode
+            : 502;
+        throw new BridgeHttpError(status, err instanceof Error ? err.message : String(err));
+      } finally {
+        for (const tmp of tempCloudFiles) {
+          try {
+            if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+          } catch {
+            // Ignore
           }
         }
-      } catch (cloudErr) {
-        if (params.allowLocalFallback === false) {
-          throw cloudErr;
-        }
-        this.log(
-          `Cloud BYOK call failed (${cloudErr instanceof Error ? cloudErr.message : String(cloudErr)}); falling back to ffmpeg-local.`
+      }
+    }
+
+    if (providerChoice !== 'ffmpeg-local') {
+      if (providerChoice !== 'comfyui' && !rawApiKey) {
+        throw new BridgeHttpError(
+          400,
+          `API key is required when provider="${providerChoice}" is selected.`
         );
+      }
+      try {
+        const sdk = await this.loadProviderSdk();
+        if (providerChoice === 'fal') {
+          const client = new sdk.FalClient({ apiKey: rawApiKey });
+          const out = await client.generateOpenWeightVideo({
+            family: 'wan-2.1-i2v',
+            prompt,
+            imageUrl: typeof rawStartCandidate === 'string' ? rawStartCandidate : undefined,
+          });
+          const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'fal_live');
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            tool: 'generate_video',
+            interactionId,
+            previousInteractionId,
+            videoUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            bytes: saved.bytes,
+            durationSec,
+            durationSeconds: durationSec,
+            resolution,
+            aspectRatio,
+            engine: 'fal-live',
+          };
+        }
+        if (providerChoice === 'replicate') {
+          const client = new sdk.ReplicateClient({ apiToken: rawApiKey });
+          const out = await client.generateOpenWeightVideo({
+            family: 'ltx-video',
+            prompt,
+          });
+          const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'replicate_live');
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            tool: 'generate_video',
+            interactionId,
+            previousInteractionId,
+            videoUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            bytes: saved.bytes,
+            durationSec,
+            durationSeconds: durationSec,
+            resolution,
+            aspectRatio,
+            engine: 'replicate-live',
+          };
+        }
+        if (providerChoice === 'seedance') {
+          const client = new sdk.SeedanceClient({
+            apiKey: rawApiKey,
+            baseUrl: typeof params.baseUrl === 'string' && params.baseUrl ? params.baseUrl : undefined,
+          });
+          const startImg = String(rawStartCandidate || '');
+          const out = await client.synthesizeKeyframeSequence({
+            prompt,
+            keyframes: [{ imageUrl: startImg }, { imageUrl: startImg }],
+          });
+          const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'seedance_live');
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            tool: 'generate_video',
+            interactionId,
+            previousInteractionId,
+            videoUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            bytes: saved.bytes,
+            durationSec,
+            durationSeconds: durationSec,
+            resolution,
+            aspectRatio,
+            engine: 'seedance-live',
+          };
+        }
+        if (providerChoice === 'comfyui') {
+          const cleanBase =
+            typeof params.baseUrl === 'string' && params.baseUrl.trim()
+              ? params.baseUrl.trim()
+              : 'http://127.0.0.1:8188';
+          const client = new sdk.ComfyUIClient({ baseUrl: cleanBase });
+          const out = await client.generateVideo({
+            family: 'wan-2.1-t2v',
+            prompt,
+          });
+          if (!out.videoUrl) {
+            throw new BridgeHttpError(502, 'ComfyUI execution finished without a video output.');
+          }
+          const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'comfy_live');
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            tool: 'generate_video',
+            interactionId,
+            previousInteractionId,
+            videoUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            bytes: saved.bytes,
+            durationSec,
+            durationSeconds: durationSec,
+            resolution,
+            aspectRatio,
+            engine: 'comfyui-live',
+          };
+        }
+      } catch (err) {
+        if (err instanceof BridgeHttpError) throw err;
+        throw new BridgeHttpError(502, err instanceof Error ? err.message : String(err));
       }
     }
 
@@ -3066,8 +5229,9 @@ export class McpStdioBridgeServer {
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, Mcp-Session-Id, Accept, Range'
+      'Content-Type, Authorization, X-Goog-Api-Key, Mcp-Session-Id, Accept, Range'
     );
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
     res.setHeader(
       'Access-Control-Expose-Headers',
       'Mcp-Session-Id, Content-Length, Content-Range, Accept-Ranges, Content-Disposition'
@@ -3249,6 +5413,25 @@ export class McpStdioBridgeServer {
       return;
     }
 
+    // 1b. Self-Contained Live Browser Bridge Connector (`GET /bridge-connector.js`)
+    if (
+      (req.method === 'GET' || req.method === 'HEAD') &&
+      (pathname === '/bridge-connector.js' || pathname === '/api/bridge/connector.js')
+    ) {
+      const jsBody = Buffer.from(this.buildBrowserBridgeConnectorScript(), 'utf8');
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Content-Length': jsBody.length,
+        'Cache-Control': 'no-cache',
+      });
+      if (req.method === 'HEAD') {
+        res.end();
+        return;
+      }
+      res.end(jsBody);
+      return;
+    }
+
     // 2. Health Check (`GET /api/health` & `GET /health`)
     if (req.method === 'GET' && (pathname === '/api/health' || pathname === '/health')) {
       const projects = this.listProjects();
@@ -3353,7 +5536,7 @@ export class McpStdioBridgeServer {
       }
     }
 
-    // 4. Chrome Bridge Event Relay Routes (`/api/bridge/*`)
+    // 4. Chrome & Browser Live Bridge Routes (`/api/bridge/*`)
     if (pathname === '/api/bridge/events' && req.method === 'GET') {
       this.sendJson(res, 200, {
         ok: true,
@@ -3363,17 +5546,49 @@ export class McpStdioBridgeServer {
       return;
     }
 
-    if (pathname === '/api/bridge/push' && req.method === 'POST') {
+    if (pathname === '/api/bridge/jobs/pending' && req.method === 'GET') {
+      const targetParam = reqUrl.searchParams.get('target');
+      const claimParam = reqUrl.searchParams.get('claim') || '';
+      const shouldClaim = claimParam === '1' || claimParam.toLowerCase() === 'true';
+      const jobs = this.listPendingBridgeJobs({
+        target: targetParam,
+        claim: shouldClaim,
+      });
+      this.sendJson(res, 200, {
+        ok: true,
+        jobs,
+        claimed: shouldClaim,
+        connectedClients: this.bridgeWsClients.size,
+      });
+      return;
+    }
+
+    if (pathname === '/api/bridge/jobs' && req.method === 'GET') {
+      this.sendJson(res, 200, {
+        ok: true,
+        jobs: Array.from(this.bridgeJobs.values()),
+        connectedClients: this.bridgeWsClients.size,
+      });
+      return;
+    }
+
+    const completeJobMatch = /^\/api\/bridge\/jobs\/([^/]+)\/complete$/.exec(pathname);
+    if (completeJobMatch && req.method === 'POST') {
       try {
+        const jobId = decodeURIComponent(completeJobMatch[1]);
         const bodyObj = (await this.readJsonBody(req)) || {};
-        const event = this.recordAndBroadcastBridgeEvent(bodyObj);
+        const job = await this.completeBridgeJob(jobId, bodyObj);
         this.sendJson(res, 200, {
           ok: true,
-          event,
-          connectedClients: this.bridgeWsClients.size,
+          job,
+          mediaUrl: job.mediaUrl,
+          imageUrl: job.imageUrl,
+          videoUrl: job.videoUrl,
+          fullUrl: job.fullUrl,
         });
       } catch (err) {
-        this.sendJson(res, 500, {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+        this.sendJson(res, status, {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
         });
@@ -3381,10 +5596,67 @@ export class McpStdioBridgeServer {
       return;
     }
 
-    // 5. Real FFmpeg Inline Editing, Upload & Video Synthesis Endpoints (`POST /api/*`)
+    const singleJobMatch = /^\/api\/bridge\/jobs\/([^/]+)$/.exec(pathname);
+    if (singleJobMatch && req.method === 'GET') {
+      const jobId = decodeURIComponent(singleJobMatch[1]);
+      const job = this.getBridgeJob(jobId);
+      if (!job) {
+        this.sendJson(res, 404, { ok: false, error: `Bridge job not found: ${jobId}` });
+        return;
+      }
+      this.sendJson(res, 200, { ok: true, job });
+      return;
+    }
+
+    if (pathname === '/api/bridge/enqueue' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const out = await this.enqueueBridgeJob(bodyObj);
+        this.sendJson(res, 200, out);
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 502;
+        this.sendJson(res, status, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/bridge/push' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const event = await this.recordAndBroadcastBridgeEventAsync(bodyObj);
+        this.sendJson(res, 200, {
+          ok: true,
+          event,
+          mediaUrl: event.mediaUrl,
+          imageUrl: event.imageUrl,
+          videoUrl: event.videoUrl,
+          connectedClients: this.bridgeWsClients.size,
+        });
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+        this.sendJson(res, status, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    // 5. Real Cloud API, Live Browser Bridge & Local FFmpeg Synthesis Endpoints (`POST /api/*`)
     if (req.method === 'POST' && pathname.startsWith('/api/')) {
       const bodyObj = (await this.readJsonBody(req)) || {};
       try {
+        if (pathname === '/api/verify-provider') {
+          this.sendJson(res, 200, await this.verifyProvider(bodyObj));
+          return;
+        }
+        if (pathname === '/api/generate-image') {
+          this.sendJson(res, 200, await this.generateImage(bodyObj));
+          return;
+        }
         if (pathname === '/api/upload-media') {
           this.sendJson(res, 200, await this.uploadMedia(bodyObj));
           return;
@@ -3430,8 +5702,9 @@ export class McpStdioBridgeServer {
           return;
         }
       } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
         const message = err instanceof Error ? err.message : String(err);
-        this.sendJson(res, 500, { ok: false, error: message });
+        this.sendJson(res, status, { ok: false, error: message });
         return;
       }
     }
@@ -3591,8 +5864,13 @@ export class McpStdioBridgeServer {
                     JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() })
                   )
                 );
+              } else if (
+                msgObj.type === 'complete_bridge_job' &&
+                typeof msgObj.jobId === 'string'
+              ) {
+                void this.completeBridgeJob(msgObj.jobId, msgObj);
               } else {
-                this.recordAndBroadcastBridgeEvent(msgObj);
+                void this.recordAndBroadcastBridgeEventAsync(msgObj);
               }
             } catch {
               // Ignore malformed bridge WS frames

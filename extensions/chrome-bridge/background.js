@@ -12,11 +12,12 @@
  */
 
 const TARGET_URLS = {
-  'google-flow': 'https://flow.google.com/',
-  dreamina: 'https://dreamina.capcut.com/',
+  'google-flow': 'https://labs.google/fx/tools/flow',
+  dreamina: 'https://dreamina.capcut.com/ai-tool/ai-canvas',
 };
 
-const LOCAL_RELAY_HTTP_PUSH = 'http://localhost:3001/api/bridge/push';
+const LOCAL_RELAY_BASE = 'http://localhost:3001';
+const LOCAL_RELAY_HTTP_PUSH = `${LOCAL_RELAY_BASE}/api/bridge/push`;
 const LOCAL_RELAY_WS_URL = 'ws://localhost:3001/bridge';
 
 /** @type {WebSocket | null} */
@@ -148,6 +149,18 @@ function ensureLocalRelaySocket() {
       } catch {
         // Ignore transient send error
       }
+      void pollLocalServerPendingJobs();
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(String(event.data || '{}'));
+        if (msg?.type === 'dispatch_bridge_job' && msg.job) {
+          void pollLocalServerPendingJobs(msg.job.target);
+        }
+      } catch {
+        // Ignore malformed frame
+      }
     };
 
     ws.onclose = () => {
@@ -161,6 +174,60 @@ function ensureLocalRelaySocket() {
   } catch {
     relayConnected = false;
     relaySocket = null;
+  }
+}
+
+/**
+ * Claims pending live browser jobs from `:3001/api/bridge/jobs/pending?claim=1`
+ * and queues them for the open Dreamina / Google Flow consumer tab.
+ * @param {string} [targetHint]
+ */
+async function pollLocalServerPendingJobs(targetHint) {
+  try {
+    const query = targetHint
+      ? `?target=${encodeURIComponent(normalizeTarget(targetHint))}&claim=1`
+      : '?claim=1';
+    const res = await fetch(`${LOCAL_RELAY_BASE}/api/bridge/jobs/pending${query}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!Array.isArray(data?.jobs) || data.jobs.length === 0) return;
+
+    let added = false;
+    for (const rawJob of data.jobs) {
+      if (!rawJob?.jobId || isKnownJobId(rawJob.jobId)) continue;
+      STATE.queue.push(
+        normalizeIncomingJob({
+          ...rawJob,
+          fromServerQueue: true,
+        })
+      );
+      added = true;
+    }
+    if (added) {
+      await persistState();
+      await processQueue();
+    }
+  } catch {
+    // Local `:3001` server may not be running
+  }
+}
+
+/**
+ * Reports job completion (or failure) back to `:3001/api/bridge/jobs/:jobId/complete`
+ * so `POST /api/bridge/enqueue` callers receive local `/media/*` files immediately.
+ * @param {string} jobId
+ * @param {Record<string, any>} completionBody
+ */
+async function reportServerBridgeJobCompletion(jobId, completionBody) {
+  if (!jobId) return;
+  try {
+    await fetch(`${LOCAL_RELAY_BASE}/api/bridge/jobs/${encodeURIComponent(jobId)}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(completionBody),
+    });
+  } catch {
+    // Ignore if local relay is offline
   }
 }
 
@@ -204,7 +271,7 @@ async function refreshConnectedTabs() {
       if (!tab.id || !tab.url) continue;
       if (
         tab.url.startsWith('https://flow.google.com/') ||
-        tab.url.startsWith('https://labs.google/fx/tools/flow')
+        tab.url.startsWith('https://labs.google/')
       ) {
         STATE.tabs['google-flow'].add(tab.id);
       } else if (
@@ -268,6 +335,7 @@ function normalizeIncomingJob(raw) {
   return {
     jobId,
     target,
+    mode: raw?.mode === 'video' ? 'video' : 'image',
     prompt: String(raw?.prompt || '').trim(),
     aspectRatio: raw?.aspectRatio || '16:9',
     durationSec: Number(raw?.durationSec || raw?.durationSeconds || 5),
@@ -275,6 +343,7 @@ function normalizeIncomingJob(raw) {
     keyframes: Array.isArray(raw?.keyframes) ? raw.keyframes.slice(0, 10) : [],
     previousInteractionId: raw?.previousInteractionId || null,
     autoOpenTab: raw?.autoOpenTab !== false,
+    fromServerQueue: Boolean(raw?.fromServerQueue || String(jobId).startsWith('bjob_')),
     enqueuedAt: new Date().toISOString(),
     status: 'queued',
   };
@@ -335,6 +404,13 @@ async function processQueue() {
       };
       STATE.history.unshift(failedRecord);
       await persistState();
+      if (job.fromServerQueue || String(job.jobId).startsWith('bjob_')) {
+        await reportServerBridgeJobCompletion(job.jobId, {
+          status: 'failed',
+          target,
+          error: failedRecord.error,
+        });
+      }
       await broadcastToStudio('DREAMFLOW_JOB_COMPLETE', {
         jobId: job.jobId,
         target: job.target,
@@ -352,13 +428,21 @@ async function processQueue() {
     } catch (err) {
       STATE.activeByTarget[target] = null;
       const errorMessage = err instanceof Error ? err.message : String(err);
+      const errOut = `Content script unreachable on ${target}: ${errorMessage}`;
       STATE.history.unshift({
         ...job,
         status: 'failed',
-        error: `Content script unreachable on ${target}: ${errorMessage}`,
+        error: errOut,
         completedAt: new Date().toISOString(),
       });
       await persistState();
+      if (job.fromServerQueue || String(job.jobId).startsWith('bjob_')) {
+        await reportServerBridgeJobCompletion(job.jobId, {
+          status: 'failed',
+          target,
+          error: errOut,
+        });
+      }
       await broadcastToStudio('DREAMFLOW_JOB_COMPLETE', {
         jobId: job.jobId,
         target: job.target,
@@ -388,6 +472,7 @@ chrome.alarms.create('dreamflow-queue-watchdog', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'dreamflow-queue-watchdog') {
     ensureLocalRelaySocket();
+    void pollLocalServerPendingJobs();
     processQueue();
   }
 });
@@ -529,28 +614,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           completedAt: new Date().toISOString(),
         };
 
+        const isServerJob = Boolean(
+          completedRecord.fromServerQueue || String(completedRecord.jobId).startsWith('bjob_')
+        );
+
+        if (isServerJob) {
+          await reportServerBridgeJobCompletion(completedRecord.jobId, {
+            status: completedRecord.status,
+            target,
+            videoUrl: completedRecord.videoUrl,
+            imageUrl: completedRecord.imageUrl,
+            dataUrl: payload.dataUrl || null,
+            error: completedRecord.error,
+          });
+        }
+
         if (completedRecord.status === 'succeeded') {
           STATE.stats.completedCount += 1;
           STATE.stats.savedEstimateUsd = Number((STATE.stats.savedEstimateUsd + 0.35).toFixed(2));
 
-          // Automatically push captured Dreamina / Google Flow media to Stage 4 `:3001/api/bridge/push`
-          const relaySource = target === 'dreamina' ? 'dreamina' : 'flow';
-          await pushEventToLocalRelay({
-            type: 'bridge_asset',
-            source: relaySource,
-            mediaUrl: completedRecord.videoUrl || completedRecord.imageUrl,
-            videoUrl: completedRecord.videoUrl,
-            imageUrl: completedRecord.imageUrl,
-            title:
-              target === 'dreamina'
-                ? 'Dreamina · Seedance Capture'
-                : 'Google Flow · Omni Capture',
-            prompt: completedRecord.prompt || '',
-            metadata: {
-              jobId: completedRecord.jobId,
-              aspectRatio: completedRecord.aspectRatio || '16:9',
-            },
-          });
+          // For extension-initiated jobs, push captured Dreamina / Google Flow media to `:3001/api/bridge/push`
+          if (!isServerJob) {
+            const relaySource = target === 'dreamina' ? 'dreamina' : 'flow';
+            await pushEventToLocalRelay({
+              type: 'bridge_asset',
+              source: relaySource,
+              mediaUrl: completedRecord.videoUrl || completedRecord.imageUrl,
+              videoUrl: completedRecord.videoUrl,
+              imageUrl: completedRecord.imageUrl,
+              dataUrl: payload.dataUrl || null,
+              title:
+                target === 'dreamina'
+                  ? 'Dreamina · Seedance Capture'
+                  : 'Google Flow · Omni Capture',
+              prompt: completedRecord.prompt || '',
+              metadata: {
+                jobId: completedRecord.jobId,
+                aspectRatio: completedRecord.aspectRatio || '16:9',
+              },
+            });
+          }
         }
 
         STATE.history.unshift(completedRecord);
