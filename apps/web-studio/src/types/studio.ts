@@ -214,16 +214,30 @@ export interface MultiframeBridge {
 }
 
 export type ProviderId =
-  | 'local-canvas'
-  | 'gemini-omni'
-  | 'seedance'
+  | 'dreamina-bridge'
+  | 'flow-bridge'
+  | 'gemini-api'
   | 'fal'
   | 'replicate'
-  | 'openai'
+  | 'seedance'
   | 'comfyui'
+  | 'ffmpeg-local'
   | 'mcp-router'
+  | 'openai'
+  | 'local-canvas'
+  | 'gemini-omni'
   | 'chrome-bridge-flow'
   | 'chrome-bridge-dreamina';
+
+export interface ProviderVerificationResult {
+  checkedAt: number;
+  valid: boolean;
+  videoModels?: string[];
+  imageModels?: string[];
+  allCount?: number;
+  error?: string;
+  message?: string;
+}
 
 export interface BYOKCredentials {
   geminiApiKey: string;
@@ -324,11 +338,25 @@ export interface DiskProjectRecord {
 export interface BridgeIncomingEvent {
   eventId?: string;
   timestamp?: number;
-  type: 'bridge_asset' | 'bridge_prompt' | 'bridge_session';
-  source: 'dreamina' | 'flow' | 'manual';
+  type:
+    | 'bridge_asset'
+    | 'bridge_prompt'
+    | 'bridge_session'
+    | 'bridge_job_complete'
+    | 'dispatch_bridge_job';
+  source?: 'dreamina' | 'flow' | 'google-flow' | 'manual';
+  jobId?: string;
+  target?: 'dreamina' | 'google-flow';
+  status?: string;
   mediaUrl?: string;
+  imageUrl?: string;
+  localImageUrl?: string;
+  videoUrl?: string;
+  localVideoUrl?: string;
+  error?: string;
   title?: string;
   prompt?: string;
+  job?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
 

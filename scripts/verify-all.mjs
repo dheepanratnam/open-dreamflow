@@ -1,20 +1,22 @@
 #!/usr/bin/env node
 /**
- * Open-DreamFlow — 9-Stage Automated Monorepo End-to-End Verification Suite
+ * Open-DreamFlow — 10-Stage Automated Monorepo End-to-End Verification Suite
  *
  * Stages:
- *   [1/9 provider-sdk]            Zero-markup SDK clients & $0 markup cost estimator
- *   [2/9 mcp-client]              Live JSON-RPC roundtrip verifying all 12 MCP tools on :3001/mcp
- *   [3/9 real-photography-media]  206 Partial Content streaming, ffprobe real photography/cinema check & zero-slop bundle audit
- *   [4/9 inline-editor]           Live /api/upload-media, /api/inpaint (mask), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)
- *   [5/9 keyframe-bridge-and-audio] Live /api/keyframe-bridge (A->B), /api/generate-audio (64-bar waveform + TTS/ambient) & multi-track /api/compile-timeline
- *   [6/9 persistence-bridge]      Live /api/projects CRUD + .dreamflow.json export + /api/bridge/push -> /api/bridge/events
- *   [7/9 chrome-bridge]           Manifest V3 schema, icons, jobId dedup & syntax check across all 5 extension scripts
- *   [8/9 cli-and-docker]          open-dreamflow doctor CLI check, unified single-port SPA GET :3001/, Dockerfile & docker-compose.yml
- *   [9/9 web-studio]              Production Dreamina 1:1 Vite bundle + dist/media real photography integrity
+ *   [1/10 provider-sdk]                 Zero-markup SDK clients & $0 markup cost estimator
+ *   [2/10 mcp-client]                   Live JSON-RPC roundtrip verifying all 12 MCP tools on :3001/mcp
+ *   [3/10 real-photography-media]       206 Partial Content streaming, ffprobe real photography/cinema check & zero-slop bundle audit
+ *   [4/10 inline-editor]                Live /api/upload-media, /api/inpaint (mask), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)
+ *   [5/10 keyframe-bridge-and-audio]    Live /api/keyframe-bridge (A->B), /api/generate-audio (64-bar waveform + TTS/ambient) & multi-track /api/compile-timeline
+ *   [6/10 persistence-bridge]           Live /api/projects CRUD + .dreamflow.json export + /api/bridge/push -> /api/bridge/events
+ *   [7/10 live-provider-and-bridge-jobs] Bidirectional /api/bridge/enqueue -> /pending?claim=1 -> /complete (dreamina_live_*.png), GET /bridge-connector.js & /api/verify-provider
+ *   [8/10 chrome-bridge]                Manifest V3 schema, icons, jobId dedup, dispatch_bridge_job & syntax check across all 5 extension scripts
+ *   [9/10 cli-and-docker]               open-dreamflow doctor CLI check, unified single-port SPA GET :3001/, Dockerfile & docker-compose.yml
+ *   [10/10 web-studio]                  Production Dreamina 1:1 Vite bundle + live provider UI markers + dist/media real photography integrity
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -87,13 +89,16 @@ function createValidRgbaPngBase64(width, height, pixelFn) {
   ]).toString('base64');
 }
 
-const SAMPLE_SOURCE_PNG_B64 = createValidRgbaPngBase64(16, 16, (x, y) =>
-  x >= 4 && x < 12 && y >= 4 && y < 12 ? [214, 188, 156, 255] : [42, 38, 34, 255]
-);
+const SAMPLE_SOURCE_PNG_B64 = createValidRgbaPngBase64(64, 64, (x, y) => [
+  175 + ((x * 7 + y * 3) % 65),
+  138 + ((x * 5 + y * 11) % 60),
+  104 + ((x * 13 + y * 7) % 55),
+  255,
+]);
 const SAMPLE_MASK_PNG_DATA_URL = `data:image/png;base64,${createValidRgbaPngBase64(
-  16,
-  16,
-  (x, y) => (x >= 4 && x < 12 && y >= 4 && y < 12 ? [255, 255, 255, 255] : [0, 0, 0, 255])
+  64,
+  64,
+  (x, y) => (x >= 16 && x < 48 && y >= 16 && y < 48 ? [255, 255, 255, 255] : [0, 0, 0, 255])
 )}`;
 
 function assert(condition, message) {
@@ -126,6 +131,7 @@ function unlinkMediaIfPresent(mediaUrlPath) {
 }
 
 function findGeneratedMediaDiskPath(mediaUrlPath) {
+  if (!mediaUrlPath || typeof mediaUrlPath !== 'string') return null;
   const baseName = path.basename(mediaUrlPath);
   for (const dir of [
     path.join(ROOT, 'apps/web-studio/public/media'),
@@ -186,7 +192,7 @@ async function verifyStage1ProviderSdk() {
   assert(cost.rawProviderCostUsd > 0, 'Raw Gemini Omni 15s estimate must be positive');
 
   logStep(
-    '1/9 provider-sdk',
+    '1/10 provider-sdk',
     `Verified 6 BYOK/Local GPU clients + $0 markup estimator (15s 1080p Omni = $${cost.rawProviderCostUsd})`
   );
 }
@@ -221,7 +227,7 @@ async function verifyLiveServerStages() {
 
   try {
     // -------------------------------------------------------------------------
-    // Stage [2/9 mcp-client]: Live JSON-RPC roundtrip verifying all 12 MCP tools
+    // Stage [2/10 mcp-client]: Live JSON-RPC roundtrip verifying all 12 MCP tools
     // -------------------------------------------------------------------------
     const healthRes = await fetch(`${baseUrl}/api/health`);
     assert(healthRes.ok, '/api/health returned non-200');
@@ -265,12 +271,12 @@ async function verifyLiveServerStages() {
     await client.disconnect();
 
     logStep(
-      '2/9 mcp-client',
+      '2/10 mcp-client',
       `Live JSON-RPC roundtrip on ${baseUrl}/mcp verified all ${expectedTools.length} MCP tools`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [3/9 real-photography-media]: 206 Partial Content + ffprobe + zero neon slop
+    // Stage [3/10 real-photography-media]: 206 Partial Content + ffprobe + zero neon slop
     // -------------------------------------------------------------------------
     const publicMediaDir = path.join(ROOT, 'apps/web-studio/public/media');
     const distMediaDir = path.join(ROOT, 'apps/web-studio/dist/media');
@@ -331,7 +337,6 @@ async function verifyLiveServerStages() {
       );
     }
 
-    // Assert zero "Neo-Tokyo" / "Hero_Kael" / "Protocol: Rain" strings exist in built dist/assets/*.js
     const distAssetsDir = path.join(ROOT, 'apps/web-studio/dist/assets');
     assert(fs.existsSync(distAssetsDir), 'apps/web-studio/dist/assets missing (run npm run build)');
     const builtJsFiles = fs.readdirSync(distAssetsDir).filter((f) => f.endsWith('.js'));
@@ -348,12 +353,12 @@ async function verifyLiveServerStages() {
 
     const masterSizeMb = (fs.statSync(resolveAsset('real_salt_terracotta_master.mp4')).size / (1024 * 1024)).toFixed(2);
     logStep(
-      '3/9 real-photography-media',
+      '3/10 real-photography-media',
       `Verified 206 Range streaming, ffprobe on ${requiredRealMedia.length} real 35mm/cinema assets (master = ${masterSizeMb} MB) & 0 neon strings in JS bundle`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [4/9 inline-editor]: Live upload, mask inpaint, 16:9 outpaint, cutout & 4K upscale
+    // Stage [4/10 inline-editor]: Live upload, mask inpaint, 16:9 outpaint, cutout & 4K upscale
     // -------------------------------------------------------------------------
     assert(health.ffmpeg === true, 'FFmpeg must be available for Stage 4 inline-editor verification');
 
@@ -401,12 +406,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(upscaleRes.imageUrl), 'Upscale 4K PNG missing on disk');
 
     logStep(
-      '4/9 inline-editor',
+      '4/10 inline-editor',
       'Verified live /api/upload-media, /api/inpaint (masked), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [5/9 keyframe-bridge-and-audio]: A->B optical bridge + 64-bar audio + multi-track mix
+    // Stage [5/10 keyframe-bridge-and-audio]: A->B optical bridge + 64-bar audio + multi-track mix
     // -------------------------------------------------------------------------
     const bridgeRes = await postJson(baseUrl, '/api/keyframe-bridge', {
       startImageUrl: '/media/real_courtyard_sun.jpg',
@@ -446,12 +451,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(compiledMasterUrl), 'Multi-track compiled master MP4 missing on disk');
 
     logStep(
-      '5/9 keyframe-bridge-and-audio',
+      '5/10 keyframe-bridge-and-audio',
       'Verified live /api/keyframe-bridge (A→B), /api/generate-audio (64-bar RMS waveform + MP3) & multi-track /api/compile-timeline'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [6/9 persistence-bridge]: Projects CRUD + .dreamflow.json export + Bridge relay
+    // Stage [6/10 persistence-bridge]: Projects CRUD + .dreamflow.json export + Bridge relay
     // -------------------------------------------------------------------------
     const saveRes = await postJson(baseUrl, '/api/projects', {
       id: tempProjectId,
@@ -501,17 +506,126 @@ async function verifyLiveServerStages() {
     );
 
     logStep(
-      '6/9 persistence-bridge',
+      '6/10 persistence-bridge',
       'Verified /api/projects CRUD + snapshot + .dreamflow.json export + /api/bridge/push -> /api/bridge/events'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [7/9 chrome-bridge]: Manifest V3 + 5 extension scripts syntax check
+    // Stage [7/10 live-provider-and-bridge-jobs]:
+    //   1) POST /api/verify-provider validation & honest non-masquerade error on missing cloud key
+    //   2) GET /bridge-connector.js (200 OK + syntax check + PNA CORS header)
+    //   3) Bidirectional bridge job lifecycle: enqueue -> pending?claim=1 -> complete (dreamina_live_*.png)
     // -------------------------------------------------------------------------
-    verifyStage7ChromeBridge();
+    const verifyEmptyRes = await fetch(`${baseUrl}/api/verify-provider`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'gemini', apiKey: '' }),
+    });
+    const verifyEmptyJson = await verifyEmptyRes.json();
+    assert(
+      verifyEmptyJson.valid === false || verifyEmptyJson.ok === false,
+      `Expected /api/verify-provider with empty key to report invalid, got: ${JSON.stringify(verifyEmptyJson)}`
+    );
+
+    const honestCloudErrRes = await fetch(`${baseUrl}/api/generate-image`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'gemini', apiKey: '', prompt: 'Sunlit limestone courtyard' }),
+    });
+    const honestCloudErrJson = await honestCloudErrRes.json();
+    assert(
+      !honestCloudErrRes.ok || honestCloudErrJson.ok === false,
+      'Explicit cloud provider without API key must return honest error, never silent FFmpeg fallback'
+    );
+
+    const pnaOptionsRes = await fetch(`${baseUrl}/api/bridge/jobs/pending`, { method: 'OPTIONS' });
+    const pnaHeader = pnaOptionsRes.headers.get('access-control-allow-private-network');
+    assert(
+      pnaHeader === 'true',
+      `Expected Access-Control-Allow-Private-Network: true on OPTIONS, got: ${pnaHeader}`
+    );
+
+    const connectorRes = await fetch(`${baseUrl}/bridge-connector.js`);
+    assert(
+      connectorRes.status === 200,
+      `Expected GET /bridge-connector.js to return 200 OK, got ${connectorRes.status}`
+    );
+    const connectorJs = await connectorRes.text();
+    assert(connectorJs.length > 200, 'bridge-connector.js body unexpectedly small');
+    const tmpConnectorFile = path.join(os.tmpdir(), `dreamflow_bridge_connector_${Date.now()}.js`);
+    fs.writeFileSync(tmpConnectorFile, connectorJs, 'utf8');
+    try {
+      execFileSync(process.execPath, ['--check', tmpConnectorFile], { stdio: 'pipe' });
+    } finally {
+      if (fs.existsSync(tmpConnectorFile)) fs.unlinkSync(tmpConnectorFile);
+    }
+
+    const uniquePrompt = `E2E Live Dreamina Bridge Verification ${Date.now()}`;
+    const enqueueWaitPromise = fetch(`${baseUrl}/api/bridge/enqueue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        target: 'dreamina',
+        mode: 'image',
+        prompt: uniquePrompt,
+        aspectRatio: '16:9',
+        waitForResult: true,
+        timeoutMs: 15000,
+      }),
+    });
+
+    await new Promise((r) => setTimeout(r, 120));
+
+    const pendingRes = await fetch(`${baseUrl}/api/bridge/jobs/pending?target=dreamina&claim=1`);
+    assert(pendingRes.ok, `GET /api/bridge/jobs/pending?claim=1 failed (${pendingRes.status})`);
+    const pendingJson = await pendingRes.json();
+    assert(Array.isArray(pendingJson.jobs), 'pendingJson.jobs must be an array');
+    const claimedJob = pendingJson.jobs.find((j) => j.prompt === uniquePrompt) || pendingJson.jobs[0];
+    assert(claimedJob && claimedJob.jobId, 'Enqueued Dreamina bridge job not found in /api/bridge/jobs/pending');
+
+    const getJobRes = await fetch(`${baseUrl}/api/bridge/jobs/${claimedJob.jobId}`);
+    assert(getJobRes.ok, `GET /api/bridge/jobs/${claimedJob.jobId} failed`);
+
+    const completeRes = await postJson(baseUrl, `/api/bridge/jobs/${claimedJob.jobId}/complete`, {
+      status: 'succeeded',
+      dataBase64: SAMPLE_SOURCE_PNG_B64,
+      mimeType: 'image/png',
+      dataUrl: `data:image/png;base64,${SAMPLE_SOURCE_PNG_B64}`,
+    });
+    assert(completeRes.ok !== false, 'POST /api/bridge/jobs/:id/complete failed');
+
+    const enqueueResolvedRes = await enqueueWaitPromise;
+    const enqueueResolvedJson = await enqueueResolvedRes.json();
+    assert(
+      enqueueResolvedRes.ok && enqueueResolvedJson.ok !== false,
+      `Awaited /api/bridge/enqueue failed: ${JSON.stringify(enqueueResolvedJson)}`
+    );
+    const completedJob = enqueueResolvedJson.job || completeRes.job || completeRes;
+    const savedLiveImage =
+      completedJob.localImageUrl ||
+      completedJob.imageUrl ||
+      completedJob.mediaUrl ||
+      completeRes.localImageUrl ||
+      completeRes.imageUrl;
+    assert(
+      savedLiveImage && savedLiveImage.includes('dreamina_live_'),
+      `Expected saved /media/dreamina_live_*.png path, got: ${savedLiveImage}`
+    );
+    createdMediaPaths.push(savedLiveImage);
+    assert(findGeneratedMediaDiskPath(savedLiveImage), `Ingested ${savedLiveImage} missing on disk`);
+
+    logStep(
+      '7/10 live-provider-and-bridge-jobs',
+      `Verified /api/verify-provider, GET /bridge-connector.js (PNA CORS) & full enqueue->claim->complete lifecycle (${path.basename(savedLiveImage)})`
+    );
 
     // -------------------------------------------------------------------------
-    // Stage [8/9 cli-and-docker]: open-dreamflow doctor + unified SPA GET :3001/ + Docker
+    // Stage [8/10 chrome-bridge]: Manifest V3 + 5 extension scripts syntax check
+    // -------------------------------------------------------------------------
+    verifyStage8ChromeBridge();
+
+    // -------------------------------------------------------------------------
+    // Stage [9/10 cli-and-docker]: open-dreamflow doctor + unified SPA GET :3001/ + Docker
     // -------------------------------------------------------------------------
     const cliPath = path.join(ROOT, 'bin/open-dreamflow.mjs');
     assert(fs.existsSync(cliPath), 'bin/open-dreamflow.mjs missing');
@@ -532,7 +646,7 @@ async function verifyLiveServerStages() {
     }
 
     logStep(
-      '8/9 cli-and-docker',
+      '9/10 cli-and-docker',
       `Verified 'open-dreamflow doctor' (exit 0), unified single-port SPA GET ${baseUrl}/ (200 OK) & Dockerfile + docker-compose.yml`
     );
   } finally {
@@ -555,7 +669,7 @@ async function verifyLiveServerStages() {
   }
 }
 
-function verifyStage7ChromeBridge() {
+function verifyStage8ChromeBridge() {
   const extDir = path.join(ROOT, 'extensions/chrome-bridge');
   const manifestPath = path.join(extDir, 'manifest.json');
   assert(fs.existsSync(manifestPath), 'extensions/chrome-bridge/manifest.json missing');
@@ -586,15 +700,15 @@ function verifyStage7ChromeBridge() {
 
   const bgSource = fs.readFileSync(path.join(extDir, 'background.js'), 'utf8');
   assert(bgSource.includes('isKnownJobId'), 'background.js missing jobId deduplication guard');
-  assert(bgSource.includes('/api/bridge/push'), 'background.js missing /api/bridge/push relay');
+  assert(bgSource.includes('dispatch_bridge_job'), 'background.js missing dispatch_bridge_job WS listener');
 
   logStep(
-    '7/9 chrome-bridge',
-    `Manifest V3 v${manifest.version}, 3 icons, live bridge relay & ${scripts.length} scripts syntax-checked`
+    '8/10 chrome-bridge',
+    `Manifest V3 v${manifest.version}, 3 icons, bidirectional WS job relay & ${scripts.length} scripts syntax-checked`
   );
 }
 
-function verifyStage9WebStudioBundle() {
+function verifyStage10WebStudioBundle() {
   const distDir = path.join(ROOT, 'apps/web-studio/dist');
   const indexHtml = path.join(distDir, 'index.html');
   assert(
@@ -619,10 +733,10 @@ function verifyStage9WebStudioBundle() {
   const cssSizeKb = (fs.statSync(cssPath).size / 1024).toFixed(1);
 
   const jsBundle = fs.readFileSync(jsPath, 'utf8');
-  for (const marker of ['Salt & Terracotta', 'Timelines 1', '#20D5EC']) {
+  for (const marker of ['Salt & Terracotta', 'Dreamina · Live Browser', 'Verify & Detect Models', 'Timelines 1']) {
     assert(
       jsBundle.toLowerCase().includes(marker.toLowerCase()),
-      `Stage 5 Studio UI marker missing in compiled bundle: ${marker}`
+      `Stage 6 Studio UI marker missing in compiled bundle: ${marker}`
     );
   }
 
@@ -641,17 +755,17 @@ function verifyStage9WebStudioBundle() {
   }
 
   logStep(
-    '9/9 web-studio',
-    `Dreamina 1:1 Vite bundle + dist/media real photography verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
+    '10/10 web-studio',
+    `Dreamina 1:1 Vite bundle + live Cloud/Browser bridge UI + dist/media verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
   );
 }
 
 async function main() {
-  console.log('\nOpen-DreamFlow — Running 9-Stage End-to-End Verification Suite...');
+  console.log('\nOpen-DreamFlow — Running 10-Stage End-to-End Verification Suite...');
   await verifyStage1ProviderSdk();
   await verifyLiveServerStages();
-  verifyStage9WebStudioBundle();
-  console.log('All 9/9 Open-DreamFlow subsystems passed verification with 0 errors!\n');
+  verifyStage10WebStudioBundle();
+  console.log('All 10/10 Open-DreamFlow subsystems passed verification with 0 errors!\n');
 }
 
 main().catch((err) => {

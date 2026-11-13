@@ -8,6 +8,7 @@ import type {
   MCPToolDefinition,
   McpBackendHealth,
   ProviderId,
+  ProviderVerificationResult,
   ResolutionTier,
 } from '../types/studio';
 
@@ -40,21 +41,89 @@ export const LOCAL_MCP_HTTP_URL = `${LOCAL_MCP_BASE}/mcp`;
 export const LOCAL_MCP_WS_URL = `${LOCAL_MCP_WS_ORIGIN}/mcp`;
 export const LOCAL_BRIDGE_WS_URL = `${LOCAL_MCP_WS_ORIGIN}/bridge`;
 
+export type BackendProviderSlug =
+  | 'gemini'
+  | 'fal'
+  | 'replicate'
+  | 'seedance'
+  | 'comfyui'
+  | 'ffmpeg-local';
+
+export function toBackendProviderSlug(provider?: ProviderId): BackendProviderSlug {
+  switch (provider) {
+    case 'gemini-api':
+    case 'gemini-omni':
+      return 'gemini';
+    case 'fal':
+      return 'fal';
+    case 'replicate':
+      return 'replicate';
+    case 'seedance':
+      return 'seedance';
+    case 'comfyui':
+      return 'comfyui';
+    default:
+      return 'ffmpeg-local';
+  }
+}
+
+export function isCloudOrBridgeProvider(provider: ProviderId): boolean {
+  return (
+    provider === 'dreamina-bridge' ||
+    provider === 'chrome-bridge-dreamina' ||
+    provider === 'flow-bridge' ||
+    provider === 'chrome-bridge-flow' ||
+    provider === 'gemini-api' ||
+    provider === 'gemini-omni' ||
+    provider === 'fal' ||
+    provider === 'replicate' ||
+    provider === 'seedance' ||
+    provider === 'comfyui'
+  );
+}
+
+export function getProviderDisplayLabel(provider: ProviderId): string {
+  switch (provider) {
+    case 'dreamina-bridge':
+    case 'chrome-bridge-dreamina':
+      return 'Dreamina · Live Browser';
+    case 'flow-bridge':
+    case 'chrome-bridge-flow':
+      return 'Google Flow · Live Browser';
+    case 'gemini-api':
+    case 'gemini-omni':
+      return 'Google Gemini / Veo 3.1 API';
+    case 'fal':
+      return 'Fal.ai · Flux / Wan Pro';
+    case 'replicate':
+      return 'Replicate · Flux / Video';
+    case 'seedance':
+      return 'BytePlus · Seedream / Seedance';
+    case 'comfyui':
+      return 'ComfyUI · Local GPU (:8188)';
+    case 'mcp-router':
+      return 'MCP Studio Pipeline (:3001)';
+    default:
+      return 'FFmpeg 8.0 · Local Camera';
+  }
+}
+
 export function getActiveApiKeyForProvider(
   provider: ProviderId,
   byok: BYOKCredentials
 ): string | undefined {
   switch (provider) {
+    case 'gemini-api':
     case 'gemini-omni':
-      return byok.geminiApiKey || undefined;
+      return byok.geminiApiKey?.trim() || undefined;
     case 'seedance':
-      return byok.seedanceApiKey || undefined;
+      return byok.seedanceApiKey?.trim() || undefined;
     case 'fal':
-      return byok.falApiKey || undefined;
+      return byok.falApiKey?.trim() || undefined;
     case 'replicate':
-      return byok.replicateApiKey || undefined;
+      return byok.replicateApiKey?.trim() || undefined;
     case 'openai':
-      return byok.openaiApiKey || undefined;
+      return byok.openaiApiKey?.trim() || undefined;
     default:
       return undefined;
   }
@@ -79,6 +148,9 @@ export interface GenerationRequest {
 }
 
 export interface GenerationResult {
+  ok: boolean;
+  error?: string;
+  jobId?: string;
   providerLabel: string;
   interactionId: string;
   imageUrl?: string;
@@ -120,7 +192,7 @@ export function toBackendRelativeMediaPath(urlOrPath?: string): string | undefin
   return urlOrPath;
 }
 
-function stripDataUrlPrefix(dataUrl: string): { mimeType: string; base64: string } {
+export function stripDataUrlPrefix(dataUrl: string): { mimeType: string; base64: string } {
   const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
   if (!match) {
     return { mimeType: 'image/png', base64: dataUrl };
@@ -135,9 +207,12 @@ export function estimateZeroMarkupCostUsd(
   resolution: ResolutionTier = '1080p'
 ): number {
   if (
+    provider === 'ffmpeg-local' ||
     provider === 'local-canvas' ||
     provider === 'comfyui' ||
     provider === 'mcp-router' ||
+    provider === 'dreamina-bridge' ||
+    provider === 'flow-bridge' ||
     provider === 'chrome-bridge-flow' ||
     provider === 'chrome-bridge-dreamina'
   ) {
@@ -147,7 +222,7 @@ export function estimateZeroMarkupCostUsd(
     return resolution === '4K' ? 0.04 : 0.02;
   }
   const perSec =
-    provider === 'gemini-omni'
+    provider === 'gemini-api' || provider === 'gemini-omni'
       ? resolution === '360p'
         ? 0.015
         : 0.045
@@ -230,6 +305,244 @@ export async function probeLiveMcpBackend(): Promise<McpBackendHealth> {
   }
 }
 
+export async function verifyProviderViaBackend(params: {
+  provider: 'gemini' | 'fal' | 'replicate' | 'seedance' | 'comfyui';
+  apiKey?: string;
+  baseUrl?: string;
+}): Promise<ProviderVerificationResult> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 18000);
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/verify-provider`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify(params),
+    });
+    clearTimeout(timer);
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      valid?: boolean;
+      videoModels?: string[];
+      imageModels?: string[];
+      models?: string[];
+      allCount?: number;
+      error?: string;
+      message?: string;
+    };
+    const valid = Boolean(res.ok && (json.valid ?? json.ok));
+    return {
+      checkedAt: Date.now(),
+      valid,
+      videoModels: Array.isArray(json.videoModels) ? json.videoModels : [],
+      imageModels: Array.isArray(json.imageModels) ? json.imageModels : [],
+      allCount: json.allCount,
+      error: valid ? undefined : json.error || json.message || `Verification failed (HTTP ${res.status})`,
+      message: json.message,
+    };
+  } catch (err) {
+    return {
+      checkedAt: Date.now(),
+      valid: false,
+      error:
+        err instanceof Error
+          ? `Could not reach :3001 verification endpoint (${err.message})`
+          : 'Could not reach :3001 verification endpoint',
+    };
+  }
+}
+
+export async function generateImageViaBackend(params: {
+  prompt: string;
+  aspectRatio?: AspectRatio;
+  referenceImages?: string[];
+  provider?: ProviderId;
+  apiKey?: string;
+  baseUrl?: string;
+}): Promise<{
+  ok: boolean;
+  imageUrl?: string;
+  fullUrl?: string;
+  model?: string;
+  engine?: string;
+  error?: string;
+}> {
+  try {
+    const backendProvider = toBackendProviderSlug(params.provider);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 120000);
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/generate-image`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        prompt: params.prompt,
+        aspectRatio: params.aspectRatio || '16:9',
+        referenceImages: params.referenceImages,
+        provider: backendProvider,
+        apiKey: params.apiKey,
+        baseUrl: params.baseUrl,
+      }),
+    });
+    clearTimeout(timer);
+
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      imageUrl?: string;
+      fullUrl?: string;
+      url?: string;
+      model?: string;
+      engine?: string;
+      error?: string;
+    };
+
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        error: json.error || `Image generation failed (HTTP ${res.status})`,
+      };
+    }
+
+    const rel = json.imageUrl || toBackendRelativeMediaPath(json.fullUrl || json.url);
+    const full = json.fullUrl || normalizeBackendMediaUrl(rel || json.url, true);
+    if (!rel && !full) {
+      return { ok: false, error: json.error || 'No image URL returned from backend' };
+    }
+
+    return {
+      ok: true,
+      imageUrl: rel || full,
+      fullUrl: full || rel,
+      model: json.model,
+      engine: json.engine,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Network error calling /api/generate-image',
+    };
+  }
+}
+
+export async function enqueueLiveBridgeJobViaBackend(params: {
+  target: 'dreamina' | 'google-flow';
+  mode: 'image' | 'video';
+  prompt: string;
+  aspectRatio?: AspectRatio;
+  durationSec?: number;
+  referenceImages?: string[];
+  waitForResult?: boolean;
+  timeoutMs?: number;
+}): Promise<{
+  ok: boolean;
+  jobId?: string;
+  status?: string;
+  imageUrl?: string;
+  videoUrl?: string;
+  fullUrl?: string;
+  error?: string;
+}> {
+  try {
+    const timeoutMs = params.timeoutMs ?? 180000;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs + 10000);
+
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/bridge/enqueue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        target: params.target,
+        mode: params.mode,
+        prompt: params.prompt,
+        aspectRatio: params.aspectRatio || '16:9',
+        durationSec: params.durationSec || 6,
+        referenceImages: params.referenceImages || [],
+        waitForResult: params.waitForResult ?? true,
+        timeoutMs,
+      }),
+    });
+    clearTimeout(timer);
+
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      jobId?: string;
+      imageUrl?: string;
+      localImageUrl?: string;
+      videoUrl?: string;
+      localVideoUrl?: string;
+      fullUrl?: string;
+      error?: string;
+      job?: {
+        jobId?: string;
+        status?: string;
+        imageUrl?: string;
+        localImageUrl?: string;
+        videoUrl?: string;
+        localVideoUrl?: string;
+        resultUrl?: string;
+        fullUrl?: string;
+        error?: string;
+      };
+    };
+
+    const job = json.job || {};
+    const jobId = job.jobId || json.jobId;
+    const status = job.status;
+
+    if (!res.ok || json.ok === false || status === 'failed') {
+      return {
+        ok: false,
+        jobId,
+        status,
+        error:
+          json.error ||
+          job.error ||
+          `No live ${params.target === 'dreamina' ? 'Dreamina' : 'Google Flow'} browser session answered within timeout. Open the tab with Chrome Bridge or run the 1-line connector in BYOK · MCP → Browser Credit Bridge.`,
+      };
+    }
+
+    const rawImg =
+      job.localImageUrl ||
+      json.localImageUrl ||
+      job.imageUrl ||
+      json.imageUrl ||
+      (params.mode === 'image' ? job.resultUrl : undefined);
+    const rawVid =
+      job.localVideoUrl ||
+      json.localVideoUrl ||
+      job.videoUrl ||
+      json.videoUrl ||
+      (params.mode === 'video' ? job.resultUrl : undefined);
+
+    const normImg = rawImg ? toBackendRelativeMediaPath(rawImg) || rawImg : undefined;
+    const normVid = rawVid ? toBackendRelativeMediaPath(rawVid) || rawVid : undefined;
+    const fullUrl =
+      json.fullUrl ||
+      job.fullUrl ||
+      normalizeBackendMediaUrl(normVid || normImg, true);
+
+    return {
+      ok: true,
+      jobId,
+      status: status || 'succeeded',
+      imageUrl: normImg,
+      videoUrl: normVid,
+      fullUrl,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error && err.name === 'AbortError'
+          ? `Timed out waiting for ${params.target === 'dreamina' ? 'Dreamina' : 'Google Flow'} browser tab to finish rendering.`
+          : err instanceof Error
+          ? err.message
+          : 'Failed to reach /api/bridge/enqueue on :3001',
+    };
+  }
+}
+
 export async function renderVideoViaBackend(params: {
   prompt: string;
   imageUrl?: string;
@@ -242,20 +555,25 @@ export async function renderVideoViaBackend(params: {
   previousInteractionId?: string;
   provider?: ProviderId;
   apiKey?: string;
+  baseUrl?: string;
   outputName?: string;
 }): Promise<{
   ok: boolean;
   videoUrl?: string;
   rawVideoPath?: string;
   interactionId?: string;
+  model?: string;
   engine?: string;
   durationSec?: number;
+  error?: string;
 }> {
   try {
     const cleanInput = toBackendRelativeMediaPath(params.imageUrl);
     const cleanEnd = toBackendRelativeMediaPath(params.endImage);
+    const backendProvider = toBackendProviderSlug(params.provider);
+    const isCloud = backendProvider !== 'ffmpeg-local';
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 28000);
+    const timer = setTimeout(() => ctrl.abort(), isCloud ? 240000 : 32000);
 
     const res = await fetch(`${LOCAL_MCP_BASE}/api/render-video`, {
       method: 'POST',
@@ -279,38 +597,59 @@ export async function renderVideoViaBackend(params: {
         mood: params.mood,
         grade: params.mood,
         previousInteractionId: params.previousInteractionId,
-        provider: params.provider,
+        provider: backendProvider,
         apiKey: params.apiKey,
+        baseUrl: params.baseUrl,
         outputName: params.outputName,
       }),
     });
     clearTimeout(timer);
 
-    if (!res.ok) return { ok: false };
-    const json = (await res.json()) as {
+    const json = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
       videoUrl?: string;
       fullUrl?: string;
       url?: string;
       interactionId?: string;
+      operationName?: string;
+      model?: string;
       engine?: string;
       durationSec?: number;
+      error?: string;
     };
+
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        error: json.error || `Video generation failed (HTTP ${res.status})`,
+      };
+    }
 
     const resolvedUrl =
       json.fullUrl || normalizeBackendMediaUrl(json.videoUrl || json.url, true);
-    if (!resolvedUrl) return { ok: false };
+    if (!resolvedUrl) {
+      return { ok: false, error: json.error || 'No video URL returned from backend' };
+    }
 
     return {
       ok: true,
       videoUrl: resolvedUrl,
       rawVideoPath: json.videoUrl || json.url,
-      interactionId: json.interactionId,
-      engine: json.engine || 'ffmpeg-local',
+      interactionId: json.interactionId || json.operationName,
+      model: json.model,
+      engine: json.engine || backendProvider,
       durationSec: json.durationSec || params.durationSec,
     };
-  } catch {
-    return { ok: false };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error && err.name === 'AbortError'
+          ? 'Video generation timed out while waiting for provider.'
+          : err instanceof Error
+          ? err.message
+          : 'Network error calling /api/render-video',
+    };
   }
 }
 
@@ -468,7 +807,7 @@ export async function compileTimelineViaBackend(params: {
 export async function executeStudioGeneration(
   req: GenerationRequest
 ): Promise<GenerationResult> {
-  const interactionId = `int_omni_${Math.random().toString(36).slice(2, 10)}`;
+  const interactionId = `int_df_${Math.random().toString(36).slice(2, 10)}`;
   const costEstimateUsd = estimateZeroMarkupCostUsd(
     req.provider,
     req.mode,
@@ -476,112 +815,167 @@ export async function executeStudioGeneration(
     req.resolution || '1080p'
   );
 
-  if (req.provider === 'gemini-omni' && req.byok.geminiApiKey.trim()) {
-    try {
-      const parts: Array<Record<string, unknown>> = [{ text: req.prompt }];
-      (req.referenceImages || [])
-        .filter((img) => img.startsWith('data:'))
-        .slice(0, 6)
-        .forEach((img) => {
-          const { mimeType, base64 } = stripDataUrlPrefix(img);
-          parts.push({ inline_data: { mime_type: mimeType, data: base64 } });
-        });
-      if (req.firstFrameDataUrl?.startsWith('data:')) {
-        const { mimeType, base64 } = stripDataUrlPrefix(req.firstFrameDataUrl);
-        parts.push({ role_hint: 'first_frame', inline_data: { mime_type: mimeType, data: base64 } });
-      }
-      if (req.lastFrameDataUrl?.startsWith('data:')) {
-        const { mimeType, base64 } = stripDataUrlPrefix(req.lastFrameDataUrl);
-        parts.push({ role_hint: 'last_frame', inline_data: { mime_type: mimeType, data: base64 } });
-      }
+  // 1. Real Live Browser Bridge (Dreamina Canvas or Google Flow) — NEVER fake with FFmpeg
+  if (
+    req.provider === 'dreamina-bridge' ||
+    req.provider === 'chrome-bridge-dreamina' ||
+    req.provider === 'flow-bridge' ||
+    req.provider === 'chrome-bridge-flow'
+  ) {
+    const target =
+      req.provider === 'flow-bridge' || req.provider === 'chrome-bridge-flow'
+        ? 'google-flow'
+        : 'dreamina';
+    const bridgeMode =
+      req.mode === 'video' || req.mode === 'multiframe' ? 'video' : 'image';
 
-      const body: Record<string, unknown> = {
-        model: req.byok.geminiModel || 'gemini-omni-1.2-flash',
-        input: [{ role: 'user', parts }],
-        generation_config: {
-          response_modalities:
-            req.mode === 'video' || req.mode === 'multiframe' ? ['VIDEO', 'AUDIO'] : ['IMAGE'],
-          aspect_ratio: req.aspectRatio,
-          duration_seconds: req.durationSec || 8,
-          resolution: req.resolution || '1080p',
-        },
+    dispatchBridgeJob({
+      jobId: interactionId,
+      target,
+      prompt: req.prompt,
+      aspectRatio: req.aspectRatio,
+      durationSec: req.durationSec || 6,
+      referenceImages: req.referenceImages || [],
+      previousInteractionId: req.previousInteractionId,
+    });
+
+    const bridgeRes = await enqueueLiveBridgeJobViaBackend({
+      target,
+      mode: bridgeMode,
+      prompt: req.prompt,
+      aspectRatio: req.aspectRatio,
+      durationSec: req.durationSec || 6,
+      referenceImages: req.referenceImages || [],
+      waitForResult: true,
+      timeoutMs: 180000,
+    });
+
+    if (!bridgeRes.ok) {
+      return {
+        ok: false,
+        error: bridgeRes.error,
+        jobId: bridgeRes.jobId,
+        providerLabel:
+          target === 'dreamina'
+            ? 'Dreamina · Live Browser'
+            : 'Google Flow · Live Browser',
+        interactionId: bridgeRes.jobId || interactionId,
+        usedLiveEndpoint: true,
+        costEstimateUsd: 0,
       };
-      if (req.previousInteractionId) {
-        body.previous_interaction_id = req.previousInteractionId;
-      }
-
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/interactions?key=${encodeURIComponent(
-          req.byok.geminiApiKey.trim()
-        )}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }
-      );
-
-      if (res.ok) {
-        const json = (await res.json()) as {
-          id?: string;
-          interaction_id?: string;
-          video_uri?: string;
-          image_uri?: string;
-        };
-        return {
-          providerLabel: 'Google AI Studio · Gemini Omni 1.2 Flash ($0 Markup)',
-          interactionId: json.interaction_id || json.id || interactionId,
-          imageUrl: json.image_uri,
-          videoUrl: json.video_uri,
-          usedLiveEndpoint: true,
-          costEstimateUsd,
-        };
-      }
-    } catch {
-      // Fall through to live local FFmpeg / MCP engine on :3001
     }
+
+    return {
+      ok: true,
+      jobId: bridgeRes.jobId,
+      providerLabel:
+        target === 'dreamina'
+          ? 'Dreamina · Live Browser ($0 Credits)'
+          : 'Google Flow · Live Browser ($0 Credits)',
+      interactionId: bridgeRes.jobId || interactionId,
+      imageUrl: bridgeRes.imageUrl,
+      videoUrl: bridgeRes.videoUrl,
+      usedLiveEndpoint: true,
+      costEstimateUsd: 0,
+    };
   }
 
-  if (req.provider === 'seedance' && req.byok.seedanceApiKey.trim()) {
-    try {
-      const endpoint =
-        req.byok.seedanceEndpoint.trim() ||
-        'https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks';
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${req.byok.seedanceApiKey.trim()}`,
-        },
-        body: JSON.stringify({
-          model:
-            req.mode === 'video' || req.mode === 'multiframe'
-              ? 'seedance-1-0-pro'
-              : 'seedream-3-0',
-          content: [{ type: 'text', text: req.prompt }],
-          parameters: {
-            aspect_ratio: req.aspectRatio,
-            duration: req.durationSec || 5,
-            resolution: req.resolution || '1080p',
-          },
-        }),
+  // 2. Real Cloud BYOK & Local GPU Engines (Google Gemini / Veo 3.1, Fal, Replicate, Seedance, ComfyUI) — NEVER fake with FFmpeg
+  if (isCloudOrBridgeProvider(req.provider)) {
+    const apiKey = getActiveApiKeyForProvider(req.provider, req.byok);
+    const label = getProviderDisplayLabel(req.provider);
+
+    if (req.provider !== 'comfyui' && !apiKey) {
+      const missingMsg =
+        req.provider === 'gemini-api' || req.provider === 'gemini-omni'
+          ? 'Enter your Google AI Studio API key (AIza...) or switch to Google Flow · Live Browser'
+          : `Enter your ${label} API key in BYOK · MCP, or switch to FFmpeg 8.0 · Local Camera`;
+      return {
+        ok: false,
+        error: missingMsg,
+        providerLabel: label,
+        interactionId,
+        usedLiveEndpoint: true,
+        costEstimateUsd,
+      };
+    }
+
+    if (req.mode === 'video' || req.mode === 'multiframe') {
+      const vidRes = await renderVideoViaBackend({
+        prompt: req.prompt,
+        imageUrl: req.firstFrameDataUrl,
+        endImage: req.lastFrameDataUrl,
+        durationSec: Math.min(req.durationSec || 6, 15),
+        aspectRatio: req.aspectRatio,
+        resolution: req.resolution,
+        cameraMotion: req.cameraMotion,
+        mood: req.mood,
+        previousInteractionId: req.previousInteractionId,
+        provider: req.provider,
+        apiKey,
+        baseUrl: req.provider === 'comfyui' ? req.byok.comfyUiUrl : undefined,
+        outputName: req.outputName,
       });
-      if (res.ok) {
-        const json = (await res.json()) as { id?: string; video_url?: string; image_url?: string };
+
+      if (!vidRes.ok || !vidRes.videoUrl) {
         return {
-          providerLabel: 'BytePlus · Seedream / Seedance ($0 Markup)',
-          interactionId: json.id || interactionId,
-          imageUrl: json.image_url,
-          videoUrl: json.video_url,
+          ok: false,
+          error: vidRes.error || `${label} video generation failed`,
+          providerLabel: label,
+          interactionId,
           usedLiveEndpoint: true,
           costEstimateUsd,
         };
       }
-    } catch {
-      // Fall through to live :3001 FFmpeg synthesis
+
+      return {
+        ok: true,
+        providerLabel: vidRes.model ? `${label} · ${vidRes.model}` : label,
+        interactionId: vidRes.interactionId || interactionId,
+        imageUrl:
+          req.firstFrameDataUrl &&
+          (req.firstFrameDataUrl.startsWith('/media/') ||
+            req.firstFrameDataUrl.startsWith('http'))
+            ? req.firstFrameDataUrl
+            : undefined,
+        videoUrl: vidRes.videoUrl,
+        usedLiveEndpoint: true,
+        costEstimateUsd,
+      };
     }
+
+    // Image or 9-grid synthesis via real provider endpoint
+    const imgRes = await generateImageViaBackend({
+      prompt: req.prompt,
+      aspectRatio: req.aspectRatio,
+      referenceImages: req.referenceImages,
+      provider: req.provider,
+      apiKey,
+      baseUrl: req.provider === 'comfyui' ? req.byok.comfyUiUrl : undefined,
+    });
+
+    if (!imgRes.ok || (!imgRes.imageUrl && !imgRes.fullUrl)) {
+      return {
+        ok: false,
+        error: imgRes.error || `${label} image generation failed`,
+        providerLabel: label,
+        interactionId,
+        usedLiveEndpoint: true,
+        costEstimateUsd,
+      };
+    }
+
+    return {
+      ok: true,
+      providerLabel: imgRes.model ? `${label} · ${imgRes.model}` : label,
+      interactionId,
+      imageUrl: imgRes.imageUrl || imgRes.fullUrl,
+      usedLiveEndpoint: true,
+      costEstimateUsd,
+    };
   }
 
+  // 3. Explicit MCP Tool Node Pipeline
   if (req.provider === 'mcp-router' && req.mcpTool) {
     try {
       const result = await callMcpServerTool(req.mcpTool.serverUrl, req.mcpTool.name, {
@@ -594,6 +988,7 @@ export async function executeStudioGeneration(
       });
       if (result.connected) {
         return {
+          ok: true,
           providerLabel: `MCP · ${req.mcpTool.serverName} (${req.mcpTool.name})`,
           interactionId: result.interactionId || interactionId,
           imageUrl: result.imageUrl,
@@ -603,33 +998,11 @@ export async function executeStudioGeneration(
         };
       }
     } catch {
-      // Fall through
+      // Fall through to local FFmpeg engine
     }
   }
 
-  if (req.provider === 'chrome-bridge-flow' || req.provider === 'chrome-bridge-dreamina') {
-    const target = req.provider === 'chrome-bridge-flow' ? 'google-flow' : 'dreamina';
-    dispatchBridgeJob({
-      jobId: interactionId,
-      target,
-      prompt: req.prompt,
-      aspectRatio: req.aspectRatio,
-      durationSec: req.durationSec || 8,
-      referenceImages: req.referenceImages || [],
-      previousInteractionId: req.previousInteractionId,
-    });
-    return {
-      providerLabel:
-        target === 'google-flow'
-          ? 'Chrome Bridge · flow.google.com ($0 Credits)'
-          : 'Chrome Bridge · dreamina.capcut.com ($0 Credits)',
-      interactionId,
-      usedLiveEndpoint: true,
-      costEstimateUsd: 0,
-    };
-  }
-
-  // Try live :3001 FFmpeg + Zero-Markup Media Server first for video/multiframe requests
+  // 4. Explicit FFmpeg 8.0 · Local Camera ($0.00 Offline Deterministic Engine)
   if (req.mode === 'video' || req.mode === 'multiframe') {
     const lower = req.prompt.toLowerCase();
     const inputImg =
@@ -653,13 +1026,14 @@ export async function executeStudioGeneration(
       cameraMotion: req.cameraMotion,
       mood: req.mood,
       previousInteractionId: req.previousInteractionId,
-      provider: req.provider,
+      provider: 'ffmpeg-local',
       outputName: req.outputName,
     });
 
     if (ffmpegRes.ok && ffmpegRes.videoUrl) {
       return {
-        providerLabel: `Live :3001 · ${ffmpegRes.engine || 'FFmpeg H.264 + Stereo Audio'} ($0)`,
+        ok: true,
+        providerLabel: 'FFmpeg 8.0 · Local Camera ($0.00)',
         interactionId: ffmpegRes.interactionId || interactionId,
         imageUrl: inputImg.startsWith('/media/') || inputImg.startsWith('http') ? inputImg : undefined,
         videoUrl: ffmpegRes.videoUrl,
@@ -667,10 +1041,28 @@ export async function executeStudioGeneration(
         costEstimateUsd: 0,
       };
     }
+  } else if (req.mode === 'image') {
+    const localImgRes = await generateImageViaBackend({
+      prompt: req.prompt,
+      aspectRatio: req.aspectRatio,
+      referenceImages: req.referenceImages,
+      provider: 'ffmpeg-local',
+    });
+    if (localImgRes.ok && (localImgRes.imageUrl || localImgRes.fullUrl)) {
+      return {
+        ok: true,
+        providerLabel: 'FFmpeg 8.0 · Local Camera ($0.00)',
+        interactionId,
+        imageUrl: localImgRes.imageUrl || localImgRes.fullUrl,
+        usedLiveEndpoint: true,
+        costEstimateUsd: 0,
+      };
+    }
   }
 
   return {
-    providerLabel: 'Open-DreamFlow Local Engine ($0 Instant)',
+    ok: true,
+    providerLabel: 'FFmpeg 8.0 · Local Camera ($0.00)',
     interactionId,
     usedLiveEndpoint: false,
     costEstimateUsd: 0,
@@ -992,9 +1384,11 @@ export async function inpaintViaBackend(params: {
   prompt?: string;
   provider?: ProviderId;
   apiKey?: string;
-}): Promise<{ ok: boolean; imageUrl?: string; fullUrl?: string; engine?: string }> {
+  baseUrl?: string;
+}): Promise<{ ok: boolean; imageUrl?: string; fullUrl?: string; engine?: string; error?: string }> {
   try {
     const cleanSource = toBackendRelativeMediaPath(params.imageUrl) || params.imageUrl;
+    const backendProvider = toBackendProviderSlug(params.provider);
     const res = await fetch(`${LOCAL_MCP_BASE}/api/inpaint`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1002,27 +1396,31 @@ export async function inpaintViaBackend(params: {
         imageUrl: cleanSource,
         maskDataUrl: params.maskDataUrl,
         prompt: params.prompt,
-        provider: params.provider,
+        provider: backendProvider,
         apiKey: params.apiKey,
+        baseUrl: params.baseUrl,
       }),
     });
-    if (!res.ok) return { ok: false };
-    const json = (await res.json()) as {
+    const json = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
       imageUrl?: string;
       fullUrl?: string;
       engine?: string;
+      error?: string;
     };
+    if (!res.ok || json.ok === false) {
+      return { ok: false, error: json.error || `Inpaint failed (HTTP ${res.status})` };
+    }
     const url = json.imageUrl || toBackendRelativeMediaPath(json.fullUrl);
-    if (!url) return { ok: false };
+    if (!url) return { ok: false, error: json.error };
     return {
       ok: true,
       imageUrl: url,
       fullUrl: json.fullUrl || normalizeBackendMediaUrl(url, true),
-      engine: json.engine || 'ffmpeg-local',
+      engine: json.engine || backendProvider,
     };
-  } catch {
-    return { ok: false };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Inpaint network error' };
   }
 }
 
@@ -1032,15 +1430,18 @@ export async function outpaintViaBackend(params: {
   prompt?: string;
   provider?: ProviderId;
   apiKey?: string;
+  baseUrl?: string;
 }): Promise<{
   ok: boolean;
   imageUrl?: string;
   fullUrl?: string;
   width?: number;
   height?: number;
+  error?: string;
 }> {
   try {
     const cleanSource = toBackendRelativeMediaPath(params.imageUrl) || params.imageUrl;
+    const backendProvider = toBackendProviderSlug(params.provider);
     const res = await fetch(`${LOCAL_MCP_BASE}/api/outpaint`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1048,20 +1449,24 @@ export async function outpaintViaBackend(params: {
         imageUrl: cleanSource,
         targetAspect: params.targetAspect,
         prompt: params.prompt,
-        provider: params.provider,
+        provider: backendProvider,
         apiKey: params.apiKey,
+        baseUrl: params.baseUrl,
       }),
     });
-    if (!res.ok) return { ok: false };
-    const json = (await res.json()) as {
+    const json = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
       imageUrl?: string;
       fullUrl?: string;
       width?: number;
       height?: number;
+      error?: string;
     };
+    if (!res.ok || json.ok === false) {
+      return { ok: false, error: json.error || `Outpaint failed (HTTP ${res.status})` };
+    }
     const url = json.imageUrl || toBackendRelativeMediaPath(json.fullUrl);
-    if (!url) return { ok: false };
+    if (!url) return { ok: false, error: json.error };
     return {
       ok: true,
       imageUrl: url,
@@ -1069,8 +1474,8 @@ export async function outpaintViaBackend(params: {
       width: json.width,
       height: json.height,
     };
-  } catch {
-    return { ok: false };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Outpaint network error' };
   }
 }
 
@@ -1272,19 +1677,24 @@ export async function keyframeBridgeViaBackend(params: {
   prompt?: string;
   provider?: ProviderId;
   apiKey?: string;
+  baseUrl?: string;
 }): Promise<{
   ok: boolean;
   videoUrl?: string;
   fullUrl?: string;
   durationSec?: number;
   motionCurve?: KeyframeBridgeCurve;
+  model?: string;
   engine?: string;
+  error?: string;
 }> {
   try {
     const cleanStart = toBackendRelativeMediaPath(params.startImageUrl) || params.startImageUrl;
     const cleanEnd = toBackendRelativeMediaPath(params.endImageUrl) || params.endImageUrl;
+    const backendProvider = toBackendProviderSlug(params.provider);
+    const isCloud = backendProvider !== 'ffmpeg-local';
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 30000);
+    const timer = setTimeout(() => ctrl.abort(), isCloud ? 240000 : 35000);
 
     const res = await fetch(`${LOCAL_MCP_BASE}/api/keyframe-bridge`, {
       method: 'POST',
@@ -1296,24 +1706,33 @@ export async function keyframeBridgeViaBackend(params: {
         durationSec: params.durationSec || 6,
         motionCurve: params.motionCurve || 'ease-in-out',
         prompt: params.prompt,
-        provider: params.provider,
+        provider: backendProvider,
         apiKey: params.apiKey,
+        baseUrl: params.baseUrl,
       }),
     });
     clearTimeout(timer);
-    if (!res.ok) return { ok: false };
 
-    const json = (await res.json()) as {
+    const json = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
       videoUrl?: string;
       fullUrl?: string;
       durationSec?: number;
       motionCurve?: KeyframeBridgeCurve;
+      model?: string;
       engine?: string;
+      error?: string;
     };
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        error: json.error || `Keyframe bridge failed (HTTP ${res.status})`,
+      };
+    }
+
     const rel = json.videoUrl || toBackendRelativeMediaPath(json.fullUrl);
     const full = json.fullUrl || normalizeBackendMediaUrl(rel, true);
-    if (!full && !rel) return { ok: false };
+    if (!full && !rel) return { ok: false, error: json.error };
 
     return {
       ok: true,
@@ -1321,10 +1740,19 @@ export async function keyframeBridgeViaBackend(params: {
       fullUrl: full || rel,
       durationSec: json.durationSec || params.durationSec || 6,
       motionCurve: json.motionCurve || params.motionCurve || 'ease-in-out',
-      engine: json.engine || 'ffmpeg-keyframe-bridge',
+      model: json.model,
+      engine: json.engine || backendProvider,
     };
-  } catch {
-    return { ok: false };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error && err.name === 'AbortError'
+          ? 'Keyframe bridge timed out while waiting for provider.'
+          : err instanceof Error
+          ? err.message
+          : 'Network error calling /api/keyframe-bridge',
+    };
   }
 }
 

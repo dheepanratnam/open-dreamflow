@@ -22,6 +22,7 @@ import type {
   MultiframeBridge,
   MultiframeCard,
   ProviderId,
+  ProviderVerificationResult,
   ResolutionTier,
   StudioHistorySnapshot,
   StudioPresetId,
@@ -56,6 +57,7 @@ import {
   compileTimelineViaBackend,
   deleteDiskProject,
   discoverMcpTools,
+  enqueueLiveBridgeJobViaBackend,
   executeStudioGeneration,
   exportDiskProjectBundle,
   extractLastFrameViaBackend,
@@ -63,8 +65,10 @@ import {
   getActiveApiKeyForProvider,
   getDefaultDiscoveredMcpTools,
   getDiskProject,
+  getProviderDisplayLabel,
   importDiskProjectBundle,
   inpaintViaBackend,
+  isCloudOrBridgeProvider,
   keyframeBridgeViaBackend,
   listDiskProjects,
   normalizeBackendMediaUrl,
@@ -78,6 +82,7 @@ import {
   sliceGridViaBackend,
   uploadMediaViaBackend,
   upscaleViaBackend,
+  verifyProviderViaBackend,
 } from '../services/executionRouter';
 import {
   compileTimelineToWebm,
@@ -87,8 +92,118 @@ import {
 } from '../utils/exporters';
 
 const BYOK_STORAGE_KEY = 'open_dreamflow_byok_v1';
+const ACTIVE_PROVIDER_KEY = 'open_dreamflow_active_provider_v1';
 const ACTIVE_PROJECT_KEY = 'dreamflow_active_project_id';
 const seenBridgeEventIds = new Set<string>();
+const completedBridgeJobIds = new Set<string>();
+
+export function normalizeProviderId(raw?: string | null): ProviderId {
+  switch (raw) {
+    case 'dreamina-bridge':
+    case 'chrome-bridge-dreamina':
+      return 'dreamina-bridge';
+    case 'flow-bridge':
+    case 'chrome-bridge-flow':
+      return 'flow-bridge';
+    case 'gemini-api':
+    case 'gemini-omni':
+      return 'gemini-api';
+    case 'fal':
+      return 'fal';
+    case 'replicate':
+      return 'replicate';
+    case 'seedance':
+      return 'seedance';
+    case 'comfyui':
+      return 'comfyui';
+    case 'mcp-router':
+      return 'mcp-router';
+    case 'openai':
+      return 'openai';
+    case 'ffmpeg-local':
+    case 'local-canvas':
+    default:
+      return 'ffmpeg-local';
+  }
+}
+
+function loadSavedActiveProvider(): ProviderId {
+  try {
+    const raw = localStorage.getItem(ACTIVE_PROVIDER_KEY);
+    if (raw) return normalizeProviderId(raw);
+  } catch {
+    // ignore storage errors
+  }
+  return 'ffmpeg-local';
+}
+
+function getLiveStatusBadgeForProvider(
+  provider: ProviderId,
+  fallbackLabel = 'Synthesizing via FFmpeg 8.0…'
+): string {
+  switch (normalizeProviderId(provider)) {
+    case 'dreamina-bridge':
+      return 'Generating on Dreamina Canvas…';
+    case 'flow-bridge':
+      return 'Generating on Google Flow…';
+    case 'gemini-api':
+      return 'Generating via Google Gemini / Veo 3.1…';
+    case 'fal':
+      return 'Generating via Fal.ai…';
+    case 'replicate':
+      return 'Generating via Replicate…';
+    case 'seedance':
+      return 'Generating via BytePlus Seedream/Seedance…';
+    case 'comfyui':
+      return 'Generating on ComfyUI (:8188)…';
+    case 'mcp-router':
+      return 'Running MCP Studio Pipeline…';
+    default:
+      return fallbackLabel;
+  }
+}
+
+function ensureProviderReadyOrPromptUser(
+  provider: ProviderId,
+  byok: BYOKCredentials,
+  openModal: (
+    tab?: 'byok' | 'mcp' | 'bridge',
+    focusField?: 'gemini' | 'fal' | 'replicate' | 'seedance' | 'comfyui' | null
+  ) => void,
+  showToast: (msg: string, kind?: 'ok' | 'error') => void
+): boolean {
+  const norm = normalizeProviderId(provider);
+  if (norm === 'gemini-api' && !byok.geminiApiKey?.trim()) {
+    openModal('byok', 'gemini');
+    showToast(
+      'Enter your Google AI Studio API key (AIza...) or switch to Google Flow · Live Browser',
+      'error'
+    );
+    return false;
+  }
+  if (norm === 'fal' && !byok.falApiKey?.trim()) {
+    openModal('byok', 'fal');
+    showToast('Enter your Fal.ai API key in BYOK · MCP before running Fal.ai', 'error');
+    return false;
+  }
+  if (norm === 'replicate' && !byok.replicateApiKey?.trim()) {
+    openModal('byok', 'replicate');
+    showToast(
+      'Enter your Replicate API token (r8_...) in BYOK · MCP before running Replicate',
+      'error'
+    );
+    return false;
+  }
+  if (norm === 'seedance' && !byok.seedanceApiKey?.trim()) {
+    openModal('byok', 'seedance');
+    showToast(
+      'Enter your BytePlus Ark API key or switch to Dreamina · Live Browser',
+      'error'
+    );
+    return false;
+  }
+  return true;
+}
 
 function loadSavedByok(): BYOKCredentials {
   try {
@@ -105,7 +220,7 @@ function loadSavedByok(): BYOKCredentials {
 function defaultByok(): BYOKCredentials {
   return {
     geminiApiKey: '',
-    geminiModel: 'gemini-omni-1.2-flash',
+    geminiModel: 'veo-3.1-fast-generate-preview',
     seedanceApiKey: '',
     seedanceEndpoint: 'https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks',
     falApiKey: '',
@@ -168,10 +283,16 @@ export interface StudioState {
 
   providerModalOpen: boolean;
   providerModalTab: 'byok' | 'mcp' | 'bridge';
+  providerFocusField: null | 'gemini' | 'fal' | 'replicate' | 'seedance' | 'comfyui';
+  providerVerifyStatus: Record<string, ProviderVerificationResult>;
+  verifyingProvider: Record<string, boolean>;
+  liveBridgeTestRunning: null | 'dreamina' | 'google-flow';
+  liveBridgeStatusText: string | null;
   directorModalOpen: boolean;
   directorRunning: boolean;
   directorStepLog: string[];
   toastMessage: string | null;
+  toastKind: 'ok' | 'error';
 
   panX: number;
   panY: number;
@@ -227,10 +348,13 @@ export interface StudioState {
   setSearchModalOpen: (open: boolean) => void;
   setHistoryPanelOpen: (open: boolean) => void;
 
-  openProviderModal: (tab?: 'byok' | 'mcp' | 'bridge') => void;
+  openProviderModal: (
+    tab?: 'byok' | 'mcp' | 'bridge',
+    focusField?: StudioState['providerFocusField']
+  ) => void;
   closeProviderModal: () => void;
   setDirectorModalOpen: (open: boolean) => void;
-  showToast: (msg: string) => void;
+  showToast: (msg: string, kind?: 'ok' | 'error') => void;
   setViewport: (panX: number, panY: number, zoom: number) => void;
   toggleSnapToGrid: () => void;
   resetViewport: () => void;
@@ -316,6 +440,14 @@ export interface StudioState {
 
   setBridgeWsConnected: (connected: boolean) => void;
   ingestBridgeWsEvent: (ev: BridgeIncomingEvent) => boolean;
+  handleBridgeJobWsEvent: (payload: Record<string, unknown>) => void;
+  verifyProviderConnection: (
+    provider: 'gemini' | 'fal' | 'replicate' | 'seedance' | 'comfyui'
+  ) => Promise<void>;
+  runLiveBridgeTestGeneration: (
+    target: 'dreamina' | 'google-flow',
+    mode?: 'image' | 'video'
+  ) => Promise<void>;
   triggerTestBridgeCapture: (source?: 'dreamina' | 'flow') => Promise<void>;
   runChatQuickAction: (
     action: 'sequence-3' | 'remix-branch' | 'slice-sheet' | 'compile-master'
@@ -442,10 +574,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   providerModalOpen: false,
   providerModalTab: 'byok',
+  providerFocusField: null,
+  providerVerifyStatus: {},
+  verifyingProvider: {},
+  liveBridgeTestRunning: null,
+  liveBridgeStatusText: null,
   directorModalOpen: false,
   directorRunning: false,
   directorStepLog: [],
   toastMessage: null,
+  toastKind: 'ok',
 
   panX: 84,
   panY: 54,
@@ -474,7 +612,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   multiframes: initialGraph.multiframes,
   bridges: initialGraph.bridges,
 
-  activeProvider: 'local-canvas',
+  activeProvider: loadSavedActiveProvider(),
   byok: loadSavedByok(),
   mcpServers: [
     {
@@ -534,18 +672,26 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   setSearchModalOpen: (searchModalOpen) => set({ searchModalOpen }),
   setHistoryPanelOpen: (historyPanelOpen) => set({ historyPanelOpen }),
 
-  openProviderModal: (tab = 'byok') =>
-    set({ providerModalOpen: true, providerModalTab: tab }),
-  closeProviderModal: () => set({ providerModalOpen: false }),
+  openProviderModal: (tab = 'byok', focusField = null) =>
+    set({
+      providerModalOpen: true,
+      providerModalTab: tab,
+      providerFocusField: focusField,
+    }),
+  closeProviderModal: () =>
+    set({ providerModalOpen: false, providerFocusField: null }),
   setDirectorModalOpen: (directorModalOpen) => set({ directorModalOpen }),
 
-  showToast: (msg) => {
-    set({ toastMessage: msg });
-    setTimeout(() => {
-      if (get().toastMessage === msg) {
-        set({ toastMessage: null });
-      }
-    }, 3200);
+  showToast: (msg, kind = 'ok') => {
+    set({ toastMessage: msg, toastKind: kind });
+    setTimeout(
+      () => {
+        if (get().toastMessage === msg) {
+          set({ toastMessage: null });
+        }
+      },
+      kind === 'error' ? 5200 : 3200
+    );
   },
 
   setViewport: (panX, panY, zoom) =>
@@ -1584,6 +1730,17 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
 
     if (
+      !ensureProviderReadyOrPromptUser(
+        activeProvider,
+        byok,
+        get().openProviderModal,
+        get().showToast
+      )
+    ) {
+      return;
+    }
+
+    if (
       anchorNode?.kind === 'video' &&
       (promptSubMode === 'keyframe-bridge' || anchorNode.bridgeMode)
     ) {
@@ -1611,72 +1768,103 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }
     });
 
-    const spawnX = anchorNode
-      ? anchorNode.x + anchorNode.width + 110
-      : 600;
-    const spawnY = anchorNode ? anchorNode.y : 160;
-    const seed = Math.floor(Math.random() * 9000) + 100;
-    const tempId = `node_gen_${Date.now()}`;
-
     const isGrid9 =
       promptMode === '9-grid' || effectivePrompt.includes('/9-Grid');
     const isGrid4 =
       promptMode === '4-angle' || effectivePrompt.includes('/4-Angle');
-    const isVideo =
-      !isGrid9 &&
-      !isGrid4 &&
-      (promptMode === 'video' || anchorNode?.kind === 'video' || anchorNode?.kind === 'image');
+    const isVideo = !isGrid9 && !isGrid4 && promptMode === 'video';
+    const targetKind: CanvasNode['kind'] =
+      isGrid9 || isGrid4 ? 'contact-sheet' : isVideo ? 'video' : 'image';
 
-    const width = isVideo ? 568 : isGrid9 || isGrid4 ? 480 : 320;
-    const height = isVideo ? 320 : isGrid9 || isGrid4 ? 270 : 320;
-
+    const seed = Math.floor(Math.random() * 9000) + 100;
+    const liveBadge = getLiveStatusBadgeForProvider(activeProvider);
     const defaultSourceImg = isGrid9
       ? '/media/real_contact_9grid.jpg'
       : anchorNode?.imageUrl || refImages[0] || '/media/real_courtyard_sun.jpg';
 
-    const placeholderNode: CanvasNode = {
-      id: tempId,
-      kind: isGrid9 || isGrid4 ? 'contact-sheet' : isVideo ? 'video' : 'image',
-      title: isGrid9
-        ? 'Images · 9-Grid Sheet'
-        : isGrid4
-        ? 'Images · 4-Angle Sheet'
-        : isVideo
-        ? `Videos · ${promptDurationSec}s Shot`
-        : 'Images · Synthesized Frame',
-      prompt: effectivePrompt,
-      x: spawnX,
-      y: spawnY,
-      width,
-      height,
-      aspectRatio: promptAspect,
-      status: 'generating',
-      progress: 35,
-      imageUrl: defaultSourceImg,
-      seed,
-      resolution: promptResolution,
-      durationSec: isVideo ? promptDurationSec : undefined,
-      elementHandles: handles,
-      layers: createDefaultLayers(defaultSourceImg),
-      providerUsed: activeProvider,
-      createdAt: Date.now(),
-    };
+    const updateInPlace = Boolean(anchorNode && anchorNode.kind === targetKind);
+    const targetNodeId = updateInPlace && anchorNode ? anchorNode.id : `node_gen_${Date.now()}`;
 
-    set((s) => ({
-      nodes: [...s.nodes, placeholderNode],
-      selectedNodeIds: [tempId],
-      edges: anchorNode
-        ? [
-            ...s.edges,
-            {
-              id: `edge_gen_${tempId}`,
-              sourceId: anchorNode.id,
-              targetId: tempId,
-              kind: 'lineage',
-            },
-          ]
-        : s.edges,
-    }));
+    if (updateInPlace && anchorNode) {
+      const nextDims = isVideo
+        ? { width: 568, height: 320 }
+        : isGrid9 || isGrid4
+        ? { width: 480, height: 270 }
+        : getDimensionsForAspect(promptAspect, Math.max(320, anchorNode.width));
+
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === anchorNode.id
+            ? {
+                ...n,
+                prompt: effectivePrompt,
+                aspectRatio: promptAspect,
+                width: nextDims.width,
+                height: nextDims.height,
+                resolution: promptResolution,
+                durationSec: isVideo ? promptDurationSec : n.durationSec,
+                elementHandles: handles.length > 0 ? handles : n.elementHandles,
+                status: 'generating' as const,
+                progress: 35,
+                editBadge: liveBadge,
+              }
+            : n
+        ),
+      }));
+    } else {
+      const spawnX = anchorNode
+        ? anchorNode.x + anchorNode.width + 110
+        : 600;
+      const spawnY = anchorNode ? anchorNode.y : 160;
+      const imgDims = getDimensionsForAspect(promptAspect, 360);
+      const width = isVideo ? 568 : isGrid9 || isGrid4 ? 480 : imgDims.width;
+      const height = isVideo ? 320 : isGrid9 || isGrid4 ? 270 : imgDims.height;
+
+      const placeholderNode: CanvasNode = {
+        id: targetNodeId,
+        kind: targetKind,
+        title: isGrid9
+          ? 'Images · 9-Grid Sheet'
+          : isGrid4
+          ? 'Images · 4-Angle Sheet'
+          : isVideo
+          ? `Videos · ${promptDurationSec}s Shot`
+          : 'Images · Generated Frame',
+        prompt: effectivePrompt,
+        x: spawnX,
+        y: spawnY,
+        width,
+        height,
+        aspectRatio: promptAspect,
+        status: 'generating',
+        progress: 35,
+        editBadge: liveBadge,
+        imageUrl: isCloudOrBridgeProvider(activeProvider) ? anchorNode?.imageUrl : defaultSourceImg,
+        seed,
+        resolution: promptResolution,
+        durationSec: isVideo ? promptDurationSec : undefined,
+        elementHandles: handles,
+        layers: anchorNode?.imageUrl ? createDefaultLayers(anchorNode.imageUrl) : [],
+        providerUsed: getProviderDisplayLabel(activeProvider),
+        createdAt: Date.now(),
+      };
+
+      set((s) => ({
+        nodes: [...s.nodes, placeholderNode],
+        selectedNodeIds: [targetNodeId],
+        edges: anchorNode
+          ? [
+              ...s.edges,
+              {
+                id: `edge_gen_${targetNodeId}`,
+                sourceId: anchorNode.id,
+                targetId: targetNodeId,
+                kind: 'lineage',
+              },
+            ]
+          : s.edges,
+      }));
+    }
 
     const execResult = await executeStudioGeneration({
       provider: activeProvider,
@@ -1685,16 +1873,54 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       durationSec: promptDurationSec,
       resolution: promptResolution,
       mode: isGrid9 ? '9-grid' : isVideo ? 'video' : 'image',
-      referenceImages: refImages,
+      referenceImages:
+        anchorNode?.imageUrl && !refImages.includes(anchorNode.imageUrl)
+          ? [anchorNode.imageUrl, ...refImages]
+          : refImages,
       firstFrameDataUrl: defaultSourceImg,
       mood: inferMoodFromPrompt(effectivePrompt),
       byok,
     });
 
+    if (!execResult.ok) {
+      if (updateInPlace && anchorNode) {
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            n.id === anchorNode.id
+              ? {
+                  ...n,
+                  status: 'ready' as const,
+                  progress: undefined,
+                  editBadge: undefined,
+                }
+              : n
+          ),
+        }));
+      } else {
+        set((s) => ({
+          nodes: s.nodes.filter((n) => n.id !== targetNodeId),
+          edges: s.edges.filter((e) => e.id !== `edge_gen_${targetNodeId}`),
+          selectedNodeIds: anchorNode ? [anchorNode.id] : [],
+        }));
+      }
+      get().showToast(
+        execResult.error || `Generation failed on ${getProviderDisplayLabel(activeProvider)}`,
+        'error'
+      );
+      return;
+    }
+
+    const alreadySyncedViaWs = Boolean(
+      execResult.jobId && completedBridgeJobIds.has(execResult.jobId)
+    );
+    if (execResult.jobId) {
+      completedBridgeJobIds.add(execResult.jobId);
+    }
+
     let imageUrl = execResult.imageUrl;
     let gridSpec: CanvasNode['gridSpec'];
 
-    if (!imageUrl) {
+    if (!imageUrl && !isCloudOrBridgeProvider(activeProvider)) {
       if (isGrid9) {
         imageUrl = '/media/real_contact_9grid.jpg';
         gridSpec = { rows: 3, cols: 3, labels: NINE_GRID_LABELS };
@@ -1711,27 +1937,41 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           cameraLabel: isVideo ? `${promptDurationSec}s` : promptResolution,
         });
       }
+    } else if (!imageUrl && execResult.videoUrl) {
+      imageUrl = anchorNode?.imageUrl || defaultSourceImg;
     }
 
+    const normProvider = normalizeProviderId(activeProvider);
     set((s) => ({
-      nodes: s.nodes.map((n) =>
-        n.id === tempId
-          ? {
-              ...n,
-              status: 'ready',
-              progress: 100,
-              imageUrl,
-              videoUrl: execResult.videoUrl,
-              interactionId: execResult.interactionId,
-              gridSpec,
-              layers: createDefaultLayers(imageUrl),
-              providerUsed: execResult.providerLabel,
-            }
-          : n
-      ),
+      chromeBridge:
+        normProvider === 'dreamina-bridge'
+          ? { ...s.chromeBridge, extensionDetected: true, dreaminaTabConnected: true }
+          : normProvider === 'flow-bridge'
+          ? { ...s.chromeBridge, extensionDetected: true, flowTabConnected: true }
+          : s.chromeBridge,
+      nodes: s.nodes.map((n) => {
+        if (n.id !== targetNodeId) return n;
+        const resolvedImg = imageUrl || n.imageUrl;
+        const resolvedVid = isVideo ? execResult.videoUrl || n.videoUrl : undefined;
+        return {
+          ...n,
+          status: 'ready' as const,
+          progress: 100,
+          editBadge: undefined,
+          imageUrl: resolvedImg,
+          videoUrl: resolvedVid,
+          interactionId: execResult.jobId || execResult.interactionId,
+          gridSpec: gridSpec || n.gridSpec,
+          layers: resolvedImg ? createDefaultLayers(resolvedImg) : n.layers,
+          providerUsed: execResult.providerLabel,
+          seed,
+        };
+      }),
     }));
 
-    get().showToast(`Synthesized ${placeholderNode.title}`);
+    if (!alreadySyncedViaWs) {
+      get().showToast(`Generated via ${execResult.providerLabel}`);
+    }
   },
 
   openInlineEditor: (mode, nodeId) => {
@@ -1757,14 +1997,33 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   applyInpaintToNode: async (nodeId, maskDataUrl, regionalPrompt) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
+    const { activeProvider, byok } = get();
+    if (
+      !ensureProviderReadyOrPromptUser(
+        activeProvider,
+        byok,
+        get().openProviderModal,
+        get().showToast
+      )
+    ) {
+      return;
+    }
+
     const sourceImage = node.imageUrl || '/media/real_courtyard_sun.jpg';
     get().pushHistory();
 
-    const { activeProvider, byok } = get();
     const apiKey = getActiveApiKeyForProvider(activeProvider, byok);
     const promptToUse = regionalPrompt || 'Natural daylight limestone & foliage detail redraw';
+    const normProvider = normalizeProviderId(activeProvider);
+    const isByokCloud =
+      normProvider === 'gemini-api' ||
+      normProvider === 'fal' ||
+      normProvider === 'replicate' ||
+      normProvider === 'seedance' ||
+      normProvider === 'comfyui';
 
     const childId = `node_inpaint_${Date.now()}`;
+    const edgeId = `edge_inpaint_${Date.now()}`;
     const childNode: CanvasNode = {
       id: childId,
       kind: 'image',
@@ -1777,13 +2036,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       aspectRatio: node.aspectRatio,
       status: 'generating',
       progress: 40,
-      editBadge: 'Inpainting…',
+      editBadge: getLiveStatusBadgeForProvider(activeProvider, 'Inpainting…'),
       imageUrl: undefined,
       seed: node.seed + 19,
       resolution: node.resolution,
       elementHandles: node.elementHandles,
       layers: [],
-      providerUsed: 'FFmpeg Inpaint (:3001)',
+      providerUsed: getProviderDisplayLabel(activeProvider),
       createdAt: Date.now(),
     };
 
@@ -1792,7 +2051,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       edges: [
         ...s.edges,
         {
-          id: `edge_inpaint_${Date.now()}`,
+          id: edgeId,
           sourceId: node.id,
           targetId: childId,
           kind: 'lineage',
@@ -1809,6 +2068,19 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       provider: activeProvider,
       apiKey,
     });
+
+    if (!live.ok && isByokCloud) {
+      set((s) => ({
+        nodes: s.nodes.filter((n) => n.id !== childId),
+        edges: s.edges.filter((e) => e.id !== edgeId),
+        selectedNodeIds: [node.id],
+      }));
+      get().showToast(
+        live.error || `Inpaint failed on ${getProviderDisplayLabel(activeProvider)}`,
+        'error'
+      );
+      return;
+    }
 
     let finalUrl = live.fullUrl || live.imageUrl;
     if (!finalUrl) {
@@ -1831,7 +2103,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               editBadge: undefined,
               imageUrl: finalUrl,
               layers: createDefaultLayers(finalUrl),
-              providerUsed: live.ok ? `FFmpeg Inpaint (${live.engine || 'local'})` : 'Canvas Inpaint',
+              providerUsed: live.ok
+                ? isByokCloud
+                  ? getProviderDisplayLabel(activeProvider)
+                  : `FFmpeg Inpaint (${live.engine || 'local'})`
+                : 'Canvas Inpaint',
             }
           : n
       ),
@@ -1842,13 +2118,32 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   expandOutpaintNode: async (nodeId, targetAspect, customPrompt) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
+    const { activeProvider, byok } = get();
+    if (
+      !ensureProviderReadyOrPromptUser(
+        activeProvider,
+        byok,
+        get().openProviderModal,
+        get().showToast
+      )
+    ) {
+      return;
+    }
+
     const sourceImage = node.imageUrl || '/media/real_courtyard_sun.jpg';
     get().pushHistory();
 
-    const { activeProvider, byok } = get();
     const apiKey = getActiveApiKeyForProvider(activeProvider, byok);
+    const normProvider = normalizeProviderId(activeProvider);
+    const isByokCloud =
+      normProvider === 'gemini-api' ||
+      normProvider === 'fal' ||
+      normProvider === 'replicate' ||
+      normProvider === 'seedance' ||
+      normProvider === 'comfyui';
     const newDims = getDimensionsForAspect(targetAspect, 440);
     const childId = `node_outpaint_${Date.now()}`;
+    const edgeId = `edge_outpaint_${Date.now()}`;
     const promptUsed = customPrompt?.trim() || node.prompt;
 
     const childNode: CanvasNode = {
@@ -1863,13 +2158,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       aspectRatio: targetAspect,
       status: 'generating',
       progress: 45,
-      editBadge: `Outpainting ${targetAspect}…`,
+      editBadge: getLiveStatusBadgeForProvider(
+        activeProvider,
+        `Outpainting ${targetAspect}…`
+      ),
       imageUrl: undefined,
       seed: node.seed + 31,
       resolution: '2K',
       elementHandles: node.elementHandles,
       layers: [],
-      providerUsed: 'FFmpeg Outpaint (:3001)',
+      providerUsed: getProviderDisplayLabel(activeProvider),
       createdAt: Date.now(),
     };
 
@@ -1878,7 +2176,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       edges: [
         ...s.edges,
         {
-          id: `edge_outpaint_${Date.now()}`,
+          id: edgeId,
           sourceId: node.id,
           targetId: childId,
           kind: 'lineage',
@@ -1896,6 +2194,19 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       apiKey,
     });
 
+    if (!live.ok && isByokCloud) {
+      set((s) => ({
+        nodes: s.nodes.filter((n) => n.id !== childId),
+        edges: s.edges.filter((e) => e.id !== edgeId),
+        selectedNodeIds: [node.id],
+      }));
+      get().showToast(
+        live.error || `Outpaint failed on ${getProviderDisplayLabel(activeProvider)}`,
+        'error'
+      );
+      return;
+    }
+
     const finalUrl =
       live.fullUrl ||
       live.imageUrl ||
@@ -1911,7 +2222,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               editBadge: undefined,
               imageUrl: finalUrl,
               layers: createDefaultLayers(finalUrl),
-              providerUsed: live.ok ? 'FFmpeg Outpaint (:3001)' : 'Canvas Outpaint',
+              providerUsed: live.ok
+                ? isByokCloud
+                  ? getProviderDisplayLabel(activeProvider)
+                  : 'FFmpeg Outpaint (:3001)'
+                : 'Canvas Outpaint',
             }
           : n
       ),
@@ -2191,23 +2506,50 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   convertImageToOmniVideo: async (nodeId, durationSec = 6) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
-    get().pushHistory();
     const { activeProvider, byok } = get();
+    if (
+      !ensureProviderReadyOrPromptUser(
+        activeProvider,
+        byok,
+        get().openProviderModal,
+        get().showToast
+      )
+    ) {
+      return;
+    }
 
-    get().showToast(`Synthesizing ${durationSec}s video via :3001...`);
+    get().pushHistory();
+    const liveBadge = getLiveStatusBadgeForProvider(
+      activeProvider,
+      `Synthesizing ${durationSec}s Video…`
+    );
+    get().updateNodeFields(nodeId, { editBadge: liveBadge });
+    get().showToast(`${liveBadge}`);
 
     const exec = await executeStudioGeneration({
-      provider: activeProvider === 'local-canvas' ? 'gemini-omni' : activeProvider,
+      provider: activeProvider,
       prompt: node.prompt,
       aspectRatio: '16:9',
       durationSec,
       resolution: node.resolution,
       mode: 'video',
+      referenceImages: node.imageUrl ? [node.imageUrl] : [],
       firstFrameDataUrl: node.imageUrl || '/media/real_courtyard_sun.jpg',
       cameraMotion: 'Dolly In',
       mood: inferMoodFromPrompt(node.prompt),
       byok,
     });
+
+    if (!exec.ok) {
+      get().updateNodeFields(nodeId, { editBadge: undefined });
+      get().showToast(
+        exec.error || `Image → Video failed on ${getProviderDisplayLabel(activeProvider)}`,
+        'error'
+      );
+      return;
+    }
+
+    if (exec.jobId) completedBridgeJobIds.add(exec.jobId);
 
     const childId = `node_omni_vid_${Date.now()}`;
     const newVideoNode: CanvasNode = {
@@ -2222,12 +2564,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       aspectRatio: '16:9',
       status: 'ready',
       imageUrl: node.imageUrl || '/media/real_courtyard_sun.jpg',
-      videoUrl: exec.videoUrl || '/media/real_shot01_courtyard.mp4',
+      videoUrl:
+        exec.videoUrl ||
+        (!isCloudOrBridgeProvider(activeProvider) ? '/media/real_shot01_courtyard.mp4' : undefined),
       seed: node.seed,
       resolution: node.resolution,
       durationSec,
       cameraMotion: 'Dolly In',
-      interactionId: exec.interactionId,
+      interactionId: exec.jobId || exec.interactionId,
       elementHandles: node.elementHandles,
       layers: createDefaultLayers(node.imageUrl),
       providerUsed: exec.providerLabel,
@@ -2235,7 +2579,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     };
 
     set((s) => ({
-      nodes: [...s.nodes, newVideoNode],
+      nodes: [
+        ...s.nodes.map((n) => (n.id === nodeId ? { ...n, editBadge: undefined } : n)),
+        newVideoNode,
+      ],
       edges: [
         ...s.edges,
         {
@@ -2248,15 +2595,26 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       selectedNodeIds: [childId],
     }));
 
-    get().showToast(`Rendered ${durationSec}s video`);
+    get().showToast(`Rendered ${durationSec}s video via ${exec.providerLabel}`);
   },
 
   branchVideoMultiTurn: async (nodeId, deltaPrompt) => {
     const parent = get().nodes.find((n) => n.id === nodeId);
     if (!parent) return;
+    const { activeProvider, byok } = get();
+    if (
+      !ensureProviderReadyOrPromptUser(
+        activeProvider,
+        byok,
+        get().openProviderModal,
+        get().showToast
+      )
+    ) {
+      return;
+    }
+
     get().pushHistory();
     const parentInteractionId = parent.interactionId || `int_omni_${parent.seed}`;
-    const { activeProvider, byok } = get();
 
     const mood = inferMoodFromPrompt(deltaPrompt);
     const branchKeyframe =
@@ -2264,20 +2622,37 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         ? '/media/real_atelier_interior.jpg'
         : parent.imageUrl || '/media/real_coastal_cliffs.jpg';
 
-    get().showToast(`Branching Multi-Turn edit (${parentInteractionId.slice(0, 12)})...`);
+    const liveBadge = getLiveStatusBadgeForProvider(
+      activeProvider,
+      `Branching Multi-Turn (${parentInteractionId.slice(0, 10)})…`
+    );
+    get().updateNodeFields(nodeId, { editBadge: liveBadge });
+    get().showToast(`${liveBadge}`);
 
     const exec = await executeStudioGeneration({
-      provider: activeProvider === 'local-canvas' ? 'gemini-omni' : activeProvider,
+      provider: activeProvider,
       prompt: deltaPrompt,
       aspectRatio: '16:9',
       durationSec: parent.durationSec || 6,
       resolution: parent.resolution,
       mode: 'video',
+      referenceImages: parent.imageUrl ? [parent.imageUrl] : [],
       firstFrameDataUrl: branchKeyframe,
       previousInteractionId: parentInteractionId,
       mood,
       byok,
     });
+
+    if (!exec.ok) {
+      get().updateNodeFields(nodeId, { editBadge: undefined });
+      get().showToast(
+        exec.error || `Multi-turn branch failed on ${getProviderDisplayLabel(activeProvider)}`,
+        'error'
+      );
+      return;
+    }
+
+    if (exec.jobId) completedBridgeJobIds.add(exec.jobId);
 
     const branchId = `node_branch_${Date.now()}`;
     const branchedNode: CanvasNode = {
@@ -2292,12 +2667,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       aspectRatio: '16:9',
       status: 'ready',
       imageUrl: branchKeyframe,
-      videoUrl: exec.videoUrl || '/media/real_shot03_atelier.mp4',
+      videoUrl:
+        exec.videoUrl ||
+        (!isCloudOrBridgeProvider(activeProvider) ? '/media/real_shot03_atelier.mp4' : undefined),
       seed: parent.seed + 211,
       resolution: parent.resolution,
       durationSec: parent.durationSec || 6,
       cameraMotion: 'Multi-Turn Branch',
-      interactionId: exec.interactionId,
+      interactionId: exec.jobId || exec.interactionId,
       previousInteractionId: parentInteractionId,
       elementHandles: Array.from(
         new Set([...parent.elementHandles, ...extractHandles(deltaPrompt)])
@@ -2308,7 +2685,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     };
 
     set((s) => ({
-      nodes: [...s.nodes, branchedNode],
+      nodes: [
+        ...s.nodes.map((n) => (n.id === nodeId ? { ...n, editBadge: undefined } : n)),
+        branchedNode,
+      ],
       edges: [
         ...s.edges,
         {
@@ -2321,15 +2701,26 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       selectedNodeIds: [branchId],
     }));
 
-    get().showToast(`Branched stateful video`);
+    get().showToast(`Branched video via ${exec.providerLabel}`);
   },
 
   generateKeyframeBridgeForNode: async (nodeId, opts) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
-    get().pushHistory();
 
     const { nodes, edges, activeProvider, byok } = get();
+    if (
+      !ensureProviderReadyOrPromptUser(
+        activeProvider,
+        byok,
+        get().openProviderModal,
+        get().showToast
+      )
+    ) {
+      return;
+    }
+
+    get().pushHistory();
     const apiKey = getActiveApiKeyForProvider(activeProvider, byok);
 
     // Find any connected upstream image nodes if explicit URLs weren't provided
@@ -2377,9 +2768,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       node.prompt ||
       'First-Frame → Last-Frame smooth optical transition';
 
+    const normProvider = normalizeProviderId(activeProvider);
+    const liveBadge = getLiveStatusBadgeForProvider(
+      activeProvider,
+      `Bridging (${motionCurve})…`
+    );
+
     get().updateNodeFields(nodeId, {
       status: 'generating',
-      editBadge: `Bridging (${motionCurve})…`,
+      editBadge: liveBadge,
       bridgeMode: true,
       startNodeId,
       endNodeId,
@@ -2387,20 +2784,64 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       endImageUrl,
       motionCurve,
     });
-    get().showToast(`Synthesizing A → B Keyframe Bridge (${motionCurve})...`);
+    get().showToast(liveBadge);
 
-    const live = await keyframeBridgeViaBackend({
-      startImageUrl,
-      endImageUrl,
-      durationSec,
-      motionCurve,
-      prompt,
-      provider: activeProvider,
-      apiKey,
-    });
+    let finalVideoUrl: string | undefined;
+    let finalDuration = durationSec;
+    let providerLabelUsed = getProviderDisplayLabel(activeProvider);
 
-    const finalVideoUrl =
-      live.fullUrl || live.videoUrl || '/media/real_shot02_bridge.mp4';
+    if (normProvider === 'dreamina-bridge' || normProvider === 'flow-bridge') {
+      const bridgeRes = await enqueueLiveBridgeJobViaBackend({
+        target: normProvider === 'dreamina-bridge' ? 'dreamina' : 'google-flow',
+        mode: 'video',
+        prompt: `[First-Frame → Last-Frame ${motionCurve}] ${prompt}`,
+        aspectRatio: '16:9',
+        durationSec,
+        referenceImages: [startImageUrl, endImageUrl].filter(Boolean),
+        waitForResult: true,
+      });
+      if (!bridgeRes.ok || (!bridgeRes.videoUrl && !bridgeRes.fullUrl)) {
+        get().updateNodeFields(nodeId, { status: 'ready', editBadge: undefined });
+        get().showToast(
+          bridgeRes.error || `Keyframe bridge failed on ${providerLabelUsed}`,
+          'error'
+        );
+        return;
+      }
+      if (bridgeRes.jobId) completedBridgeJobIds.add(bridgeRes.jobId);
+      finalVideoUrl = bridgeRes.fullUrl || bridgeRes.videoUrl;
+    } else {
+      const live = await keyframeBridgeViaBackend({
+        startImageUrl,
+        endImageUrl,
+        durationSec,
+        motionCurve,
+        prompt,
+        provider: activeProvider,
+        apiKey,
+        baseUrl: normProvider === 'comfyui' ? byok.comfyUiUrl : undefined,
+      });
+
+      if (!live.ok && isCloudOrBridgeProvider(activeProvider)) {
+        get().updateNodeFields(nodeId, { status: 'ready', editBadge: undefined });
+        get().showToast(
+          live.error || `Keyframe bridge failed on ${providerLabelUsed}`,
+          'error'
+        );
+        return;
+      }
+
+      finalVideoUrl =
+        live.fullUrl ||
+        live.videoUrl ||
+        (!isCloudOrBridgeProvider(activeProvider) ? '/media/real_shot02_bridge.mp4' : undefined);
+      finalDuration = live.durationSec || durationSec;
+      providerLabelUsed = live.ok
+        ? isCloudOrBridgeProvider(activeProvider)
+          ? `${providerLabelUsed}${live.model ? ` · ${live.model}` : ''}`
+          : `FFmpeg Keyframe Bridge (${motionCurve})`
+        : 'Keyframe Bridge';
+    }
 
     if (node.kind === 'video') {
       set((s) => ({
@@ -2416,19 +2857,17 @@ export const useStudioStore = create<StudioState>((set, get) => ({
                 startImageUrl,
                 endImageUrl,
                 motionCurve,
-                durationSec: live.durationSec || durationSec,
+                durationSec: finalDuration,
                 prompt,
                 imageUrl: endImageUrl,
                 videoUrl: finalVideoUrl,
                 cameraMotion: `Bridge · ${motionCurve}`,
-                providerUsed: live.ok
-                  ? `FFmpeg Keyframe Bridge (${motionCurve})`
-                  : 'Keyframe Bridge',
+                providerUsed: providerLabelUsed,
               }
             : n
         ),
         timelineClips: s.timelineClips.map((c) =>
-          c.sourceNodeId === nodeId
+          c.sourceNodeId === nodeId && finalVideoUrl
             ? { ...c, videoUrl: finalVideoUrl, thumbnailUrl: endImageUrl }
             : c
         ),
@@ -2454,15 +2893,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         motionCurve,
         imageUrl: endImageUrl,
         videoUrl: finalVideoUrl,
-        durationSec: live.durationSec || durationSec,
+        durationSec: finalDuration,
         cameraMotion: `Bridge · ${motionCurve}`,
         seed: node.seed + 71,
         resolution: '1080p',
         elementHandles: node.elementHandles,
         layers: createDefaultLayers(endImageUrl),
-        providerUsed: live.ok
-          ? `FFmpeg Keyframe Bridge (${motionCurve})`
-          : 'Keyframe Bridge',
+        providerUsed: providerLabelUsed,
         createdAt: Date.now(),
       };
       set((s) => ({
@@ -2487,7 +2924,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       }));
     }
 
-    get().showToast(`Rendered A → B Keyframe Bridge (${motionCurve})`);
+    get().showToast(`Rendered A → B Keyframe Bridge via ${providerLabelUsed}`);
   },
 
   generateAudioForNode: async (nodeId, opts) => {
@@ -2923,7 +3360,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     });
   },
 
-  setActiveProvider: (activeProvider) => set({ activeProvider }),
+  setActiveProvider: (rawProvider) => {
+    const activeProvider = normalizeProviderId(rawProvider);
+    try {
+      localStorage.setItem(ACTIVE_PROVIDER_KEY, activeProvider);
+    } catch {
+      // ignore storage errors
+    }
+    set({ activeProvider });
+  },
 
   updateByok: (patch) => {
     const next = { ...get().byok, ...patch };
@@ -4203,6 +4648,286 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     get().showToast(`Bridge · Imported from ${sourceLabel}`);
     return true;
+  },
+
+  handleBridgeJobWsEvent: (payload) => {
+    const type = String(payload.type || '');
+    if (type !== 'bridge_job_complete') return;
+
+    const job =
+      payload.job && typeof payload.job === 'object'
+        ? (payload.job as Record<string, unknown>)
+        : payload;
+    const jobId = String(job.jobId || payload.jobId || '');
+    const target = String(job.target || payload.target || '');
+    const status = String(job.status || payload.status || 'succeeded');
+    const errorMsg =
+      typeof (job.error || payload.error) === 'string'
+        ? String(job.error || payload.error)
+        : undefined;
+
+    const rawImg =
+      (typeof job.localImageUrl === 'string' && job.localImageUrl) ||
+      (typeof payload.localImageUrl === 'string' && payload.localImageUrl) ||
+      (typeof job.imageUrl === 'string' && job.imageUrl) ||
+      (typeof payload.imageUrl === 'string' && payload.imageUrl) ||
+      undefined;
+    const rawVid =
+      (typeof job.localVideoUrl === 'string' && job.localVideoUrl) ||
+      (typeof payload.localVideoUrl === 'string' && payload.localVideoUrl) ||
+      (typeof job.videoUrl === 'string' && job.videoUrl) ||
+      (typeof payload.videoUrl === 'string' && payload.videoUrl) ||
+      undefined;
+
+    const normImg = rawImg ? normalizeBackendMediaUrl(rawImg, false) || rawImg : undefined;
+    const normVid = rawVid ? normalizeBackendMediaUrl(rawVid, true) || rawVid : undefined;
+
+    const isDreamina = target === 'dreamina' || Boolean(normImg?.includes('dreamina_')) || Boolean(normVid?.includes('dreamina_'));
+    const isFlow =
+      target === 'google-flow' ||
+      target === 'flow' ||
+      Boolean(normImg?.includes('flow_')) ||
+      Boolean(normVid?.includes('flow_'));
+
+    set((s) => ({
+      chromeBridge: {
+        ...s.chromeBridge,
+        extensionDetected: true,
+        dreaminaTabConnected: isDreamina ? true : s.chromeBridge.dreaminaTabConnected,
+        flowTabConnected: isFlow ? true : s.chromeBridge.flowTabConnected,
+      },
+    }));
+
+    if (jobId && completedBridgeJobIds.has(jobId)) {
+      return;
+    }
+
+    if (status === 'failed') {
+      if (jobId) completedBridgeJobIds.add(jobId);
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          (jobId && n.interactionId === jobId) ||
+          (n.status === 'generating' &&
+            ((isDreamina && n.editBadge?.includes('Dreamina')) ||
+              (isFlow && n.editBadge?.includes('Google Flow'))))
+            ? { ...n, status: 'ready' as const, editBadge: undefined }
+            : n
+        ),
+      }));
+      if (errorMsg) get().showToast(errorMsg, 'error');
+      return;
+    }
+
+    if (!normImg && !normVid) return;
+
+    const { nodes } = get();
+    const matchedNode =
+      (jobId ? nodes.find((n) => n.interactionId === jobId) : undefined) ||
+      nodes.find(
+        (n) =>
+          n.status === 'generating' &&
+          ((isDreamina && n.editBadge?.includes('Dreamina')) ||
+            (isFlow && n.editBadge?.includes('Google Flow')))
+      );
+
+    if (matchedNode) {
+      if (jobId) completedBridgeJobIds.add(jobId);
+      const label = isDreamina
+        ? 'Dreamina · Live Browser'
+        : isFlow
+        ? 'Google Flow · Live Browser'
+        : 'Browser Credit Bridge';
+      set((s) => ({
+        nodes: s.nodes.map((n) => {
+          if (n.id !== matchedNode.id) return n;
+          const nextImg = normImg || n.imageUrl;
+          return {
+            ...n,
+            status: 'ready' as const,
+            progress: 100,
+            editBadge: undefined,
+            imageUrl: nextImg,
+            videoUrl: normVid || (n.kind === 'video' ? n.videoUrl : undefined),
+            interactionId: jobId || n.interactionId,
+            layers: nextImg ? createDefaultLayers(nextImg) : n.layers,
+            providerUsed: label,
+          };
+        }),
+      }));
+      get().showToast(`Live ${label} job finished`);
+    }
+  },
+
+  verifyProviderConnection: async (provider) => {
+    const { byok } = get();
+    const apiKeyMap: Record<
+      'gemini' | 'fal' | 'replicate' | 'seedance' | 'comfyui',
+      string | undefined
+    > = {
+      gemini: byok.geminiApiKey?.trim() || undefined,
+      fal: byok.falApiKey?.trim() || undefined,
+      replicate: byok.replicateApiKey?.trim() || undefined,
+      seedance: byok.seedanceApiKey?.trim() || undefined,
+      comfyui: undefined,
+    };
+
+    set((s) => ({
+      verifyingProvider: { ...s.verifyingProvider, [provider]: true },
+    }));
+
+    const result = await verifyProviderViaBackend({
+      provider,
+      apiKey: apiKeyMap[provider],
+      baseUrl:
+        provider === 'comfyui'
+          ? byok.comfyUiUrl?.trim() || 'http://127.0.0.1:8188'
+          : provider === 'seedance'
+          ? byok.seedanceEndpoint?.trim() || undefined
+          : undefined,
+    });
+
+    set((s) => ({
+      verifyingProvider: { ...s.verifyingProvider, [provider]: false },
+      providerVerifyStatus: { ...s.providerVerifyStatus, [provider]: result },
+    }));
+
+    if (result.valid) {
+      const unlocked = [
+        ...(result.videoModels || []).slice(0, 2),
+        ...(result.imageModels || []).slice(0, 2),
+      ];
+      get().showToast(
+        unlocked.length > 0
+          ? `Verified ${provider.toUpperCase()} · Unlocked ${unlocked.join(', ')}`
+          : `Verified ${provider.toUpperCase()} connection`
+      );
+    } else {
+      get().showToast(
+        result.error || `Failed to verify ${provider.toUpperCase()} credentials`,
+        'error'
+      );
+    }
+  },
+
+  runLiveBridgeTestGeneration: async (target, mode = 'image') => {
+    if (get().liveBridgeTestRunning) return;
+    get().pushHistory();
+
+    const isDreamina = target === 'dreamina';
+    const providerId: ProviderId = isDreamina ? 'dreamina-bridge' : 'flow-bridge';
+    get().setActiveProvider(providerId);
+
+    const testPrompt = isDreamina
+      ? '35mm Leica M6 daylight portrait in a sunlit Mediterranean limestone courtyard, warm natural window shadow, Kodak Portra 400 fine film grain'
+      : '35mm Cooke S4/i architectural coastal cliffside walk in clear golden afternoon sun, natural ocean wind, Kodak Vision3 250D';
+
+    const maxRight = get()
+      .nodes.filter((n) => n.kind !== 'timeline')
+      .reduce((acc, n) => Math.max(acc, n.x + n.width), 360);
+
+    const nodeId = `node_live_bridge_${Date.now()}`;
+    const liveBadge = isDreamina
+      ? 'Generating on Dreamina Canvas…'
+      : 'Generating on Google Flow…';
+
+    const testNode: CanvasNode = {
+      id: nodeId,
+      kind: mode === 'video' ? 'video' : 'image',
+      title: isDreamina
+        ? `Images · Dreamina Live Browser`
+        : `Images · Google Flow Live Browser`,
+      prompt: testPrompt,
+      x: maxRight + 96,
+      y: 160,
+      width: mode === 'video' ? 568 : 384,
+      height: mode === 'video' ? 320 : 216,
+      aspectRatio: '16:9',
+      status: 'generating',
+      progress: 35,
+      editBadge: liveBadge,
+      seed: Math.floor(Math.random() * 9000) + 100,
+      resolution: '1080p',
+      durationSec: mode === 'video' ? 6 : undefined,
+      elementHandles: [],
+      layers: [],
+      providerUsed: getProviderDisplayLabel(providerId),
+      createdAt: Date.now(),
+    };
+
+    set((s) => ({
+      liveBridgeTestRunning: target,
+      liveBridgeStatusText: `Dispatched live ${mode} prompt to ${
+        isDreamina ? 'dreamina.capcut.com' : 'labs.google/fx/tools/flow'
+      } — waiting for browser session…`,
+      nodes: [...s.nodes, testNode],
+      selectedNodeIds: [nodeId],
+      activeView: 'canvas',
+    }));
+
+    const res = await enqueueLiveBridgeJobViaBackend({
+      target,
+      mode,
+      prompt: testPrompt,
+      aspectRatio: '16:9',
+      durationSec: 6,
+      waitForResult: true,
+    });
+
+    if (!res.ok || (!res.imageUrl && !res.videoUrl && !res.fullUrl)) {
+      set((s) => ({
+        liveBridgeTestRunning: null,
+        liveBridgeStatusText:
+          res.error ||
+          `No live ${
+            isDreamina ? 'Dreamina' : 'Google Flow'
+          } browser tab answered. Open the tab & load Chrome Bridge or paste the 1-line script.`,
+        nodes: s.nodes.filter((n) => n.id !== nodeId),
+        selectedNodeIds: [],
+      }));
+      get().showToast(
+        res.error ||
+          `No live ${isDreamina ? 'Dreamina' : 'Google Flow'} browser session answered.`,
+        'error'
+      );
+      return;
+    }
+
+    if (res.jobId) completedBridgeJobIds.add(res.jobId);
+    const resolvedImg = res.imageUrl || (mode === 'image' ? res.fullUrl : undefined);
+    const resolvedVid = res.videoUrl || (mode === 'video' ? res.fullUrl : undefined);
+
+    set((s) => ({
+      liveBridgeTestRunning: null,
+      liveBridgeStatusText: `✓ Live ${
+        isDreamina ? 'Dreamina' : 'Google Flow'
+      } generation succeeded (${resolvedVid || resolvedImg})`,
+      providerModalOpen: false,
+      chromeBridge: {
+        ...s.chromeBridge,
+        extensionDetected: true,
+        dreaminaTabConnected: isDreamina ? true : s.chromeBridge.dreaminaTabConnected,
+        flowTabConnected: !isDreamina ? true : s.chromeBridge.flowTabConnected,
+      },
+      nodes: s.nodes.map((n) =>
+        n.id === nodeId
+          ? {
+              ...n,
+              status: 'ready' as const,
+              progress: 100,
+              editBadge: undefined,
+              imageUrl: resolvedImg || n.imageUrl,
+              videoUrl: resolvedVid || n.videoUrl,
+              interactionId: res.jobId || n.interactionId,
+              layers: resolvedImg ? createDefaultLayers(resolvedImg) : n.layers,
+              providerUsed: getProviderDisplayLabel(providerId),
+            }
+          : n
+      ),
+    }));
+
+    get().showToast(
+      `Live ${isDreamina ? 'Dreamina' : 'Google Flow'} generation landed on canvas`
+    );
   },
 
   triggerTestBridgeCapture: async (source = 'dreamina') => {

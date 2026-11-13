@@ -37,22 +37,72 @@ import type {
   ProviderId,
   ResolutionTier,
 } from '../types/studio';
-import { useStudioStore } from '../store/useStudioStore';
+import { useStudioStore, normalizeProviderId } from '../store/useStudioStore';
 import { SmartMediaImage } from './SmartMedia';
 
 const ENGINE_OPTIONS: Array<{
   id: ProviderId;
   label: string;
+  shortLabel: string;
   costLabel: string;
+  group: 'live-browser' | 'cloud-byok' | 'local';
 }> = [
-  { id: 'local-canvas', label: 'FFmpeg 8.0 · Local', costLabel: '$0.00' },
-  { id: 'mcp-router', label: 'MCP Studio Pipeline', costLabel: '$0.00' },
-  { id: 'gemini-omni', label: 'Omni 1.2 Flash', costLabel: '$0.04' },
-  { id: 'seedance', label: 'Seedance 2.0', costLabel: '$0.05' },
-  { id: 'fal', label: 'Fal · Wan Pro', costLabel: '$0.05' },
-  { id: 'comfyui', label: 'ComfyUI Local', costLabel: '$0.00' },
-  { id: 'chrome-bridge-dreamina', label: 'Dreamina Bridge', costLabel: '$0.00' },
-  { id: 'chrome-bridge-flow', label: 'Google Flow Bridge', costLabel: '$0.00' },
+  {
+    id: 'dreamina-bridge',
+    label: 'Dreamina · Live Browser',
+    shortLabel: 'Dreamina · Live Browser',
+    costLabel: '$0.00',
+    group: 'live-browser',
+  },
+  {
+    id: 'flow-bridge',
+    label: 'Google Flow · Live Browser',
+    shortLabel: 'Google Flow · Live Browser',
+    costLabel: '$0.00',
+    group: 'live-browser',
+  },
+  {
+    id: 'gemini-api',
+    label: 'Google Gemini / Veo 3.1 API',
+    shortLabel: 'Gemini / Veo 3.1 API',
+    costLabel: '$0.04',
+    group: 'cloud-byok',
+  },
+  {
+    id: 'fal',
+    label: 'Fal.ai · Flux / Wan Pro',
+    shortLabel: 'Fal.ai · Wan Pro',
+    costLabel: '$0.05',
+    group: 'cloud-byok',
+  },
+  {
+    id: 'replicate',
+    label: 'Replicate · Flux / Video',
+    shortLabel: 'Replicate · Flux',
+    costLabel: '$0.05',
+    group: 'cloud-byok',
+  },
+  {
+    id: 'seedance',
+    label: 'BytePlus · Seedream / Seedance',
+    shortLabel: 'Seedream / Seedance',
+    costLabel: '$0.05',
+    group: 'cloud-byok',
+  },
+  {
+    id: 'comfyui',
+    label: 'ComfyUI · Local GPU (:8188)',
+    shortLabel: 'ComfyUI · Local GPU',
+    costLabel: '$0.00',
+    group: 'local',
+  },
+  {
+    id: 'ffmpeg-local',
+    label: 'FFmpeg 8.0 · Local Camera',
+    shortLabel: 'FFmpeg 8.0 · Local Camera',
+    costLabel: '$0.00',
+    group: 'local',
+  },
 ];
 
 const ASPECT_OPTIONS: AspectRatio[] = ['16:9', '9:16', '21:9', '1:1'];
@@ -129,6 +179,10 @@ export const ContextualNodeOverlay: React.FC = () => {
   const promptDurationSec = useStudioStore((s) => s.promptDurationSec);
   const promptResolution = useStudioStore((s) => s.promptResolution);
   const activeProvider = useStudioStore((s) => s.activeProvider);
+  const byok = useStudioStore((s) => s.byok);
+  const chromeBridge = useStudioStore((s) => s.chromeBridge);
+  const bridgeWsConnected = useStudioStore((s) => s.bridgeWsConnected);
+  const mcpHealth = useStudioStore((s) => s.mcpHealth);
   const elements = useStudioStore((s) => s.elements);
   const skills = useStudioStore((s) => s.skills);
 
@@ -325,8 +379,32 @@ export const ContextualNodeOverlay: React.FC = () => {
   );
   const bottomStackTop = Math.max(104, Math.min(maxStackTop, nodeBottom + 14));
 
+  const normalizedActiveProvider = normalizeProviderId(activeProvider);
   const activeEngine =
-    ENGINE_OPTIONS.find((e) => e.id === activeProvider) || ENGINE_OPTIONS[0];
+    ENGINE_OPTIONS.find((e) => e.id === normalizedActiveProvider) ||
+    ENGINE_OPTIONS[ENGINE_OPTIONS.length - 1];
+
+  const isEngineReady = (id: ProviderId): boolean => {
+    switch (id) {
+      case 'dreamina-bridge':
+        return chromeBridge.dreaminaTabConnected || bridgeWsConnected;
+      case 'flow-bridge':
+        return chromeBridge.flowTabConnected || bridgeWsConnected;
+      case 'gemini-api':
+        return Boolean(byok.geminiApiKey?.trim());
+      case 'fal':
+        return Boolean(byok.falApiKey?.trim());
+      case 'replicate':
+        return Boolean(byok.replicateApiKey?.trim());
+      case 'seedance':
+        return Boolean(byok.seedanceApiKey?.trim());
+      case 'comfyui':
+        return Boolean(byok.comfyUiUrl?.trim());
+      case 'ffmpeg-local':
+      default:
+        return mcpHealth.online || true;
+    }
+  };
 
   const handleInsertHandle = (handle: string) => {
     const base = promptText.trim();
@@ -1130,18 +1208,21 @@ export const ContextualNodeOverlay: React.FC = () => {
                         strokeWidth={1.5}
                       />
                     )}
-                    <span>{activeEngine.label}</span>
+                    <span>{activeEngine.shortLabel}</span>
                     <ChevronDown
                       className="w-3 h-3 text-white/45"
                       strokeWidth={1.5}
                     />
                   </button>
                   {openMenu === 'engine' && (
-                    <div className="absolute left-0 bottom-[34px] w-[228px] p-1 rounded-[12px] dreamina-menu z-50">
+                    <div className="absolute left-0 bottom-[34px] w-[288px] p-1.5 rounded-[12px] dreamina-menu z-50">
                       <div className="px-2 py-1 text-[10.5px] text-white/40 font-medium flex items-center justify-between">
                         <span>Output Mode</span>
+                        <span className="font-mono text-[10px] text-white/35">
+                          Zero-Fallback Execution
+                        </span>
                       </div>
-                      <div className="grid grid-cols-3 gap-1 p-1 mb-1 bg-[#141414] rounded-[8px]">
+                      <div className="grid grid-cols-3 gap-1 p-1 mb-1.5 bg-[#141414] rounded-[8px]">
                         {(
                           [
                             { id: 'video', label: 'Video' },
@@ -1163,22 +1244,61 @@ export const ContextualNodeOverlay: React.FC = () => {
                           </button>
                         ))}
                       </div>
-                      {ENGINE_OPTIONS.map((eng) => (
+                      <div className="space-y-0.5">
+                        {ENGINE_OPTIONS.map((eng) => {
+                          const selected = normalizedActiveProvider === eng.id;
+                          const ready = isEngineReady(eng.id);
+                          return (
+                            <button
+                              key={eng.id}
+                              type="button"
+                              onClick={() => {
+                                setActiveProvider(eng.id);
+                                setOpenMenu(null);
+                              }}
+                              className={`w-full h-7 px-2 rounded-[7px] text-[12px] flex items-center justify-between gap-2 transition-colors ${
+                                selected
+                                  ? 'bg-white/[0.1] text-white font-medium'
+                                  : 'text-white/85 hover:bg-white/[0.07]'
+                              }`}
+                            >
+                              <span className="flex items-center gap-2 truncate">
+                                <span
+                                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                    ready ? 'bg-[#10b981]' : 'bg-white/25'
+                                  }`}
+                                />
+                                <span className="truncate">{eng.label}</span>
+                              </span>
+                              <span className="font-mono text-[10.5px] text-white/45 shrink-0 flex items-center gap-1">
+                                <span>{eng.costLabel}</span>
+                                {selected && (
+                                  <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
+                                )}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-1.5 pt-1.5 border-t border-white/[0.07]">
                         <button
-                          key={eng.id}
                           type="button"
                           onClick={() => {
-                            setActiveProvider(eng.id);
                             setOpenMenu(null);
+                            openProviderModal(
+                              normalizedActiveProvider === 'dreamina-bridge' ||
+                                normalizedActiveProvider === 'flow-bridge'
+                                ? 'bridge'
+                                : 'byok',
+                              normalizedActiveProvider === 'gemini-api' ? 'gemini' : null
+                            );
                           }}
-                          className="w-full h-7 px-2.5 rounded-[7px] text-[12px] text-white/85 hover:bg-white/[0.08] flex items-center justify-between"
+                          className="w-full h-7 px-2 rounded-[7px] bg-[#222222] hover:bg-[#2c2c2c] text-[11px] text-white/80 hover:text-white flex items-center justify-between transition-colors"
                         >
-                          <span>{eng.label}</span>
-                          <span className="font-mono text-[11px] text-white/45">
-                            {eng.costLabel}
-                          </span>
+                          <span>Configure API Keys & Browser Bridge…</span>
+                          <ArrowRight className="w-3 h-3 text-white/50" strokeWidth={1.5} />
                         </button>
-                      ))}
+                      </div>
                     </div>
                   )}
                 </div>

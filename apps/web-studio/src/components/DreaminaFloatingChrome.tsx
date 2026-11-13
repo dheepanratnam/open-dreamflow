@@ -84,6 +84,10 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const showMinimap = useStudioStore((s) => s.showMinimap);
   const showConnections = useStudioStore((s) => s.showConnections);
   const mcpHealth = useStudioStore((s) => s.mcpHealth);
+  const activeProvider = useStudioStore((s) => s.activeProvider);
+  const chromeBridge = useStudioStore((s) => s.chromeBridge);
+  const bridgeWsConnected = useStudioStore((s) => s.bridgeWsConnected);
+  const byok = useStudioStore((s) => s.byok);
 
   const assetDrawerOpen = useStudioStore((s) => s.assetDrawerOpen);
   const chatDrawerOpen = useStudioStore((s) => s.chatDrawerOpen);
@@ -665,31 +669,73 @@ export const DreaminaFloatingChrome: React.FC = () => {
             )}
           </div>
 
-          {/* MCP · BYOK Config Pill */}
+          {/* MCP · BYOK · Live Bridge Config Pill */}
           <button
             type="button"
-            onClick={() => openProviderModal('byok')}
-            className="h-[34px] px-3 rounded-[10px] dreamina-levitation hover:bg-[#222222] text-[12px] font-medium text-white/85 hover:text-white transition-colors"
+            onClick={() =>
+              openProviderModal(
+                activeProvider === 'dreamina-bridge' ||
+                  activeProvider === 'flow-bridge' ||
+                  activeProvider === 'chrome-bridge-dreamina' ||
+                  activeProvider === 'chrome-bridge-flow'
+                  ? 'bridge'
+                  : 'byok'
+              )
+            }
+            className="h-[34px] px-3 rounded-[10px] dreamina-levitation hover:bg-[#222222] text-[12px] font-medium text-white/85 hover:text-white flex items-center gap-1.5 transition-colors"
           >
-            BYOK · MCP
+            {(Boolean(byok.geminiApiKey?.trim()) ||
+              chromeBridge.dreaminaTabConnected ||
+              chromeBridge.flowTabConnected) && (
+              <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
+            )}
+            <span>BYOK · MCP</span>
           </button>
 
-          {/* Live MCP + $0.00 Zero-Markup Pill */}
+          {/* Live Engine / Bridge Status Pill */}
           <button
             type="button"
-            onClick={() => openProviderModal('mcp')}
+            onClick={() =>
+              openProviderModal(
+                activeProvider === 'dreamina-bridge' ||
+                  activeProvider === 'flow-bridge' ||
+                  activeProvider === 'chrome-bridge-dreamina' ||
+                  activeProvider === 'chrome-bridge-flow'
+                  ? 'bridge'
+                  : 'mcp'
+              )
+            }
             className="h-[34px] px-3 rounded-[10px] dreamina-levitation hover:bg-[#222222] text-[12px] font-medium text-white/90 flex items-center gap-2 transition-colors"
           >
             <span
               className={`w-[6px] h-[6px] rounded-full ${
-                mcpHealth.online ? 'bg-[#10b981]' : 'bg-[#f59e0b]'
+                mcpHealth.online || bridgeWsConnected ? 'bg-[#10b981]' : 'bg-[#f59e0b]'
               }`}
             />
-            <span>{mcpHealth.online ? 'MCP Live' : 'Local Studio'}</span>
+            <span>
+              {activeProvider === 'dreamina-bridge' ||
+              activeProvider === 'chrome-bridge-dreamina'
+                ? 'Dreamina Live'
+                : activeProvider === 'flow-bridge' ||
+                  activeProvider === 'chrome-bridge-flow'
+                ? 'Google Flow Live'
+                : activeProvider === 'gemini-api' ||
+                  activeProvider === 'gemini-omni'
+                ? 'Gemini / Veo 3.1'
+                : mcpHealth.online
+                ? 'MCP Live'
+                : 'Local Studio'}
+            </span>
             <span className="text-white/35">·</span>
             <span className="font-mono text-[11.5px] text-white/85 flex items-center gap-1">
               <Sparkles className="w-3 h-3 text-[#face15]" strokeWidth={1.75} />
-              $0.00
+              {activeProvider === 'gemini-api' || activeProvider === 'gemini-omni'
+                ? '$0.04'
+                : activeProvider === 'fal' ||
+                  activeProvider === 'replicate' ||
+                  activeProvider === 'seedance'
+                ? '$0.05'
+                : '$0.00'}
             </span>
           </button>
         </div>

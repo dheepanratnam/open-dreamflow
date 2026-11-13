@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Check } from 'lucide-react';
+import { AlertCircle, Check } from 'lucide-react';
 import { useStudioStore } from './store/useStudioStore';
 import { CanvasBoard } from './components/CanvasBoard';
 import { DreaminaFloatingChrome } from './components/DreaminaFloatingChrome';
@@ -18,6 +18,7 @@ import type { BridgeIncomingEvent } from './types/studio';
 export const App: React.FC = () => {
   const activeView = useStudioStore((s) => s.activeView);
   const toastMessage = useStudioStore((s) => s.toastMessage);
+  const toastKind = useStudioStore((s) => s.toastKind);
   const hydrateFromUrlRecipe = useStudioStore((s) => s.hydrateFromUrlRecipe);
   const autoConnectLocalMcpBackend = useStudioStore(
     (s) => s.autoConnectLocalMcpBackend
@@ -29,6 +30,7 @@ export const App: React.FC = () => {
   );
   const setBridgeWsConnected = useStudioStore((s) => s.setBridgeWsConnected);
   const ingestBridgeWsEvent = useStudioStore((s) => s.ingestBridgeWsEvent);
+  const handleBridgeJobWsEvent = useStudioStore((s) => s.handleBridgeJobWsEvent);
 
   useEffect(() => {
     const hasUrlRecipe =
@@ -119,7 +121,9 @@ export const App: React.FC = () => {
           if (unmounted || typeof ev.data !== 'string') return;
           try {
             const parsed = JSON.parse(ev.data) as Record<string, unknown>;
-            if (
+            if (parsed.type === 'bridge_job_complete') {
+              handleBridgeJobWsEvent(parsed);
+            } else if (
               parsed.type === 'bridge_asset' ||
               parsed.type === 'bridge_prompt' ||
               parsed.type === 'bridge_session'
@@ -159,7 +163,7 @@ export const App: React.FC = () => {
         // ignore
       }
     };
-  }, [setBridgeWsConnected, ingestBridgeWsEvent]);
+  }, [setBridgeWsConnected, ingestBridgeWsEvent, handleBridgeJobWsEvent]);
 
   return (
     <div className="w-screen h-screen overflow-hidden bg-[#0e0e0e] text-[#f5f5f5] relative">
@@ -197,9 +201,25 @@ export const App: React.FC = () => {
 
       {/* Subtle Matte Toast Notification */}
       {toastMessage && (
-        <div className="fixed top-[58px] left-1/2 -translate-x-1/2 z-50 h-8 px-3.5 rounded-full dreamina-levitation text-[12px] text-white/90 flex items-center gap-2 pointer-events-none">
-          <Check className="w-3.5 h-3.5 text-[#10b981]" strokeWidth={1.75} />
-          <span>{toastMessage}</span>
+        <div
+          className={`fixed top-[58px] left-1/2 -translate-x-1/2 z-50 min-h-[34px] max-w-[720px] px-3.5 py-1.5 rounded-full dreamina-levitation text-[12px] flex items-center gap-2 pointer-events-none ${
+            toastKind === 'error'
+              ? 'border border-amber-400/40 text-amber-100'
+              : 'text-white/90'
+          }`}
+        >
+          {toastKind === 'error' ? (
+            <AlertCircle
+              className="w-3.5 h-3.5 text-amber-400 shrink-0"
+              strokeWidth={1.75}
+            />
+          ) : (
+            <Check
+              className="w-3.5 h-3.5 text-[#10b981] shrink-0"
+              strokeWidth={1.75}
+            />
+          )}
+          <span className="truncate">{toastMessage}</span>
         </div>
       )}
     </div>
