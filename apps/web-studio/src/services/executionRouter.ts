@@ -4,6 +4,7 @@ import type {
   BrowserPlatformTarget,
   BYOKCredentials,
   ConnectionTransport,
+  ConnectionsStatusSnapshot,
   DiskProjectMeta,
   DiskProjectRecord,
   ExternalMcpServerRecord,
@@ -322,6 +323,7 @@ export async function verifyProviderViaBackend(params: {
     | 'elevenlabs'
     | 'openai'
     | 'higgsfield'
+    | 'sume'
     | 'openart'
     | 'imagineart';
   apiKey?: string;
@@ -543,6 +545,128 @@ export async function generateNodeViaBackend(
           : err instanceof Error
           ? `Could not reach :3001 /api/generate-node (${err.message})`
           : 'Could not reach :3001 /api/generate-node',
+    };
+  }
+}
+
+export async function fetchConnectionsStatusViaBackend(): Promise<ConnectionsStatusSnapshot> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/connections/status`, {
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) {
+      return {
+        ok: false,
+        bridgeClients: 0,
+        connectedBrowserPlatforms: [],
+        connectedMcpPlatforms: [],
+        configuredApiPlatforms: [],
+      };
+    }
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const toPlatArray = (val: unknown): PlatformId[] =>
+      Array.isArray(val) ? (val.filter((x): x is string => typeof x === 'string') as PlatformId[]) : [];
+
+    const connectedBrowserPlatforms = new Set<PlatformId>(
+      toPlatArray(json.connectedBrowserPlatforms)
+    );
+    const connectedMcpPlatforms = new Set<PlatformId>(
+      toPlatArray(json.connectedMcpPlatforms)
+    );
+    const configuredApiPlatforms = new Set<PlatformId>([
+      ...toPlatArray(json.configuredApiKeyPlatforms),
+      ...toPlatArray(json.configuredApiPlatforms),
+      ...toPlatArray(json.configuredEnvPlatforms),
+      ...toPlatArray(json.apiKeyPlatforms),
+    ]);
+
+    if (Array.isArray(json.platforms)) {
+      for (const item of json.platforms) {
+        if (!item || typeof item !== 'object') continue;
+        const rec = item as Record<string, unknown>;
+        const id = rec.id as PlatformId | undefined;
+        if (!id) continue;
+        if (rec.browserConnected) connectedBrowserPlatforms.add(id);
+        if (rec.mcpConnected) connectedMcpPlatforms.add(id);
+        if (rec.apiKeyConnected) configuredApiPlatforms.add(id);
+      }
+    }
+
+    return {
+      ok: Boolean(json.ok ?? true),
+      bridgeClients: typeof json.bridgeClients === 'number' ? json.bridgeClients : 0,
+      connectedBrowserPlatforms: Array.from(connectedBrowserPlatforms),
+      connectedMcpPlatforms: Array.from(connectedMcpPlatforms),
+      configuredApiPlatforms: Array.from(configuredApiPlatforms),
+      browserSessionOpen: Boolean(json.browserSessionOpen),
+      activeBrowserProfileDir:
+        typeof json.activeBrowserProfileDir === 'string'
+          ? json.activeBrowserProfileDir
+          : undefined,
+    };
+  } catch {
+    return {
+      ok: false,
+      bridgeClients: 0,
+      connectedBrowserPlatforms: [],
+      connectedMcpPlatforms: [],
+      configuredApiPlatforms: [],
+    };
+  }
+}
+
+export async function launchConnectedBrowserViaBackend(
+  platformId: string = 'all'
+): Promise<{
+  ok: boolean;
+  launched?: boolean;
+  browserName?: string;
+  profileDir?: string;
+  urls?: string[];
+  activeTabsConnected?: string[];
+  error?: string;
+}> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12000);
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/connections/launch-browser`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify({ platformId }),
+    });
+    clearTimeout(timer);
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        error:
+          (typeof json.error === 'string' && json.error) ||
+          `Could not launch connected browser (HTTP ${res.status})`,
+      };
+    }
+    return {
+      ok: true,
+      launched: Boolean(json.launched ?? true),
+      browserName: typeof json.browserName === 'string' ? json.browserName : 'Google Chrome',
+      profileDir: typeof json.profileDir === 'string' ? json.profileDir : undefined,
+      urls: Array.isArray(json.urls)
+        ? json.urls.filter((u): u is string => typeof u === 'string')
+        : undefined,
+      activeTabsConnected: Array.isArray(json.activeTabsConnected)
+        ? json.activeTabsConnected.filter((u): u is string => typeof u === 'string')
+        : undefined,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error
+          ? `Could not reach :3001 browser launcher (${err.message})`
+          : 'Could not reach :3001 browser launcher',
     };
   }
 }

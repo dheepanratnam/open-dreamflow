@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 /**
- * Open-DreamFlow — 12-Stage Automated Monorepo End-to-End Verification Suite
+ * Open-DreamFlow — 13-Stage Automated Monorepo End-to-End Verification Suite
  *
  * Stages:
- *   [1/12 provider-sdk]                         Zero-markup SDK clients, PLATFORM_CATALOG & $0 markup estimator
- *   [2/12 mcp-client]                           Live JSON-RPC roundtrip verifying all 12 built-in MCP tools on :3001/mcp
- *   [3/12 real-photography-media]               206 Partial Content streaming, ffprobe real photography/cinema check & zero-slop bundle audit
- *   [4/12 inline-editor]                        Live /api/upload-media, /api/inpaint (mask), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)
- *   [5/12 keyframe-bridge-and-audio]            Live /api/keyframe-bridge (A->B), /api/generate-audio (64-bar waveform + MP3) & multi-track /api/compile-timeline
- *   [6/12 persistence-bridge]                   Live /api/projects CRUD + .dreamflow.json export + /api/bridge/push -> /api/bridge/events
- *   [7/12 live-provider-and-bridge-jobs]        /api/verify-provider, GET /bridge-connector.js (PNA CORS) & Dreamina live bridge lifecycle
- *   [8/12 multi-platform-and-external-mcp]      GET /api/platforms (12 platforms) + real stdio External MCP Server tools/list, /api/mcp/call & /api/generate-node
- *   [9/12 cross-platform-chained-workflow]      Higgsfield (ChatGPT Image 2.6) -> Kling 4.0 (Video) chained base64 reference forwarding
- *   [10/12 chrome-bridge]                       Manifest V3 v1.1.0 across all 7 creator domains, icons & syntax check across all extension scripts
- *   [11/12 cli-and-docker]                      open-dreamflow doctor CLI check, unified single-port SPA GET :3001/, Dockerfile & docker-compose.yml
- *   [12/12 web-studio]                          Production Vite bundle + Stage 7 multi-platform workflow UI markers + dist/media integrity
+ *   [1/13 provider-sdk]                      Zero-markup SDK clients, 13-platform PLATFORM_CATALOG & $0 markup estimator
+ *   [2/13 mcp-client]                        Live JSON-RPC roundtrip verifying all 12 built-in MCP tools on :3001/mcp
+ *   [3/13 real-photography-media]            206 Partial Content streaming, ffprobe real photography/cinema check & zero-slop bundle audit
+ *   [4/13 inline-editor]                     Live /api/upload-media, /api/inpaint (mask), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)
+ *   [5/13 keyframe-bridge-and-audio]         Live /api/keyframe-bridge (A->B), /api/generate-audio (64-bar waveform + MP3) & multi-track /api/compile-timeline
+ *   [6/13 persistence-bridge]                Live /api/projects CRUD + .dreamflow.json export + /api/bridge/push -> /api/bridge/events
+ *   [7/13 live-provider-and-bridge-jobs]     /api/verify-provider, GET /bridge-connector.js (PNA CORS) & Dreamina live bridge lifecycle
+ *   [8/13 multi-platform-and-external-mcp]   GET /api/platforms (13 platforms) + real stdio External MCP Server tools/list, /api/mcp/call & /api/generate-node
+ *   [9/13 cross-platform-chained-workflow]   Higgsfield (ChatGPT Image 2.6) -> Kling 4.0 (Video) chained base64 reference forwarding
+ *   [10/13 guided-connections-and-sume]      GET /api/connections/status, dryRun 1-click Chrome profile launcher (higgsfield + all) & bridge_session status sync
+ *   [11/13 chrome-bridge]                    Manifest V3 v1.2.0 across all 8 creator domains (incl. sume.com), icons & syntax check across all 6 scripts
+ *   [12/13 cli-and-docker]                   open-dreamflow doctor CLI check, unified single-port SPA GET :3001/, Dockerfile & docker-compose.yml
+ *   [13/13 web-studio]                       Production Vite bundle + Stage 8 guided onboarding, Sume & DoP Rig UI markers + dist/media integrity
  */
 
 import * as fs from 'node:fs';
@@ -209,7 +210,7 @@ function unlinkMediaIfPresent(mediaUrlPath) {
   if (!mediaUrlPath || typeof mediaUrlPath !== 'string') return;
   const baseName = path.basename(mediaUrlPath);
   if (!baseName) return;
-  if (baseName.startsWith('real_')) return; // Never delete tracked baseline photography
+  if (baseName.startsWith('real_')) return;
   for (const dir of [
     path.join(ROOT, 'apps/web-studio/public/media'),
     path.join(ROOT, 'apps/web-studio/dist/media'),
@@ -267,7 +268,11 @@ async function verifyStage1ProviderSdk() {
   ]) {
     assert(typeof sdk[sym] === 'function', `${sym} export missing in @open-dreamflow/provider-sdk`);
   }
-  assert(sdk.PLATFORM_CATALOG !== undefined, 'PLATFORM_CATALOG missing in @open-dreamflow/provider-sdk');
+  assert(Array.isArray(sdk.PLATFORM_CATALOG), 'PLATFORM_CATALOG array missing in @open-dreamflow/provider-sdk');
+  assert(
+    sdk.PLATFORM_CATALOG.some((p) => p.id === 'sume'),
+    'PLATFORM_CATALOG must include Sume.com (id: sume)'
+  );
 
   const router = new sdk.DreamFlowProviderRouter({
     gemini: 'test-gemini-key',
@@ -288,8 +293,8 @@ async function verifyStage1ProviderSdk() {
   assert(cost.rawProviderCostUsd > 0, 'Raw Gemini Omni 15s estimate must be positive');
 
   logStep(
-    '1/12 provider-sdk',
-    `Verified zero-markup BYOK/Local GPU clients, PLATFORM_CATALOG + $0 markup estimator (15s 1080p Omni = $${cost.rawProviderCostUsd})`
+    '1/13 provider-sdk',
+    `Verified zero-markup BYOK/Local GPU clients, ${sdk.PLATFORM_CATALOG.length}-platform PLATFORM_CATALOG + $0 markup estimator`
   );
 }
 
@@ -326,10 +331,22 @@ async function verifyLiveServerStages() {
 
   const tmpMcpScriptPath = path.join(os.tmpdir(), `dreamflow_e2e_mcp_stdio_${Date.now()}.mjs`);
   let registeredMcpServerId = null;
+  let initialOpenDomains = null;
 
   try {
+    // Capture prior openDomains so Stage 10 bridge_session tests leave connections status tidy
+    try {
+      const preConnRes = await fetch(`${baseUrl}/api/connections/status`);
+      if (preConnRes.ok) {
+        const preConn = await preConnRes.json();
+        initialOpenDomains = Array.isArray(preConn.openDomains) ? preConn.openDomains : [];
+      }
+    } catch {
+      initialOpenDomains = null;
+    }
+
     // -------------------------------------------------------------------------
-    // Stage [2/12 mcp-client]: Live JSON-RPC roundtrip verifying all 12 MCP tools
+    // Stage [2/13 mcp-client]: Live JSON-RPC roundtrip verifying all 12 MCP tools
     // -------------------------------------------------------------------------
     const healthRes = await fetch(`${baseUrl}/api/health`);
     assert(healthRes.ok, '/api/health returned non-200');
@@ -373,12 +390,12 @@ async function verifyLiveServerStages() {
     await client.disconnect();
 
     logStep(
-      '2/12 mcp-client',
+      '2/13 mcp-client',
       `Live JSON-RPC roundtrip on ${baseUrl}/mcp verified all ${expectedTools.length} built-in MCP tools`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [3/12 real-photography-media]: 206 Partial Content + ffprobe + zero neon slop
+    // Stage [3/13 real-photography-media]: 206 Partial Content + ffprobe + zero neon slop
     // -------------------------------------------------------------------------
     const publicMediaDir = path.join(ROOT, 'apps/web-studio/public/media');
     const distMediaDir = path.join(ROOT, 'apps/web-studio/dist/media');
@@ -455,12 +472,12 @@ async function verifyLiveServerStages() {
 
     const masterSizeMb = (fs.statSync(resolveAsset('real_salt_terracotta_master.mp4')).size / (1024 * 1024)).toFixed(2);
     logStep(
-      '3/12 real-photography-media',
+      '3/13 real-photography-media',
       `Verified 206 Range streaming, ffprobe on ${requiredRealMedia.length} real 35mm/cinema assets (master = ${masterSizeMb} MB) & 0 neon strings in JS bundle`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [4/12 inline-editor]: Live upload, mask inpaint, 16:9 outpaint, cutout & 4K upscale
+    // Stage [4/13 inline-editor]: Live upload, mask inpaint, 16:9 outpaint, cutout & 4K upscale
     // -------------------------------------------------------------------------
     assert(health.ffmpeg === true, 'FFmpeg must be available for Stage 4 inline-editor verification');
 
@@ -508,12 +525,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(upscaleRes.imageUrl), 'Upscale 4K PNG missing on disk');
 
     logStep(
-      '4/12 inline-editor',
+      '4/13 inline-editor',
       'Verified live /api/upload-media, /api/inpaint (masked), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [5/12 keyframe-bridge-and-audio]: A->B optical bridge + 64-bar audio + multi-track mix
+    // Stage [5/13 keyframe-bridge-and-audio]: A->B optical bridge + 64-bar audio + multi-track mix
     // -------------------------------------------------------------------------
     const bridgeRes = await postJson(baseUrl, '/api/keyframe-bridge', {
       startImageUrl: '/media/real_courtyard_sun.jpg',
@@ -553,12 +570,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(compiledMasterUrl), 'Multi-track compiled master MP4 missing on disk');
 
     logStep(
-      '5/12 keyframe-bridge-and-audio',
+      '5/13 keyframe-bridge-and-audio',
       'Verified live /api/keyframe-bridge (A→B), /api/generate-audio (64-bar RMS waveform + MP3) & multi-track /api/compile-timeline'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [6/12 persistence-bridge]: Projects CRUD + .dreamflow.json export + Bridge relay
+    // Stage [6/13 persistence-bridge]: Projects CRUD + .dreamflow.json export + Bridge relay
     // -------------------------------------------------------------------------
     const saveRes = await postJson(baseUrl, '/api/projects', {
       id: tempProjectId,
@@ -608,12 +625,12 @@ async function verifyLiveServerStages() {
     );
 
     logStep(
-      '6/12 persistence-bridge',
+      '6/13 persistence-bridge',
       'Verified /api/projects CRUD + snapshot + .dreamflow.json export + /api/bridge/push -> /api/bridge/events'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [7/12 live-provider-and-bridge-jobs]:
+    // Stage [7/13 live-provider-and-bridge-jobs]:
     //   /api/verify-provider, GET /bridge-connector.js & Dreamina job lifecycle
     // -------------------------------------------------------------------------
     const verifyEmptyRes = await fetch(`${baseUrl}/api/verify-provider`, {
@@ -712,14 +729,14 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(savedLiveImage), `Ingested ${savedLiveImage} missing on disk`);
 
     logStep(
-      '7/12 live-provider-and-bridge-jobs',
+      '7/13 live-provider-and-bridge-jobs',
       `Verified /api/verify-provider, GET /bridge-connector.js (PNA CORS) & Dreamina bridge lifecycle (${path.basename(savedLiveImage)})`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [8/12 multi-platform-and-external-mcp]:
-    //   1) GET /api/platforms (all 12 platforms + modality-accurate models)
-    //   2) Real External stdio MCP Server roundtrip (/api/mcp/servers -> /api/mcp/call -> /api/generate-node -> DELETE)
+    // Stage [8/13 multi-platform-and-external-mcp]:
+    //   1) GET /api/platforms (all 13 platforms incl. sume + modality-accurate models)
+    //   2) Real External stdio MCP Server roundtrip
     // -------------------------------------------------------------------------
     const platformsRes = await fetch(`${baseUrl}/api/platforms`);
     assert(platformsRes.ok, `GET /api/platforms failed (${platformsRes.status})`);
@@ -729,6 +746,7 @@ async function verifyLiveServerStages() {
     const platformIds = platformList.map((p) => p.id || p.platformId);
     for (const expectedPid of [
       'higgsfield',
+      'sume',
       'kling',
       'dreamina',
       'google-flow',
@@ -751,6 +769,7 @@ async function verifyLiveServerStages() {
       'seedream-5.0-lite',
       'veo-3.1-fast-generate-preview',
       'eleven_multilingual_v2',
+      'sume-seedance-2.5',
     ]) {
       assert(
         serializedCatalog.includes(expectedModel),
@@ -816,12 +835,12 @@ async function verifyLiveServerStages() {
     registeredMcpServerId = null;
 
     logStep(
-      '8/12 multi-platform-and-external-mcp',
-      `Verified GET /api/platforms (12 platforms) + real stdio External MCP Server roundtrip (${path.basename(nodeMcpMedia)})`
+      '8/13 multi-platform-and-external-mcp',
+      `Verified GET /api/platforms (${platformList.length} platforms incl. sume) + real stdio External MCP Server (${path.basename(nodeMcpMedia)})`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [9/12 cross-platform-chained-workflow]:
+    // Stage [9/13 cross-platform-chained-workflow]:
     //   Higgsfield (ChatGPT Image 2.6) -> Kling AI (Kling 4.0) chained reference forwarding
     // -------------------------------------------------------------------------
     const hfPrompt = `E2E Higgsfield Base Frame ${Date.now()}`;
@@ -914,17 +933,81 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(node2VideoPath), `Node 2 ${node2VideoPath} missing on disk`);
 
     logStep(
-      '9/12 cross-platform-chained-workflow',
+      '9/13 cross-platform-chained-workflow',
       `Verified Higgsfield (chatgpt-image-2.6) -> Kling 4.0 chained base64 reference forwarding (${path.basename(node1MediaPath)} -> ${path.basename(node2VideoPath)})`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [10/12 chrome-bridge]: Manifest V3 v1.1.0 across all 7 creator domains
+    // Stage [10/13 guided-connections-and-sume]:
+    //   1) GET /api/connections/status (includes all 8 browser platforms incl. sume)
+    //   2) POST /api/connections/launch-browser dryRun for 'higgsfield' & 'all'
+    //   3) POST /api/bridge/push type:'bridge_session' updates connectedBrowserPlatforms
     // -------------------------------------------------------------------------
-    verifyStage10ChromeBridge();
+    const connStatusRes = await fetch(`${baseUrl}/api/connections/status`);
+    assert(connStatusRes.status === 200, `GET /api/connections/status failed (${connStatusRes.status})`);
+    const connStatus = await connStatusRes.json();
+    assert(connStatus.ok === true, 'GET /api/connections/status ok !== true');
+    for (const pid of ['sume', 'higgsfield', 'kling', 'dreamina', 'google-flow', 'elevenlabs', 'openart', 'imagineart']) {
+      assert(
+        connStatus.byId && connStatus.byId[pid],
+        `GET /api/connections/status missing platform summary: ${pid}`
+      );
+    }
+
+    const dryHiggs = await postJson(baseUrl, '/api/connections/launch-browser', {
+      platformId: 'higgsfield',
+      dryRun: true,
+    });
+    assert(dryHiggs.dryRun === true && dryHiggs.launched === false, 'dryRun must not spawn a GUI browser');
+    assert(
+      typeof dryHiggs.browserPath === 'string' && dryHiggs.browserPath.length > 0,
+      'Chrome/Chromium binary not detected by BrowserSessionManager'
+    );
+    assert(
+      Array.isArray(dryHiggs.args) &&
+        dryHiggs.args.some((a) => a.startsWith('--load-extension=') && a.endsWith('/extensions/chrome-bridge')),
+      `Launch args missing --load-extension=.../extensions/chrome-bridge: ${JSON.stringify(dryHiggs.args)}`
+    );
+    assert(
+      Array.isArray(dryHiggs.urls) && dryHiggs.urls.includes('https://higgsfield.ai'),
+      `Expected https://higgsfield.ai in dryRun urls: ${JSON.stringify(dryHiggs.urls)}`
+    );
+
+    const dryAll = await postJson(baseUrl, '/api/connections/launch-browser', {
+      platformId: 'all',
+      dryRun: true,
+    });
+    assert(
+      Array.isArray(dryAll.urls) && dryAll.urls.length >= 8 && dryAll.urls.includes('https://sume.com'),
+      `launch-browser platformId:'all' must open all 8 creator URLs incl. sume.com: ${JSON.stringify(dryAll.urls)}`
+    );
+
+    await postJson(baseUrl, '/api/bridge/push', {
+      type: 'bridge_session',
+      source: 'sume',
+      openDomains: ['sume.com'],
+    });
+    const connAfterPushRes = await fetch(`${baseUrl}/api/connections/status`);
+    assert(connAfterPushRes.ok, 'GET /api/connections/status after push failed');
+    const connAfterPush = await connAfterPushRes.json();
+    assert(
+      Array.isArray(connAfterPush.connectedBrowserPlatforms) &&
+        connAfterPush.connectedBrowserPlatforms.includes('sume'),
+      `Expected 'sume' in connectedBrowserPlatforms after bridge_session push, got: ${JSON.stringify(connAfterPush.connectedBrowserPlatforms)}`
+    );
+
+    logStep(
+      '10/13 guided-connections-and-sume',
+      `Verified /api/connections/status (8 browser platforms + ${dryHiggs.browserName}), dryRun --load-extension & bridge_session sync`
+    );
 
     // -------------------------------------------------------------------------
-    // Stage [11/12 cli-and-docker]: open-dreamflow doctor + unified SPA GET :3001/ + Docker
+    // Stage [11/13 chrome-bridge]: Manifest V3 v1.2.0 across all 8 creator domains
+    // -------------------------------------------------------------------------
+    verifyStage11ChromeBridge();
+
+    // -------------------------------------------------------------------------
+    // Stage [12/13 cli-and-docker]: open-dreamflow doctor + unified SPA GET :3001/ + Docker
     // -------------------------------------------------------------------------
     const cliPath = path.join(ROOT, 'bin/open-dreamflow.mjs');
     assert(fs.existsSync(cliPath), 'bin/open-dreamflow.mjs missing');
@@ -945,10 +1028,25 @@ async function verifyLiveServerStages() {
     }
 
     logStep(
-      '11/12 cli-and-docker',
+      '12/13 cli-and-docker',
       `Verified 'open-dreamflow doctor' (exit 0), unified single-port SPA GET ${baseUrl}/ (200 OK) & Dockerfile + docker-compose.yml`
     );
   } finally {
+    if (initialOpenDomains !== null) {
+      try {
+        await fetch(`${baseUrl}/api/bridge/heartbeat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source: 'chrome-extension',
+            fullSnapshot: true,
+            openDomains: initialOpenDomains,
+          }),
+        });
+      } catch {
+        // ignore
+      }
+    }
     if (registeredMcpServerId) {
       try {
         await fetch(`${baseUrl}/api/mcp/servers/${encodeURIComponent(registeredMcpServerId)}`, { method: 'DELETE' });
@@ -987,20 +1085,21 @@ async function verifyLiveServerStages() {
   }
 }
 
-function verifyStage10ChromeBridge() {
+function verifyStage11ChromeBridge() {
   const extDir = path.join(ROOT, 'extensions/chrome-bridge');
   const manifestPath = path.join(extDir, 'manifest.json');
   assert(fs.existsSync(manifestPath), 'extensions/chrome-bridge/manifest.json missing');
 
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   assert(manifest.manifest_version === 3, 'Chrome extension must use Manifest V3');
-  assert(manifest.version === '1.1.0', `Expected Chrome Bridge manifest v1.1.0, got ${manifest.version}`);
+  assert(manifest.version === '1.2.0', `Expected Chrome Bridge manifest v1.2.0, got ${manifest.version}`);
 
   const hosts = JSON.stringify(manifest.host_permissions || []);
   for (const domain of [
     'dreamina.capcut.com',
     'labs.google',
     'higgsfield.ai',
+    'sume.com',
     'klingai.com',
     'openart.ai',
     'imagine.art',
@@ -1010,7 +1109,7 @@ function verifyStage10ChromeBridge() {
   }
 
   const jsScripts = fs.readdirSync(extDir).filter((f) => f.endsWith('.js'));
-  assert(jsScripts.length >= 5, `Expected >= 5 JS scripts in chrome-bridge, got ${jsScripts.length}`);
+  assert(jsScripts.length >= 6, `Expected >= 6 JS scripts in chrome-bridge, got ${jsScripts.length}`);
   for (const script of jsScripts) {
     const full = path.join(extDir, script);
     execFileSync(process.execPath, ['--check', full], { stdio: 'pipe' });
@@ -1026,12 +1125,12 @@ function verifyStage10ChromeBridge() {
   assert(bgSource.includes('dispatch_bridge_job'), 'background.js missing dispatch_bridge_job WS listener');
 
   logStep(
-    '10/12 chrome-bridge',
-    `Manifest V3 v${manifest.version} (7 creator domains), 3 icons & ${jsScripts.length} scripts syntax-checked`
+    '11/13 chrome-bridge',
+    `Manifest V3 v${manifest.version} (8 creator domains incl. sume.com), 3 icons & ${jsScripts.length} scripts syntax-checked`
   );
 }
 
-function verifyStage12WebStudioBundle() {
+function verifyStage13WebStudioBundle() {
   const distDir = path.join(ROOT, 'apps/web-studio/dist');
   const indexHtml = path.join(distDir, 'index.html');
   assert(
@@ -1056,10 +1155,17 @@ function verifyStage12WebStudioBundle() {
   const cssSizeKb = (fs.statSync(cssPath).size / 1024).toFixed(1);
 
   const jsBundle = fs.readFileSync(jsPath, 'utf8');
-  for (const marker of ['Connections · Credits', 'ChatGPT Image 2.6', 'Kling 4.0', 'Run Workflow']) {
+  for (const marker of [
+    'Launch Connected Creator Browser',
+    'Connected via Browser',
+    'DoP Rig',
+    'Sume',
+    'ChatGPT Image 2.6',
+    'Kling 4.0',
+  ]) {
     assert(
       jsBundle.toLowerCase().includes(marker.toLowerCase()),
-      `Stage 7 Studio UI marker missing in compiled bundle: ${marker}`
+      `Stage 8 Studio UI marker missing in compiled bundle: ${marker}`
     );
   }
 
@@ -1078,17 +1184,17 @@ function verifyStage12WebStudioBundle() {
   }
 
   logStep(
-    '12/12 web-studio',
-    `Dreamina 1:1 Vite bundle + Multi-Platform Credit/MCP workflow UI + dist/media verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
+    '13/13 web-studio',
+    `Dreamina 1:1 Vite bundle + Guided 1-Click Connections, Sume & DoP Rig UI verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
   );
 }
 
 async function main() {
-  console.log('\nOpen-DreamFlow — Running 12-Stage End-to-End Verification Suite...');
+  console.log('\nOpen-DreamFlow — Running 13-Stage End-to-End Verification Suite...');
   await verifyStage1ProviderSdk();
   await verifyLiveServerStages();
-  verifyStage12WebStudioBundle();
-  console.log('All 12/12 Open-DreamFlow subsystems passed verification with 0 errors!\n');
+  verifyStage13WebStudioBundle();
+  console.log('All 13/13 Open-DreamFlow subsystems passed verification with 0 errors!\n');
 }
 
 main().catch((err) => {

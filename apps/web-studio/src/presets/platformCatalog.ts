@@ -34,6 +34,12 @@ export const BROWSER_BRIDGE_PLATFORMS: Array<{
     creditNote: 'ChatGPT Image 2.6 · Soul · DoP I2V · Wan 2.6',
   },
   {
+    id: 'sume',
+    name: 'Sume',
+    url: 'https://sume.com',
+    creditNote: '0% Markup Wallet · Seedance 2.5 · Kling 4.0 · ChatGPT Image 2.6',
+  },
+  {
     id: 'kling',
     name: 'Kling AI',
     url: 'https://app.klingai.com',
@@ -206,6 +212,62 @@ export const PLATFORM_CATALOG: PlatformDefinition[] = [
         label: 'Kling 4.0',
         modality: 'video',
         description: 'Kling 4.0 hosted inside Higgsfield credits',
+        supportsReferences: true,
+        maxReferences: 4,
+        supportsAudio: true,
+        defaultAspect: '16:9',
+        defaultResolution: '1080p',
+        defaultDurationSec: 5,
+      },
+    ],
+  },
+  {
+    id: 'sume',
+    name: 'Sume (0% Markup)',
+    shortLabel: 'Sume',
+    webUrl: 'https://sume.com',
+    modalities: ['image', 'video'],
+    supportsBrowserBridge: true,
+    supportsApiKey: true,
+    supportsMcp: true,
+    models: [
+      {
+        id: 'sume-chatgpt-image',
+        label: 'ChatGPT Image 2.6',
+        modality: 'image',
+        description: 'Prompt-adherent base image generation via Sume 0%-markup credits',
+        supportsReferences: true,
+        maxReferences: 4,
+        defaultAspect: '16:9',
+        defaultResolution: '2K',
+      },
+      {
+        id: 'sume-flux-pro',
+        label: 'Flux.1 Pro',
+        modality: 'image',
+        description: 'Photorealistic stills at raw wholesale credit pricing',
+        supportsReferences: true,
+        maxReferences: 2,
+        defaultAspect: '16:9',
+        defaultResolution: '2K',
+      },
+      {
+        id: 'sume-seedance-2.5',
+        label: 'Seedance 2.5',
+        modality: 'video',
+        description: 'Pay-as-you-go Seedance 2.5 video generation on Sume',
+        supportsReferences: true,
+        maxReferences: 4,
+        supportsAudio: true,
+        defaultAspect: '16:9',
+        defaultResolution: '1080p',
+        defaultDurationSec: 5,
+      },
+      {
+        id: 'sume-kling-4.0',
+        label: 'Kling 4.0',
+        modality: 'video',
+        description: 'Physics-accurate I2V & T2V motion on Sume wallet credits',
         supportsReferences: true,
         maxReferences: 4,
         supportsAudio: true,
@@ -835,95 +897,246 @@ export function getPlatformBadgeLabel(
   return `${pLabel} · ${foundModel?.label || modelId}`;
 }
 
+export interface PlatformUiMeta {
+  tagline: string;
+  apiKeyUrl: string;
+  apiKeyUrlLabel: string;
+  apiPlaceholder: string;
+  verifySlug?:
+    | 'gemini'
+    | 'fal'
+    | 'replicate'
+    | 'seedance'
+    | 'comfyui'
+    | 'kling'
+    | 'elevenlabs'
+    | 'openai'
+    | 'higgsfield'
+    | 'sume'
+    | 'openart'
+    | 'imagineart';
+}
+
+export const PLATFORM_UI_META: Record<PlatformId, PlatformUiMeta> = {
+  higgsfield: {
+    tagline: 'ChatGPT Image 2.6 · Soul · DoP Cinema I2V · Wan 2.6',
+    apiKeyUrl: 'https://cloud.higgsfield.ai',
+    apiKeyUrlLabel: 'cloud.higgsfield.ai',
+    apiPlaceholder: 'hf_...',
+    verifySlug: 'higgsfield',
+  },
+  sume: {
+    tagline: 'Pay-as-you-go 0% markup · Seedance 2.5 · Kling 4.0 · ChatGPT Image 2.6',
+    apiKeyUrl: 'https://sume.com',
+    apiKeyUrlLabel: 'sume.com',
+    apiPlaceholder: 'sume_... (optional API token)',
+    verifySlug: 'sume',
+  },
+  kling: {
+    tagline: 'Kling 4.0 (Native Audio) · Kling 3.0 Master · Kolors',
+    apiKeyUrl: 'https://app.klingai.com/global/dev',
+    apiKeyUrlLabel: 'app.klingai.com/global/dev',
+    apiPlaceholder: 'Kling Bearer / Access Token...',
+    verifySlug: 'kling',
+  },
+  dreamina: {
+    tagline: 'Seedream 5.0 Pro · Seedance 2.5 · BytePlus Ark',
+    apiKeyUrl: 'https://console.byteplus.com',
+    apiKeyUrlLabel: 'console.byteplus.com',
+    apiPlaceholder: 'ark-...',
+    verifySlug: 'seedance',
+  },
+  'google-flow': {
+    tagline: 'Imagen 4 · Nano Banana 2 · Veo 3.1 Quality & Fast',
+    apiKeyUrl: 'https://aistudio.google.com/apikey',
+    apiKeyUrlLabel: 'aistudio.google.com/apikey',
+    apiPlaceholder: 'AIzaSy...',
+    verifySlug: 'gemini',
+  },
+  elevenlabs: {
+    tagline: 'Multilingual v2 Voiceover TTS · Flash v2.5 · Sound Effects v2',
+    apiKeyUrl: 'https://elevenlabs.io/app/settings/api-keys',
+    apiKeyUrlLabel: 'elevenlabs.io/app/settings/api-keys',
+    apiPlaceholder: 'sk_... / xi-...',
+    verifySlug: 'elevenlabs',
+  },
+  openart: {
+    tagline: 'ChatGPT Image 2.6 · OpenArt Photoreal · Kling 4.0',
+    apiKeyUrl: 'https://openart.ai',
+    apiKeyUrlLabel: 'openart.ai',
+    apiPlaceholder: 'oa_...',
+    verifySlug: 'openart',
+  },
+  imagineart: {
+    tagline: 'Imagine V2 · Flux Realism · Hailuo 02 · Kling 4.0',
+    apiKeyUrl: 'https://www.imagine.art',
+    apiKeyUrlLabel: 'imagine.art',
+    apiPlaceholder: 'vk-...',
+    verifySlug: 'imagineart',
+  },
+  openai: {
+    tagline: 'GPT Image 1 / ChatGPT Image · Sora 2 Video',
+    apiKeyUrl: 'https://platform.openai.com/api-keys',
+    apiKeyUrlLabel: 'platform.openai.com/api-keys',
+    apiPlaceholder: 'sk-proj-...',
+    verifySlug: 'openai',
+  },
+  fal: {
+    tagline: 'Direct serverless GPU pass-through · Flux · Kling · Wan',
+    apiKeyUrl: 'https://fal.ai/dashboard/keys',
+    apiKeyUrlLabel: 'fal.ai/dashboard/keys',
+    apiPlaceholder: 'fal_...',
+    verifySlug: 'fal',
+  },
+  replicate: {
+    tagline: 'Direct Replicate model predictions · Flux · Video',
+    apiKeyUrl: 'https://replicate.com/account/api-tokens',
+    apiKeyUrlLabel: 'replicate.com/account/api-tokens',
+    apiPlaceholder: 'r8_...',
+    verifySlug: 'replicate',
+  },
+  comfyui: {
+    tagline: 'Local GPU node engine at 127.0.0.1:8188 ($0.00/gen)',
+    apiKeyUrl: 'http://127.0.0.1:8188',
+    apiKeyUrlLabel: '127.0.0.1:8188',
+    apiPlaceholder: 'http://127.0.0.1:8188',
+    verifySlug: 'comfyui',
+  },
+  'custom-mcp': {
+    tagline: 'Connect any stdio or HTTP MCP server exposing image/video/audio tools',
+    apiKeyUrl: 'https://modelcontextprotocol.io',
+    apiKeyUrlLabel: 'modelcontextprotocol.io',
+    apiPlaceholder: 'http://localhost:3002/mcp',
+  },
+};
+
 export function getPlatformConnectionStatus(
   platformId: PlatformId,
   byok: BYOKCredentials,
   chromeBridge: ChromeBridgeState,
   externalMcpServers: ExternalMcpServerRecord[],
-  backendPlatform?: PlatformDefinition
+  backendPlatform?: PlatformDefinition,
+  liveStatus?: {
+    connectedBrowserPlatforms?: string[];
+    connectedMcpPlatforms?: string[];
+    configuredApiPlatforms?: string[];
+  }
 ): {
   connected: boolean;
+  hasBrowser: boolean;
+  hasMcp: boolean;
+  hasApiKey: boolean;
   transports: Array<'mcp' | 'browser-bridge' | 'api-key'>;
+  statusLabel:
+    | 'Connected via Browser'
+    | 'Connected via MCP'
+    | 'Connected via API Key'
+    | 'Not Connected';
   summary: string;
 } {
   const transports: Array<'mcp' | 'browser-bridge' | 'api-key'> = [];
 
-  // 1. External MCP servers registered for this platform
-  const hasMcp = externalMcpServers.some(
-    (s) =>
-      (s.platformId === platformId || platformId === 'custom-mcp') &&
-      s.status === 'connected'
-  );
-  if (hasMcp || backendPlatform?.activeTransports?.includes('mcp')) {
-    transports.push('mcp');
-  }
-
-  // 2. Browser Credit Bridge tabs
+  // 1. Browser Credit Bridge tabs (check WS state, /api/connections/status, & backendPlatform)
   const bridgeMap = chromeBridge.connectedPlatforms || {};
-  const hasBridge =
+  const hasBrowser =
     Boolean(bridgeMap[platformId]) ||
+    Boolean(liveStatus?.connectedBrowserPlatforms?.includes(platformId)) ||
     (platformId === 'google-flow' && chromeBridge.flowTabConnected) ||
     (platformId === 'dreamina' && chromeBridge.dreaminaTabConnected) ||
     Boolean(backendPlatform?.activeTransports?.includes('browser-bridge'));
-  if (hasBridge) {
+  if (hasBrowser) {
     transports.push('browser-bridge');
   }
 
+  // 2. External MCP servers registered for this platform
+  const hasMcp =
+    externalMcpServers.some(
+      (s) =>
+        (s.platformId === platformId || platformId === 'custom-mcp') &&
+        s.status === 'connected'
+    ) ||
+    Boolean(liveStatus?.connectedMcpPlatforms?.includes(platformId)) ||
+    Boolean(backendPlatform?.activeTransports?.includes('mcp'));
+  if (hasMcp) {
+    transports.push('mcp');
+  }
+
   // 3. Direct zero-markup API keys in localStorage or backend env
-  let hasKey = Boolean(backendPlatform?.activeTransports?.includes('api-key'));
+  let hasApiKey =
+    Boolean(liveStatus?.configuredApiPlatforms?.includes(platformId)) ||
+    Boolean(backendPlatform?.activeTransports?.includes('api-key'));
   switch (platformId) {
     case 'higgsfield':
-      if (byok.higgsfieldApiKey?.trim()) hasKey = true;
+      if (byok.higgsfieldApiKey?.trim()) hasApiKey = true;
+      break;
+    case 'sume':
+      if (byok.sumeApiKey?.trim()) hasApiKey = true;
       break;
     case 'kling':
       if (
         byok.klingApiKey?.trim() ||
         (byok.klingAccessKey?.trim() && byok.klingSecretKey?.trim())
       ) {
-        hasKey = true;
+        hasApiKey = true;
       }
       break;
     case 'dreamina':
-      if (byok.seedanceApiKey?.trim()) hasKey = true;
+      if (byok.seedanceApiKey?.trim()) hasApiKey = true;
       break;
     case 'google-flow':
-      if (byok.geminiApiKey?.trim()) hasKey = true;
+      if (byok.geminiApiKey?.trim()) hasApiKey = true;
       break;
     case 'openart':
-      if (byok.openartApiKey?.trim()) hasKey = true;
+      if (byok.openartApiKey?.trim()) hasApiKey = true;
       break;
     case 'imagineart':
-      if (byok.imagineartApiKey?.trim()) hasKey = true;
+      if (byok.imagineartApiKey?.trim()) hasApiKey = true;
       break;
     case 'elevenlabs':
-      if (byok.elevenlabsApiKey?.trim()) hasKey = true;
+      if (byok.elevenlabsApiKey?.trim()) hasApiKey = true;
       break;
     case 'openai':
-      if (byok.openaiApiKey?.trim()) hasKey = true;
+      if (byok.openaiApiKey?.trim()) hasApiKey = true;
       break;
     case 'fal':
-      if (byok.falApiKey?.trim()) hasKey = true;
+      if (byok.falApiKey?.trim()) hasApiKey = true;
       break;
     case 'replicate':
-      if (byok.replicateApiKey?.trim()) hasKey = true;
+      if (byok.replicateApiKey?.trim()) hasApiKey = true;
       break;
     case 'comfyui':
-      if (byok.comfyUiUrl?.trim() && backendPlatform?.connected) hasKey = true;
+      if (byok.comfyUiUrl?.trim() && backendPlatform?.connected) hasApiKey = true;
       break;
     default:
       break;
   }
-  if (hasKey) {
+  if (hasApiKey) {
     transports.push('api-key');
   }
 
   const connected = transports.length > 0 || Boolean(backendPlatform?.connected);
+  const statusLabel:
+    | 'Connected via Browser'
+    | 'Connected via MCP'
+    | 'Connected via API Key'
+    | 'Not Connected' = hasBrowser
+    ? 'Connected via Browser'
+    : hasApiKey
+    ? 'Connected via API Key'
+    : hasMcp
+    ? 'Connected via MCP'
+    : 'Not Connected';
+
   const labels = transports.map((t) =>
     t === 'mcp' ? 'MCP' : t === 'browser-bridge' ? 'Browser Credits' : 'API Key'
   );
   return {
     connected,
+    hasBrowser,
+    hasMcp,
+    hasApiKey,
     transports,
+    statusLabel,
     summary: labels.length > 0 ? labels.join(' · ') : 'Connect Credits',
   };
 }
@@ -940,6 +1153,8 @@ export function resolveByokCredentialsForPlatform(
   switch (platformId) {
     case 'higgsfield':
       return { apiKey: byok.higgsfieldApiKey?.trim() || undefined };
+    case 'sume':
+      return { apiKey: byok.sumeApiKey?.trim() || undefined };
     case 'kling':
       return {
         apiKey: byok.klingApiKey?.trim() || undefined,

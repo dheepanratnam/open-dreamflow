@@ -6,7 +6,7 @@
 [![Single-Port CLI](https://img.shields.io/badge/CLI-npx%20open--dreamflow%20start-F5F5F5.svg)](#1-one-command-unified-launch-recommended)
 [![Docker Ready](https://img.shields.io/badge/Docker-Compose%20Ready-252525.svg)](#2-docker-one-command-launch)
 
-**Open-DreamFlow** is an MIT-licensed, zero-markup multi-platform spatial canvas studio that unifies your existing AI creator credits—**Higgsfield, Kling AI, Dreamina, Google Flow, OpenArt, ImagineArt, ElevenLabs, OpenAI, Fal.ai, Replicate, ComfyUI, and any MCP server**—into one node-based workflow without SaaS wrapper fees or credit markups.
+**Open-DreamFlow** is an MIT-licensed, zero-markup multi-platform spatial canvas studio that unifies your existing AI creator credits—**Higgsfield, Sume (`sume.com`), Kling AI, Dreamina, Google Flow, OpenArt, ImagineArt, ElevenLabs, OpenAI, Fal.ai, Replicate, ComfyUI, and any MCP server**—into one node-based workflow without SaaS wrapper fees or credit markups.
 
 Design reusable cross-platform pipelines on a **95%-open `#0e0e0e` matte charcoal spatial canvas**: generate a base frame with **ChatGPT Image 2.6 on Higgsfield**, wire that generated image directly into **Kling 4.0** for image-to-video motion, add **ElevenLabs Multilingual v2** voiceover or SFX, and share the workflow (`?recipe=` URL or `.dreamflow.json` bundle) so anyone can run it using **their own** MCP connections, logged-in browser credits, or API keys.
 
@@ -49,11 +49,11 @@ flowchart TD
 | Capability | Supported Platforms & Models | How It Works on the Canvas |
 | :--- | :--- | :--- |
 | **Clean Blank Canvas & Honest Empty Nodes** | All 12 Platforms | Clicking **`+ New Blank Canvas`** starts 100% empty (`0` demo tags, `0` pre-filled stock shots). Spawning **Image**, **Video**, **Audio**, or **Reference (`@Element`)** creates a clean `idle` card with `[Where (Platform)] + [Model] + [Settings]`. |
-| **Per-Node Platform, Model & Settings** | **Higgsfield** (`ChatGPT Image 2.6`, `Soul`, `DoP I2V`), **Kling AI** (`Kling 4.0`, `Kling 3.0 Master`), **Dreamina** (`Seedream 5.0 Pro`, `Seedance 2.5`), **Google Flow** (`Imagen 4`, `Nano Banana 2`, `Veo 3.1`), **OpenArt**, **ImagineArt**, **ElevenLabs**, **OpenAI**, **Fal**, **Replicate**, **ComfyUI** | Every node remembers its own `platformId`, `modelId`, aspect ratio (`16:9`, `9:16`, `1:1`, `4:3`, `3:4`, `21:9`), resolution (`1K`/`2K`/`4K`/`720p`/`1080p`), batch size (`1x`–`4x`), duration (`4s`–`15s`), audio toggle, and voice ID. |
+| **Per-Node Platform, Model & DoP Rig** | **Higgsfield** (`ChatGPT Image 2.6`, `Soul`, `DoP I2V`), **Sume** (`ChatGPT Image`, `Flux Pro`, `Seedance 2.5`, `Kling 4.0`), **Kling AI** (`Kling 4.0`, `Kling 3.0 Master`), **Dreamina** (`Seedream 5.0 Pro`, `Seedance 2.5`), **Google Flow** (`Imagen 4`, `Nano Banana 2`, `Veo 3.1`), **OpenArt**, **ImagineArt**, **ElevenLabs**, **OpenAI**, **Fal**, **Replicate**, **ComfyUI** | Every node remembers its own `platformId`, `modelId`, aspect ratio (`16:9`, `9:16`, `1:1`, `4:3`, `3:4`, `21:9`), resolution (`1K`/`2K`/`4K`/`720p`/`1080p`), batch size (`1x`–`4x`), duration (`4s`–`15s`), **DoP Rig** camera motion (`Static Tripod`, `Slow Dolly In`, `Pull Back Reveal`, `Handheld 35mm`, `Crane Up`, `Orbit 180°`, `FPV Tracking`, `Anamorphic Rack Focus`), audio toggle, and voice ID. |
 | **Cross-Platform Chaining (`Image → Video`)** | e.g. `Higgsfield · ChatGPT Image 2.6` → `Kling AI · Kling 4.0` | Drag from a generated (or `idle`) Image node's `(+)` handle and pick **Create Video**, or click **`▶ Run Workflow`** in the top bar. Stage 1 generates on Platform A and automatically passes its real output image as `referenceImages[0]` into Stage 2 on Platform B. |
 | **Real Reference Creation (`@Ref_1`)** | Upload from disk or save any generated node | Upload product/character photos directly into a **Reference (`@Element`)** node, or click **`Save @Ref`** on any generated canvas frame to lock it as a reusable reference across downstream prompts and wires. |
-| **MCP Credit Routing (`stdio` & `http`)** | `@elevenlabs/elevenlabs-mcp`, `@playwright/mcp@latest`, `mcp-fal-server`, or any custom MCP server | Register external MCP servers in **`Connections · Credits → MCP Servers`**. Discovered tools auto-bind to canvas platforms and execute with zero wrapper fees. |
-| **7-Platform Browser Subscription Bridge** | `higgsfield.ai`, `app.klingai.com`, `dreamina.capcut.com`, `labs.google/fx/tools/flow`, `openart.ai`, `imagine.art`, `elevenlabs.io` | Use your existing monthly web subscriptions directly from canvas nodes over `ws://localhost:3001/bridge` via `extensions/chrome-bridge` v1.1.0. |
+| **1-Click Connected Creator Browser** | `higgsfield.ai`, `sume.com`, `app.klingai.com`, `dreamina.capcut.com`, `labs.google/fx/tools/flow`, `openart.ai`, `imagine.art`, `elevenlabs.io` | Click **`Launch Connected Creator Browser`** once (`POST /api/connections/launch-browser`) to open a pre-linked Creator Chrome profile where signing into your web accounts lights up green **`Connected via Browser`** status badges automatically (`GET /api/connections/status`). |
+| **MCP Credit Routing (`stdio` & `http`)** | `@elevenlabs/elevenlabs-mcp`, `@playwright/mcp@latest`, `mcp-fal-server`, or any custom MCP server | Register external MCP servers via 1-click presets in **`Connections · Credits → MCP Servers`**. Discovered tools auto-bind to canvas platforms and execute with zero wrapper fees. |
 | **Credential-Free Workflow Sharing** | `?recipe=` URL & `.dreamflow.json` | Exported workflows preserve every node's platform, model, settings, prompts, and wires while **never** serializing API keys—recipients plug in their own credits and click **Run Workflow**. |
 
 ---
@@ -99,14 +99,14 @@ npm test
 
 ### 3. Connect Your Platform Credits (MCP · Browser Bridge · API Keys)
 
-Click **`Connections · Credits`** in the top-right header:
+Click **`Connections · Credits`** in the top-right header for the 1-click guided hub:
 
-- **Tab 1 — Creator Platforms & API Keys (`$0 Markup`):**
-  Connect direct keys for **Higgsfield**, **Kling AI** (`AK/SK` JWT or Bearer token), **Dreamina / BytePlus Ark**, **Google AI Studio (Gemini / Imagen 4 / Veo 3.1)**, **ElevenLabs**, **OpenArt**, **ImagineArt**, **OpenAI Direct**, **Fal.ai**, **Replicate**, or **ComfyUI Local GPU (`:8188`)**. Keys remain strictly in browser `localStorage` (`open_dreamflow_byok_v1`).
-- **Tab 2 — MCP Servers (`stdio` & Streamable HTTP):**
-  Load 1-click templates (**ElevenLabs Official MCP**, **Playwright Creator Credits MCP**, **Fal Media MCP**, or **Custom HTTP MCP**) via `POST /api/mcp/servers`. Any discovered MCP tool can be bound to a platform model picker or spawned directly onto the canvas.
-- **Tab 3 — Browser Credit Bridge (`7 Platforms`):**
-  Load the unpacked Chrome Extension (`open-dreamflow/extensions/chrome-bridge`) at `chrome://extensions` (or paste the 1-line console connector `import('http://localhost:3001/bridge-connector.js')`) on any signed-in **Higgsfield**, **Kling**, **Dreamina**, **Google Flow**, **OpenArt**, **ImagineArt**, or **ElevenLabs** tab to spend your web subscription credits directly from canvas nodes.
+- **Top Action — `Launch Connected Creator Browser (Connect All Accounts)`:**
+  Opens a pre-linked Creator Chrome profile for **Higgsfield, Sume, Kling AI, Dreamina, Google Flow, OpenArt, ImagineArt, and ElevenLabs**—sign in once and live **`● Connected via Browser`** badges update automatically every 3 seconds via `GET /api/connections/status`.
+- **Tab 1 — Creator Platforms & APIs (`12 Platforms · Side-by-Side`):**
+  Pick any platform from the left sidebar to either click **`Sign In to <Platform> ↗`** (Option A: Web Subscription / Free Credits) or click **`Get <Platform> API Key ↗`** + **`Save & Verify`** (Option B: `$0 Markup` official API keys stored strictly in browser `localStorage`). Includes a collapsible manual Chrome extension / DevTools footer accordion for existing Chrome windows.
+- **Tab 2 — MCP Servers · 1-Click Presets (`stdio` & Streamable HTTP):**
+  Pick **ElevenLabs Official MCP**, **Playwright Creator Credits MCP**, **Fal Media MCP**, or **Custom MCP**, paste one API key, and click **Connect MCP** (`POST /api/mcp/servers`). Advanced command/URL fields stay tucked cleanly behind an **Advanced Config** toggle.
 
 ---
 

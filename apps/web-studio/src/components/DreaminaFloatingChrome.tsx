@@ -100,6 +100,8 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const workflowRunning = useStudioStore((s) => s.workflowRunning);
   const workflowProgressText = useStudioStore((s) => s.workflowProgressText);
   const externalMcpServers = useStudioStore((s) => s.externalMcpServers);
+  const connectedBrowserPlatforms = useStudioStore((s) => s.connectedBrowserPlatforms);
+  const configuredApiPlatforms = useStudioStore((s) => s.configuredApiPlatforms);
   const past = useStudioStore((s) => s.past);
   const future = useStudioStore((s) => s.future);
   const chatMessages = useStudioStore((s) => s.chatMessages);
@@ -159,21 +161,28 @@ export const DreaminaFloatingChrome: React.FC = () => {
     '35mm natural daylight architectural portrait sequence in a warm travertine courtyard transitioning to sunlit coastal cliffs.'
   );
 
+  const connectedSet = new Set<string>(connectedBrowserPlatforms);
+  for (const [k, v] of Object.entries(chromeBridge.connectedPlatforms || {})) {
+    if (v) connectedSet.add(k);
+  }
+  if (chromeBridge.dreaminaTabConnected) connectedSet.add('dreamina');
+  if (chromeBridge.flowTabConnected) connectedSet.add('google-flow');
+  for (const p of configuredApiPlatforms) connectedSet.add(p);
+  if (byok.higgsfieldApiKey?.trim()) connectedSet.add('higgsfield');
+  if (byok.sumeApiKey?.trim()) connectedSet.add('sume');
+  if (byok.klingAccessKey?.trim() || byok.klingApiKey?.trim()) connectedSet.add('kling');
+  if (byok.seedanceApiKey?.trim()) connectedSet.add('dreamina');
+  if (byok.geminiApiKey?.trim()) connectedSet.add('google-flow');
+  if (byok.elevenlabsApiKey?.trim()) connectedSet.add('elevenlabs');
+  if (byok.openartApiKey?.trim()) connectedSet.add('openart');
+  if (byok.imagineartApiKey?.trim()) connectedSet.add('imagineart');
+  if (byok.openaiApiKey?.trim()) connectedSet.add('openai');
+  if (byok.falApiKey?.trim()) connectedSet.add('fal');
+  if (byok.replicateApiKey?.trim()) connectedSet.add('replicate');
+
   const connectedCreditSourcesCount =
-    [
-      byok.higgsfieldApiKey,
-      byok.klingAccessKey || byok.klingApiKey,
-      byok.seedanceApiKey,
-      byok.geminiApiKey,
-      byok.elevenlabsApiKey,
-      byok.openartApiKey,
-      byok.imagineartApiKey,
-      byok.openaiApiKey,
-      byok.falApiKey,
-      byok.replicateApiKey,
-    ].filter((v) => Boolean(v?.trim())).length +
-    externalMcpServers.filter((srv) => srv.status === 'connected').length +
-    Object.values(chromeBridge.connectedPlatforms || {}).filter(Boolean).length;
+    connectedSet.size +
+    externalMcpServers.filter((srv) => srv.status === 'connected').length;
 
   const getViewportCenterWorld = () => {
     const w = typeof window !== 'undefined' ? window.innerWidth : 1440;

@@ -73,6 +73,7 @@ import {
   executeStudioGeneration,
   exportDiskProjectBundle,
   extractLastFrameViaBackend,
+  fetchConnectionsStatusViaBackend,
   fetchPlatformCatalogViaBackend,
   generateAudioViaBackend,
   generateNodeViaBackend,
@@ -84,6 +85,7 @@ import {
   inpaintViaBackend,
   isCloudOrBridgeProvider,
   keyframeBridgeViaBackend,
+  launchConnectedBrowserViaBackend,
   listDiskProjects,
   listExternalMcpServers,
   normalizeBackendMediaUrl,
@@ -246,6 +248,7 @@ function defaultByok(): BYOKCredentials {
     openaiApiKey: '',
     comfyUiUrl: 'http://127.0.0.1:8188',
     higgsfieldApiKey: '',
+    sumeApiKey: '',
     klingAccessKey: '',
     klingSecretKey: '',
     klingApiKey: '',
@@ -321,6 +324,10 @@ export interface StudioState {
   liveBridgeStatusText: string | null;
   platformsCatalog: PlatformDefinition[];
   externalMcpServers: ExternalMcpServerRecord[];
+  connectedBrowserPlatforms: PlatformId[];
+  connectedMcpPlatforms: PlatformId[];
+  configuredApiPlatforms: PlatformId[];
+  launchingBrowserTarget: string | null;
   lastImagePlatformId: PlatformId;
   lastVideoPlatformId: PlatformId;
   lastAudioPlatformId: PlatformId;
@@ -491,9 +498,12 @@ export interface StudioState {
       | 'elevenlabs'
       | 'openai'
       | 'higgsfield'
+      | 'sume'
       | 'openart'
       | 'imagineart'
   ) => Promise<void>;
+  refreshConnectionsStatus: () => Promise<void>;
+  launchConnectedCreatorBrowser: (platformId?: string) => Promise<boolean>;
   runLiveBridgeTestGeneration: (
     target: BrowserPlatformTarget,
     mode?: 'image' | 'video' | 'audio'
@@ -657,6 +667,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   liveBridgeStatusText: null,
   platformsCatalog: PLATFORM_CATALOG,
   externalMcpServers: [],
+  connectedBrowserPlatforms: [],
+  connectedMcpPlatforms: [],
+  configuredApiPlatforms: [],
+  launchingBrowserTarget: null,
   lastImagePlatformId: 'higgsfield',
   lastVideoPlatformId: 'kling',
   lastAudioPlatformId: 'elevenlabs',
@@ -4713,18 +4727,64 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       ev?.source === 'flow' ? 'google-flow' : String(ev?.source || '');
 
     if (!ev || (ev.type !== 'bridge_asset' && ev.type !== 'bridge_prompt')) {
-      if (ev?.type === 'bridge_session' && normalizedSrc) {
+      if (ev?.type === 'bridge_session') {
+        const domainMap: Array<[string, PlatformId]> = [
+          ['dreamina.capcut.com', 'dreamina'],
+          ['labs.google', 'google-flow'],
+          ['flow.google.com', 'google-flow'],
+          ['higgsfield.ai', 'higgsfield'],
+          ['sume.com', 'sume'],
+          ['klingai.com', 'kling'],
+          ['openart.ai', 'openart'],
+          ['imagine.art', 'imagineart'],
+          ['elevenlabs.io', 'elevenlabs'],
+        ];
+        const rawDomains = Array.isArray(ev.metadata?.openDomains)
+          ? (ev.metadata?.openDomains as unknown[])
+          : Array.isArray((ev as unknown as Record<string, unknown>).openDomains)
+          ? ((ev as unknown as Record<string, unknown>).openDomains as unknown[])
+          : [];
+        const detectedFromDomains = new Set<PlatformId>();
+        if (normalizedSrc) {
+          detectedFromDomains.add(normalizedSrc as PlatformId);
+        }
+        for (const d of rawDomains) {
+          if (typeof d !== 'string') continue;
+          for (const [host, pid] of domainMap) {
+            if (d.toLowerCase().includes(host)) detectedFromDomains.add(pid);
+          }
+        }
+        const rawPlats = Array.isArray((ev as unknown as Record<string, unknown>).platforms)
+          ? ((ev as unknown as Record<string, unknown>).platforms as unknown[])
+          : [];
+        for (const p of rawPlats) {
+          if (typeof p === 'string' && p) detectedFromDomains.add(p as PlatformId);
+        }
+
+        const mergedPlatformMap: Record<string, boolean> = {};
+        for (const pid of detectedFromDomains) {
+          mergedPlatformMap[pid] = true;
+        }
+        const connectedList = Array.from(detectedFromDomains);
+
         set((s) => ({
+          connectedBrowserPlatforms: Array.from(
+            new Set([...s.connectedBrowserPlatforms, ...connectedList])
+          ),
+          lastFailedPlatformId:
+            s.lastFailedPlatformId && detectedFromDomains.has(s.lastFailedPlatformId)
+              ? null
+              : s.lastFailedPlatformId,
           chromeBridge: {
             ...s.chromeBridge,
             extensionDetected: true,
             dreaminaTabConnected:
-              normalizedSrc === 'dreamina' ? true : s.chromeBridge.dreaminaTabConnected,
+              connectedList.includes('dreamina') || s.chromeBridge.dreaminaTabConnected,
             flowTabConnected:
-              normalizedSrc === 'google-flow' ? true : s.chromeBridge.flowTabConnected,
+              connectedList.includes('google-flow') || s.chromeBridge.flowTabConnected,
             connectedPlatforms: {
               ...s.chromeBridge.connectedPlatforms,
-              [normalizedSrc]: true,
+              ...mergedPlatformMap,
             },
           },
         }));
@@ -4756,6 +4816,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       flow: 'Google Flow',
       dreamina: 'Dreamina',
       higgsfield: 'Higgsfield',
+      sume: 'Sume',
       kling: 'Kling AI',
       openart: 'OpenArt',
       imagineart: 'ImagineArt',
@@ -4941,6 +5002,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       elevenlabs: byok.elevenlabsApiKey?.trim() || undefined,
       openai: byok.openaiApiKey?.trim() || undefined,
       higgsfield: byok.higgsfieldApiKey?.trim() || undefined,
+      sume: byok.sumeApiKey?.trim() || undefined,
       openart: byok.openartApiKey?.trim() || undefined,
       imagineart: byok.imagineartApiKey?.trim() || undefined,
     };
@@ -4963,6 +5025,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     });
 
     set((s) => ({
+      lastFailedPlatformId: result.valid ? null : s.lastFailedPlatformId,
       verifyingProvider: { ...s.verifyingProvider, [provider]: false },
       providerVerifyStatus: { ...s.providerVerifyStatus, [provider]: result },
     }));
@@ -4992,6 +5055,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     const labelMap: Record<BrowserPlatformTarget, string> = {
       higgsfield: 'Higgsfield',
+      sume: 'Sume',
       kling: 'Kling AI',
       dreamina: 'Dreamina',
       'google-flow': 'Google Flow',
@@ -5439,12 +5503,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       .map((nn) => nn.prompt.trim())
       .join('\n');
 
-    const effectivePrompt = (node.prompt.trim() || upstreamTextPrompt).trim();
-    if (!effectivePrompt) {
+    const basePrompt = (node.prompt.trim() || upstreamTextPrompt).trim();
+    if (!basePrompt) {
       get().selectNodes([node.id]);
       get().showToast(`Enter a prompt on "${node.title}" before generating`, 'error');
       return false;
     }
+
+    const effectivePrompt =
+      modality === 'video' &&
+      node.cameraMotion &&
+      node.cameraMotion !== 'Static Tripod' &&
+      !basePrompt.toLowerCase().includes(node.cameraMotion.toLowerCase())
+        ? `${basePrompt}, ${node.cameraMotion} camera motion`
+        : basePrompt;
 
     // Collect reference images in deterministic priority:
     // 1. Wired upstream image / element / contact-sheet nodes
@@ -5761,11 +5833,79 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
   },
 
+  refreshConnectionsStatus: async () => {
+    const snap = await fetchConnectionsStatusViaBackend();
+    if (!snap.ok) return;
+
+    set((s) => {
+      const browserSet = new Set<string>(snap.connectedBrowserPlatforms);
+      const nextPlatformMap: Record<string, boolean> = {
+        ...s.chromeBridge.connectedPlatforms,
+      };
+      for (const pid of snap.connectedBrowserPlatforms) {
+        nextPlatformMap[pid] = true;
+      }
+      const nextLastFailed =
+        s.lastFailedPlatformId && browserSet.has(s.lastFailedPlatformId)
+          ? null
+          : s.lastFailedPlatformId;
+
+      return {
+        connectedBrowserPlatforms: snap.connectedBrowserPlatforms,
+        connectedMcpPlatforms: snap.connectedMcpPlatforms,
+        configuredApiPlatforms: snap.configuredApiPlatforms,
+        lastFailedPlatformId: nextLastFailed,
+        bridgeWsConnected:
+          snap.bridgeClients > 0 ? true : s.bridgeWsConnected,
+        chromeBridge: {
+          ...s.chromeBridge,
+          extensionDetected:
+            snap.bridgeClients > 0 ||
+            snap.connectedBrowserPlatforms.length > 0 ||
+            s.chromeBridge.extensionDetected,
+          dreaminaTabConnected:
+            snap.connectedBrowserPlatforms.includes('dreamina') ||
+            s.chromeBridge.dreaminaTabConnected,
+          flowTabConnected:
+            snap.connectedBrowserPlatforms.includes('google-flow') ||
+            s.chromeBridge.flowTabConnected,
+          connectedPlatforms: nextPlatformMap,
+        },
+        mcpHealth: {
+          ...s.mcpHealth,
+          bridgeClients: Math.max(snap.bridgeClients, s.mcpHealth.bridgeClients || 0),
+        },
+      };
+    });
+  },
+
+  launchConnectedCreatorBrowser: async (platformId = 'all') => {
+    set({ launchingBrowserTarget: platformId });
+    const res = await launchConnectedBrowserViaBackend(platformId);
+    set({ launchingBrowserTarget: null });
+    if (!res.ok) {
+      get().showToast(
+        res.error || 'Could not launch connected Chrome creator window',
+        'error'
+      );
+      return false;
+    }
+    const label =
+      platformId === 'all'
+        ? 'Connected Creator Browser (sign into your accounts once — bridge is pre-loaded!)'
+        : `Opened ${platformId} in Connected Creator Browser (sign in once)`;
+    get().showToast(label);
+    setTimeout(() => void get().refreshConnectionsStatus(), 1500);
+    setTimeout(() => void get().refreshConnectionsStatus(), 4000);
+    return true;
+  },
+
   refreshPlatformsAndExternalMcp: async () => {
     const [platRes, mcpRes] = await Promise.all([
       fetchPlatformCatalogViaBackend(),
       listExternalMcpServers(),
     ]);
+    await get().refreshConnectionsStatus();
 
     set((s) => {
       let mergedCatalog = PLATFORM_CATALOG;

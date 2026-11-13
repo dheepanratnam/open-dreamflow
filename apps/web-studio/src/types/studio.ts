@@ -30,6 +30,7 @@ export type ResolutionTier = '360p' | '720p' | '1080p' | '1K' | '2K' | '4K';
 
 export type PlatformId =
   | 'higgsfield'
+  | 'sume'
   | 'kling'
   | 'dreamina'
   | 'google-flow'
@@ -46,6 +47,7 @@ export type BrowserPlatformTarget =
   | 'dreamina'
   | 'google-flow'
   | 'higgsfield'
+  | 'sume'
   | 'kling'
   | 'openart'
   | 'imagineart'
@@ -313,6 +315,7 @@ export type ProviderId =
   | 'openai'
   | 'kling'
   | 'higgsfield'
+  | 'sume'
   | 'elevenlabs'
   | 'openart'
   | 'imagineart'
@@ -342,12 +345,23 @@ export interface BYOKCredentials {
   openaiApiKey: string;
   comfyUiUrl: string;
   higgsfieldApiKey: string;
+  sumeApiKey: string;
   klingAccessKey: string;
   klingSecretKey: string;
   klingApiKey: string;
   openartApiKey: string;
   imagineartApiKey: string;
   elevenlabsApiKey: string;
+}
+
+export interface ConnectionsStatusSnapshot {
+  ok: boolean;
+  bridgeClients: number;
+  connectedBrowserPlatforms: PlatformId[];
+  connectedMcpPlatforms: PlatformId[];
+  configuredApiPlatforms: PlatformId[];
+  browserSessionOpen?: boolean;
+  activeBrowserProfileDir?: string;
 }
 
 export interface MCPServerEntry {

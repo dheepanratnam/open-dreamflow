@@ -3,6 +3,7 @@ import {
   ArrowUp,
   AtSign,
   AudioLines,
+  Camera,
   Check,
   ChevronDown,
   Clapperboard,
@@ -51,6 +52,17 @@ const VIDEO_DURATIONS = [5, 8, 10, 15];
 const AUDIO_DURATIONS = [5, 8, 10, 15];
 const BATCH_COUNTS: Array<1 | 2 | 4> = [1, 2, 4];
 
+const DOP_CAMERA_MOTIONS = [
+  'Static Tripod',
+  'Slow Dolly In',
+  'Pull Back Reveal',
+  'Handheld 35mm',
+  'Crane Up',
+  'Orbit 180°',
+  'FPV Tracking',
+  'Anamorphic Rack Focus',
+] as const;
+
 const TRANSPORT_OPTIONS: Array<{
   id: ConnectionTransport;
   label: string;
@@ -75,6 +87,9 @@ export const ContextualNodeOverlay: React.FC = () => {
   const chromeBridge = useStudioStore((s) => s.chromeBridge);
   const platformsCatalog = useStudioStore((s) => s.platformsCatalog);
   const externalMcpServers = useStudioStore((s) => s.externalMcpServers);
+  const connectedBrowserPlatforms = useStudioStore((s) => s.connectedBrowserPlatforms);
+  const connectedMcpPlatforms = useStudioStore((s) => s.connectedMcpPlatforms);
+  const configuredApiPlatforms = useStudioStore((s) => s.configuredApiPlatforms);
   const lastImagePlatformId = useStudioStore((s) => s.lastImagePlatformId);
   const lastVideoPlatformId = useStudioStore((s) => s.lastVideoPlatformId);
   const lastAudioPlatformId = useStudioStore((s) => s.lastAudioPlatformId);
@@ -109,6 +124,7 @@ export const ContextualNodeOverlay: React.FC = () => {
     | 'resolution'
     | 'duration'
     | 'batch'
+    | 'camera'
     | 'voice'
     | 'advanced'
     | 'add-ref'
@@ -208,15 +224,37 @@ export const ContextualNodeOverlay: React.FC = () => {
     availableModels.find((m) => m.id === selectedNode.modelId) ||
     availableModels[0];
 
+  const liveConnStatusObj = {
+    connectedBrowserPlatforms,
+    connectedMcpPlatforms,
+    configuredApiPlatforms,
+  };
+
   const activeConnStatus = activePlatformDef
     ? getPlatformConnectionStatus(
         activePlatformDef.id,
         byok,
         chromeBridge,
         externalMcpServers,
-        activePlatformDef
+        activePlatformDef,
+        liveConnStatusObj
       )
-    : { connected: false, transports: [], summary: 'Connect Credits' };
+    : {
+        connected: connectedBrowserPlatforms.includes(effectivePlatformId),
+        hasBrowser: connectedBrowserPlatforms.includes(effectivePlatformId),
+        hasMcp: false,
+        hasApiKey: false,
+        transports: [],
+        statusLabel: 'Not Connected' as const,
+        summary: 'Connect Credits',
+      };
+
+  const isEffectivePlatformConnected =
+    activeConnStatus.connected ||
+    connectedBrowserPlatforms.includes(effectivePlatformId) ||
+    Boolean(chromeBridge.connectedPlatforms?.[effectivePlatformId]) ||
+    (effectivePlatformId === 'dreamina' && chromeBridge.dreaminaTabConnected) ||
+    (effectivePlatformId === 'google-flow' && chromeBridge.flowTabConnected);
 
   const activeVoice =
     ELEVENLABS_VOICES.find((v) => v.id === (selectedNode.voiceId || 'JBFqnCBsd6RMkjVDRZzb')) ||
@@ -703,21 +741,22 @@ export const ContextualNodeOverlay: React.FC = () => {
             )}
           </div>
 
-          {/* Actionable Banner if User Just Clicked Generate Without Connected Credits */}
-          {lastFailedPlatformId === effectivePlatformId && !activeConnStatus.connected && (
-            <div className="px-3 py-2 rounded-[9px] bg-amber-500/[0.09] border border-amber-400/25 flex items-center justify-between gap-2 text-[11.5px]">
-              <span className="text-amber-100/90 truncate">
-                Connect your {activePlatformDef?.name || effectivePlatformId} credits (MCP, Browser Tab, or API Key) to run this node.
-              </span>
-              <button
-                type="button"
-                onClick={() => openProviderModal('byok', effectivePlatformId)}
-                className="h-6 px-2.5 rounded-[6px] bg-white text-[#0e0e0e] font-semibold shrink-0 hover:bg-white/90"
-              >
-                Connect Credits →
-              </button>
-            </div>
-          )}
+          {/* Actionable Banner ONLY when platform is genuinely disconnected after clicking Generate */}
+          {lastFailedPlatformId === effectivePlatformId &&
+            !isEffectivePlatformConnected && (
+              <div className="px-3 py-2 rounded-[9px] bg-amber-500/[0.09] border border-amber-400/25 flex items-center justify-between gap-2 text-[11.5px]">
+                <span className="text-amber-100/90 truncate">
+                  Connect your {activePlatformDef?.name || effectivePlatformId} account or API key to generate on this node.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => openProviderModal('byok', effectivePlatformId)}
+                  className="h-6 px-2.5 rounded-[6px] bg-white text-[#0e0e0e] font-semibold shrink-0 hover:bg-white/90"
+                >
+                  Connect Credits →
+                </button>
+              </div>
+            )}
 
           {/* Bottom Controls Row: [Where (Platform)] + [Model] + [Settings] + [Generate] */}
           <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -752,7 +791,8 @@ export const ContextualNodeOverlay: React.FC = () => {
                         byok,
                         chromeBridge,
                         externalMcpServers,
-                        plat
+                        plat,
+                        liveConnStatusObj
                       );
                       const active = plat.id === effectivePlatformId;
                       return (
@@ -1011,7 +1051,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </div>
               )}
 
-              {/* Video Duration + Native Sound Toggle */}
+              {/* Video Duration + DoP Camera Rig + Native Sound Toggle */}
               {modality === 'video' && (
                 <>
                   <div className="relative">
@@ -1048,6 +1088,70 @@ export const ContextualNodeOverlay: React.FC = () => {
                             )}
                           </button>
                         ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Higgsfield-Style DoP Camera Motion Rig */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setOpenMenu(openMenu === 'camera' ? null : 'camera')
+                      }
+                      className={`h-8 px-2.5 rounded-[8px] border text-[11.5px] flex items-center gap-1.5 transition-colors max-w-[165px] ${
+                        selectedNode.cameraMotion &&
+                        selectedNode.cameraMotion !== 'Static Tripod'
+                          ? 'bg-[#252525] border-[#20D5EC]/40 text-white'
+                          : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/85'
+                      }`}
+                      title="DoP Rig · Camera Motion Control"
+                    >
+                      <Camera
+                        className={`w-3.5 h-3.5 shrink-0 ${
+                          selectedNode.cameraMotion &&
+                          selectedNode.cameraMotion !== 'Static Tripod'
+                            ? 'text-[#20D5EC]'
+                            : 'text-white/55'
+                        }`}
+                        strokeWidth={1.6}
+                      />
+                      <span className="truncate">
+                        {selectedNode.cameraMotion || 'DoP Rig'}
+                      </span>
+                      <ChevronDown className="w-3 h-3 text-white/40 shrink-0" strokeWidth={1.6} />
+                    </button>
+                    {openMenu === 'camera' && (
+                      <div className="absolute bottom-full left-0 mb-1.5 w-[212px] p-1.5 rounded-[11px] dreamina-menu z-50 space-y-0.5">
+                        <div className="px-2 py-1 text-[10px] font-medium text-white/40 uppercase tracking-wider">
+                          Camera Motion (DoP Rig)
+                        </div>
+                        {DOP_CAMERA_MOTIONS.map((preset) => {
+                          const active =
+                            (selectedNode.cameraMotion || 'Static Tripod') === preset;
+                          return (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => {
+                                updateNodeFields(selectedNode.id, {
+                                  cameraMotion: preset,
+                                });
+                                setOpenMenu(null);
+                              }}
+                              className={`w-full h-7 px-2.5 rounded-[7px] text-[11.5px] flex items-center justify-between text-left ${
+                                active
+                                  ? 'bg-white/[0.1] text-white font-medium'
+                                  : 'hover:bg-white/[0.06] text-white/80'
+                              }`}
+                            >
+                              <span>{preset}</span>
+                              {active && (
+                                <Check className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={2} />
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </div>

@@ -1,1517 +1,1212 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
-  Check,
-  Chrome,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  ClipboardPaste,
   Copy,
   ExternalLink,
-  Eye,
-  EyeOff,
+  Globe,
   KeyRound,
   Loader2,
-  Play,
+  PlugZap,
   Plus,
   RefreshCw,
   Server,
   ShieldCheck,
   Sparkles,
-  Terminal,
   Trash2,
   X,
 } from 'lucide-react';
-import { useStudioStore } from '../store/useStudioStore';
-import { LOCAL_MCP_BASE } from '../services/executionRouter';
 import {
-  BROWSER_BRIDGE_PLATFORMS,
   EXTERNAL_MCP_TEMPLATES,
   PLATFORM_CATALOG,
+  PLATFORM_UI_META,
   getPlatformConnectionStatus,
-  type ExternalMcpTemplate,
 } from '../presets/platformCatalog';
+import { useStudioStore } from '../store/useStudioStore';
 import type {
-  DreaminaToolId,
+  BYOKCredentials,
+  BrowserPlatformTarget,
   PlatformId,
   ProviderVerificationResult,
 } from '../types/studio';
 
-const CHROME_EXTENSION_DISK_PATH =
-  '/Users/seba/Documents/antigravity/clever-mendel/open-dreamflow/extensions/chrome-bridge';
+type VerifySlug =
+  | 'gemini'
+  | 'fal'
+  | 'replicate'
+  | 'seedance'
+  | 'comfyui'
+  | 'kling'
+  | 'elevenlabs'
+  | 'openai'
+  | 'higgsfield'
+  | 'sume'
+  | 'openart'
+  | 'imagineart';
 
-const VerificationReadout: React.FC<{
-  status?: ProviderVerificationResult;
-}> = ({ status }) => {
-  if (!status) return null;
+interface PlatformKeyFieldConfig {
+  byokField: keyof BYOKCredentials;
+  label: string;
+  placeholder: string;
+  isUrl?: boolean;
+}
 
-  if (status.valid) {
-    const unlocked = [
-      ...(status.videoModels || []),
-      ...(status.imageModels || []),
-    ].slice(0, 4);
-    return (
-      <div className="mt-1.5 px-2.5 py-1.5 rounded-[7px] bg-[#10b981]/10 border border-[#10b981]/30 text-[11px] text-[#34d399] flex items-start gap-1.5 leading-snug">
-        <Check className="w-3.5 h-3.5 shrink-0 mt-0.5" strokeWidth={2} />
-        <span>
-          <strong className="font-semibold">Verified</strong>
-          {unlocked.length > 0
-            ? ` · Models: ${unlocked.join(', ')}`
-            : status.allCount
-            ? ` · ${status.allCount} models accessible`
-            : ' · Connection active'}
-        </span>
-      </div>
-    );
+function focusFieldToPlatformId(focus: string | null | undefined): PlatformId {
+  if (!focus) return 'higgsfield';
+  if (focus === 'gemini') return 'google-flow';
+  if (focus === 'seedance') return 'dreamina';
+  const match = PLATFORM_CATALOG.find((p) => p.id === focus);
+  return match ? match.id : 'higgsfield';
+}
+
+function platformIdToVerifySlug(platformId: PlatformId): VerifySlug {
+  const fromMeta = PLATFORM_UI_META[platformId]?.verifySlug as VerifySlug | undefined;
+  if (fromMeta) return fromMeta;
+  if (platformId === 'google-flow') return 'gemini';
+  if (platformId === 'dreamina') return 'seedance';
+  return platformId as VerifySlug;
+}
+
+function getPlatformKeyFields(platformId: PlatformId): PlatformKeyFieldConfig[] {
+  const meta = PLATFORM_UI_META[platformId];
+  const placeholder = meta?.apiPlaceholder || 'Paste API key...';
+
+  switch (platformId) {
+    case 'higgsfield':
+      return [{ byokField: 'higgsfieldApiKey', label: 'Higgsfield API Key', placeholder }];
+    case 'sume':
+      return [{ byokField: 'sumeApiKey', label: 'Sume API Key', placeholder }];
+    case 'kling':
+      return [
+        { byokField: 'klingAccessKey', label: 'Kling Access Key (AK)', placeholder: 'Access Key ID...' },
+        { byokField: 'klingSecretKey', label: 'Kling Secret Key (SK)', placeholder: 'Secret Key...' },
+        { byokField: 'klingApiKey', label: 'Or Single Bearer Token', placeholder },
+      ];
+    case 'dreamina':
+      return [
+        { byokField: 'seedanceApiKey', label: 'BytePlus / Dreamina API Key', placeholder },
+        {
+          byokField: 'seedanceEndpoint',
+          label: 'Endpoint ID (Optional)',
+          placeholder: 'ep-... (Ark Model Endpoint)',
+          isUrl: true,
+        },
+      ];
+    case 'google-flow':
+      return [{ byokField: 'geminiApiKey', label: 'Google AI Studio Key', placeholder }];
+    case 'elevenlabs':
+      return [{ byokField: 'elevenlabsApiKey', label: 'ElevenLabs API Key', placeholder }];
+    case 'openart':
+      return [{ byokField: 'openartApiKey', label: 'OpenArt API Key', placeholder }];
+    case 'imagineart':
+      return [{ byokField: 'imagineartApiKey', label: 'ImagineArt API Key', placeholder }];
+    case 'openai':
+      return [{ byokField: 'openaiApiKey', label: 'OpenAI API Key', placeholder }];
+    case 'fal':
+      return [{ byokField: 'falApiKey', label: 'Fal.ai API Key', placeholder }];
+    case 'replicate':
+      return [{ byokField: 'replicateApiKey', label: 'Replicate API Token', placeholder }];
+    case 'comfyui':
+      return [
+        {
+          byokField: 'comfyUiUrl',
+          label: 'Local ComfyUI Server URL',
+          placeholder: 'http://127.0.0.1:8188',
+          isUrl: true,
+        },
+      ];
+    default:
+      return [{ byokField: 'geminiApiKey', label: 'API Key', placeholder }];
   }
+}
 
+function VerificationReadout({ result }: { result?: ProviderVerificationResult }) {
+  if (!result) return null;
+  const detailText = result.valid
+    ? result.message || `${result.allCount ?? 'Live'} models available`
+    : result.error || result.message || 'Check your API key and try again.';
   return (
-    <div className="mt-1.5 px-2.5 py-1.5 rounded-[7px] bg-red-500/10 border border-red-400/30 text-[11px] text-red-300 flex items-start gap-1.5 leading-snug">
-      <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" strokeWidth={1.75} />
-      <span>{status.error || 'Verification failed'}</span>
+    <div
+      className={`mt-2.5 flex items-start gap-2 rounded-lg border px-3 py-2 text-[11px] leading-snug ${
+        result.valid
+          ? 'border-[#10b981]/35 bg-[#10b981]/10 text-[#6ee7b7]'
+          : 'border-[#ef4444]/35 bg-[#ef4444]/10 text-[#fca5a5]'
+      }`}
+    >
+      {result.valid ? (
+        <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0 text-[#10b981]" />
+      ) : (
+        <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-[#ef4444]" />
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold flex items-center gap-1.5">
+          <span>{result.valid ? 'Connected' : 'Verification Failed'}</span>
+        </div>
+        <div className="opacity-90 break-words mt-0.5">{detailText}</div>
+      </div>
     </div>
   );
-};
+}
 
 export const ProviderModal: React.FC = () => {
-  const {
-    providerModalOpen,
-    providerModalTab,
-    providerFocusField,
-    providerVerifyStatus,
-    verifyingProvider,
-    liveBridgeTestRunning,
-    liveBridgeStatusText,
-    closeProviderModal,
-    openProviderModal,
-    byok,
-    updateByok,
-    clearByokKeys,
-    verifyProviderConnection,
-    runLiveBridgeTestGeneration,
-    mcpServers,
-    mcpHealth,
-    refreshMcpServer,
-    spawnMcpToolAsCanvasNode,
-    externalMcpServers,
-    platformsCatalog,
-    refreshPlatformsAndExternalMcp,
-    addExternalMcpServer,
-    refreshExternalMcpById,
-    removeExternalMcpById,
-    spawnDreaminaNodeAt,
-    updateNodeFields,
-    chromeBridge,
-    pingBridge,
-    bridgeWsConnected,
-    showToast,
-  } = useStudioStore();
+  const providerModalOpen = useStudioStore((s) => s.providerModalOpen);
+  const providerModalTab = useStudioStore((s) => s.providerModalTab);
+  const providerFocusField = useStudioStore((s) => s.providerFocusField);
+  const closeProviderModal = useStudioStore((s) => s.closeProviderModal);
+  const openProviderModal = useStudioStore((s) => s.openProviderModal);
 
-  const [showSecrets, setShowSecrets] = useState(false);
+  const byok = useStudioStore((s) => s.byok);
+  const updateByok = useStudioStore((s) => s.updateByok);
+  const clearByokKeys = useStudioStore((s) => s.clearByokKeys);
+  const providerVerifyStatus = useStudioStore((s) => s.providerVerifyStatus);
+  const verifyingProvider = useStudioStore((s) => s.verifyingProvider);
+  const verifyProviderConnection = useStudioStore((s) => s.verifyProviderConnection);
 
-  // External MCP Registration Form State
-  const [extName, setExtName] = useState('ElevenLabs Official MCP');
-  const [extPlatformId, setExtPlatformId] = useState<PlatformId>('elevenlabs');
-  const [extTransport, setExtTransport] = useState<'stdio' | 'http'>('stdio');
-  const [extCommand, setExtCommand] = useState('npx');
-  const [extArgs, setExtArgs] = useState('-y @elevenlabs/elevenlabs-mcp');
-  const [extEnvKey, setExtEnvKey] = useState('ELEVENLABS_API_KEY');
-  const [extEnvVal, setExtEnvVal] = useState('');
-  const [extHttpUrl, setExtHttpUrl] = useState('http://localhost:3002/mcp');
-  const [connectingExtMcp, setConnectingExtMcp] = useState(false);
+  const connectedBrowserPlatforms = useStudioStore((s) => s.connectedBrowserPlatforms);
+  const connectedMcpPlatforms = useStudioStore((s) => s.connectedMcpPlatforms);
+  const configuredApiPlatforms = useStudioStore((s) => s.configuredApiPlatforms);
+  const launchingBrowserTarget = useStudioStore((s) => s.launchingBrowserTarget);
+  const refreshConnectionsStatus = useStudioStore((s) => s.refreshConnectionsStatus);
+  const launchConnectedCreatorBrowser = useStudioStore((s) => s.launchConnectedCreatorBrowser);
 
-  const higgsfieldRef = useRef<HTMLInputElement | null>(null);
-  const klingRef = useRef<HTMLInputElement | null>(null);
-  const geminiInputRef = useRef<HTMLInputElement | null>(null);
-  const seedanceInputRef = useRef<HTMLInputElement | null>(null);
-  const elevenlabsRef = useRef<HTMLInputElement | null>(null);
-  const openartRef = useRef<HTMLInputElement | null>(null);
-  const imagineartRef = useRef<HTMLInputElement | null>(null);
-  const openaiRef = useRef<HTMLInputElement | null>(null);
-  const falInputRef = useRef<HTMLInputElement | null>(null);
-  const replicateInputRef = useRef<HTMLInputElement | null>(null);
-  const comfyInputRef = useRef<HTMLInputElement | null>(null);
+  const mcpServers = useStudioStore((s) => s.mcpServers);
+  const mcpHealth = useStudioStore((s) => s.mcpHealth);
+  const refreshMcpServer = useStudioStore((s) => s.refreshMcpServer);
+  const spawnMcpToolAsCanvasNode = useStudioStore((s) => s.spawnMcpToolAsCanvasNode);
+
+  const externalMcpServers = useStudioStore((s) => s.externalMcpServers);
+  const platformsCatalog = useStudioStore((s) => s.platformsCatalog);
+  const addExternalMcpServer = useStudioStore((s) => s.addExternalMcpServer);
+  const refreshExternalMcpById = useStudioStore((s) => s.refreshExternalMcpById);
+  const removeExternalMcpById = useStudioStore((s) => s.removeExternalMcpById);
+  const refreshPlatformsAndExternalMcp = useStudioStore((s) => s.refreshPlatformsAndExternalMcp);
+
+  const chromeBridge = useStudioStore((s) => s.chromeBridge);
+  const bridgeWsConnected = useStudioStore((s) => s.bridgeWsConnected);
+  const pingBridge = useStudioStore((s) => s.pingBridge);
+  const liveBridgeTestRunning = useStudioStore((s) => s.liveBridgeTestRunning);
+  const liveBridgeStatusText = useStudioStore((s) => s.liveBridgeStatusText);
+  const runLiveBridgeTestGeneration = useStudioStore((s) => s.runLiveBridgeTestGeneration);
+
+  const showToast = useStudioStore((s) => s.showToast);
+  const spawnDreaminaNodeAt = useStudioStore((s) => s.spawnDreaminaNodeAt);
+  const updateNodeFields = useStudioStore((s) => s.updateNodeFields);
+
+  const [selectedPlatformId, setSelectedPlatformId] = useState<PlatformId>('higgsfield');
+  const [selectedMcpPresetId, setSelectedMcpPresetId] = useState<string>(
+    EXTERNAL_MCP_TEMPLATES[0]?.id ?? 'tpl-elevenlabs-mcp'
+  );
+  const [mcpApiKeyInput, setMcpApiKeyInput] = useState('');
+  const [mcpAdvancedOpen, setMcpAdvancedOpen] = useState(false);
+  const [mcpName, setMcpName] = useState(EXTERNAL_MCP_TEMPLATES[0]?.name ?? 'ElevenLabs Voice & SFX MCP');
+  const [mcpPlatformId, setMcpPlatformId] = useState<string>(
+    EXTERNAL_MCP_TEMPLATES[0]?.platformId ?? 'elevenlabs'
+  );
+  const [mcpTransport, setMcpTransport] = useState<'stdio' | 'http'>('stdio');
+  const [mcpCommand, setMcpCommand] = useState(EXTERNAL_MCP_TEMPLATES[0]?.command ?? 'npx');
+  const [mcpArgsText, setMcpArgsText] = useState(
+    (EXTERNAL_MCP_TEMPLATES[0]?.args ?? ['-y', '@modelcontextprotocol/server-elevenlabs']).join(' ')
+  );
+  const [mcpEnvKeyName, setMcpEnvKeyName] = useState(
+    EXTERNAL_MCP_TEMPLATES[0]?.envKeyName ?? 'ELEVENLABS_API_KEY'
+  );
+  const [mcpUrl, setMcpUrl] = useState('http://127.0.0.1:4100/mcp');
+  const [mcpAdding, setMcpAdding] = useState(false);
+
+  const [manualAccordionOpen, setManualAccordionOpen] = useState(false);
+  const [copiedSnippet, setCopiedSnippet] = useState<string | null>(null);
+
+  const activeTab: 'platforms' | 'mcp' = providerModalTab === 'mcp' ? 'mcp' : 'platforms';
 
   useEffect(() => {
     if (!providerModalOpen) return;
-    void refreshPlatformsAndExternalMcp();
-  }, [providerModalOpen, refreshPlatformsAndExternalMcp]);
+    if (providerFocusField) {
+      setSelectedPlatformId(focusFieldToPlatformId(providerFocusField));
+    }
+  }, [providerModalOpen, providerFocusField]);
 
   useEffect(() => {
-    if (!providerModalOpen || providerModalTab !== 'byok' || !providerFocusField) {
-      return;
+    if (!providerModalOpen) return;
+    void refreshConnectionsStatus();
+    const timer = window.setInterval(() => {
+      void refreshConnectionsStatus();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [providerModalOpen, refreshConnectionsStatus]);
+
+  const liveStatusObj = useMemo(
+    () => ({
+      connectedBrowserPlatforms,
+      connectedMcpPlatforms,
+      configuredApiPlatforms,
+    }),
+    [connectedBrowserPlatforms, connectedMcpPlatforms, configuredApiPlatforms]
+  );
+
+  const platformStatuses = useMemo(() => {
+    const map: Record<string, ReturnType<typeof getPlatformConnectionStatus>> = {};
+    for (const plat of PLATFORM_CATALOG) {
+      const backendPlat = platformsCatalog.find((b) => b.id === plat.id);
+      map[plat.id] = getPlatformConnectionStatus(
+        plat.id,
+        byok,
+        chromeBridge,
+        externalMcpServers,
+        backendPlat,
+        liveStatusObj
+      );
     }
-    const timer = setTimeout(() => {
-      const refMap: Record<string, React.RefObject<HTMLInputElement | null>> = {
-        higgsfield: higgsfieldRef,
-        kling: klingRef,
-        gemini: geminiInputRef,
-        'google-flow': geminiInputRef,
-        seedance: seedanceInputRef,
-        dreamina: seedanceInputRef,
-        elevenlabs: elevenlabsRef,
-        openart: openartRef,
-        imagineart: imagineartRef,
-        openai: openaiRef,
-        fal: falInputRef,
-        replicate: replicateInputRef,
-        comfyui: comfyInputRef,
-      };
-      const target = refMap[providerFocusField]?.current;
-      target?.focus();
-      target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 60);
-    return () => clearTimeout(timer);
-  }, [providerModalOpen, providerModalTab, providerFocusField]);
+    return map;
+  }, [byok, chromeBridge, externalMcpServers, platformsCatalog, liveStatusObj]);
+
+  const connectedTotalCount = useMemo(
+    () => PLATFORM_CATALOG.filter((p) => platformStatuses[p.id]?.connected).length,
+    [platformStatuses]
+  );
 
   if (!providerModalOpen) return null;
 
-  const connectorSnippet = `import('${LOCAL_MCP_BASE}/bridge-connector.js')`;
+  const selectedPlatform =
+    PLATFORM_CATALOG.find((p) => p.id === selectedPlatformId) ?? PLATFORM_CATALOG[0];
+  const selectedStatus = platformStatuses[selectedPlatform.id];
+  const selectedMeta = PLATFORM_UI_META[selectedPlatform.id];
+  const selectedVerifySlug = platformIdToVerifySlug(selectedPlatform.id);
+  const selectedVerifyResult = providerVerifyStatus[selectedVerifySlug];
+  const isVerifyingSelected = Boolean(verifyingProvider[selectedVerifySlug]);
+  const keyFields = getPlatformKeyFields(selectedPlatform.id);
 
-  const copyToClipboard = async (text: string, label: string) => {
+  const consoleSnippet = `import('http://localhost:3001/bridge-connector.js')`;
+  const extensionFolderPath = 'open-dreamflow/extensions/chrome-bridge';
+
+  const handleCopyText = async (text: string, tag: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      showToast(`Copied ${label}`);
+      setCopiedSnippet(tag);
+      showToast(`Copied ${tag} to clipboard`, 'ok');
+      window.setTimeout(() => setCopiedSnippet(null), 1800);
     } catch {
-      showToast(`Copy manually: ${text}`);
+      showToast('Copy failed — please copy manually', 'error');
     }
   };
 
-  const applyMcpTemplate = (tpl: ExternalMcpTemplate) => {
-    setExtName(tpl.name);
-    setExtPlatformId(tpl.platformId);
-    setExtTransport(tpl.transport);
-    if (tpl.transport === 'stdio') {
-      setExtCommand(tpl.command || 'npx');
-      setExtArgs((tpl.args || []).join(' '));
-      setExtEnvKey(tpl.envKeyName || '');
-      if (tpl.platformId === 'elevenlabs' && byok.elevenlabsApiKey) {
-        setExtEnvVal(byok.elevenlabsApiKey);
-      } else if (tpl.platformId === 'fal' && byok.falApiKey) {
-        setExtEnvVal(byok.falApiKey);
-      } else {
-        setExtEnvVal('');
-      }
-    } else {
-      setExtHttpUrl(tpl.url || 'http://localhost:3002/mcp');
-    }
-  };
-
-  const handleConnectExternalMcp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!extName.trim() || connectingExtMcp) return;
-    setConnectingExtMcp(true);
+  const handlePasteIntoField = async (byokField: keyof BYOKCredentials) => {
     try {
-      const envObj: Record<string, string> = {};
-      if (extEnvKey.trim() && extEnvVal.trim()) {
-        envObj[extEnvKey.trim()] = extEnvVal.trim();
+      const clip = await navigator.clipboard.readText();
+      if (!clip.trim()) {
+        showToast('Clipboard is empty', 'error');
+        return;
       }
-      const parsedArgs = extArgs
-        .split(/\s+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+      updateByok({ [byokField]: clip.trim() } as Partial<BYOKCredentials>);
+      showToast('Pasted from clipboard', 'ok');
+    } catch {
+      showToast('Browser blocked clipboard read — paste with Cmd+V', 'error');
+    }
+  };
 
-      await addExternalMcpServer({
-        name: extName.trim(),
-        platformId: extPlatformId,
-        transport: extTransport,
-        command: extTransport === 'stdio' ? extCommand.trim() : undefined,
-        args: extTransport === 'stdio' ? parsedArgs : undefined,
-        env:
-          extTransport === 'stdio' && Object.keys(envObj).length > 0
-            ? envObj
+  const handleSelectMcpPreset = (presetId: string) => {
+    setSelectedMcpPresetId(presetId);
+    const tpl = EXTERNAL_MCP_TEMPLATES.find((t) => t.id === presetId);
+    if (!tpl) return;
+    setMcpName(tpl.name);
+    setMcpPlatformId(tpl.platformId);
+    setMcpTransport(tpl.transport);
+    setMcpCommand(tpl.command || 'npx');
+    setMcpArgsText((tpl.args || []).join(' '));
+    setMcpUrl(tpl.url || 'http://127.0.0.1:4100/mcp');
+    const primaryEnvKey = tpl.envKeyName || '';
+    setMcpEnvKeyName(primaryEnvKey);
+
+    // Pre-fill API key cleanly if already stored in BYOK
+    if (tpl.platformId === 'elevenlabs' && byok.elevenlabsApiKey) {
+      setMcpApiKeyInput(byok.elevenlabsApiKey);
+    } else if (tpl.platformId === 'fal' && byok.falApiKey) {
+      setMcpApiKeyInput(byok.falApiKey);
+    } else if (tpl.platformId === 'replicate' && byok.replicateApiKey) {
+      setMcpApiKeyInput(byok.replicateApiKey);
+    } else {
+      setMcpApiKeyInput('');
+    }
+    setMcpAdvancedOpen(tpl.id === 'tpl-http-mcp');
+  };
+
+  const handleConnectMcpPreset = async () => {
+    const isCustom = selectedMcpPresetId === 'tpl-http-mcp';
+    const trimmedKey = mcpApiKeyInput.trim();
+    if (!isCustom && mcpEnvKeyName && !trimmedKey) {
+      showToast(`Paste your ${mcpEnvKeyName} first`, 'error');
+      return;
+    }
+    setMcpAdding(true);
+    try {
+      const envPayload: Record<string, string> = {};
+      if (mcpEnvKeyName && trimmedKey) {
+        envPayload[mcpEnvKeyName] = trimmedKey;
+      }
+      const ok = await addExternalMcpServer({
+        name: mcpName.trim() || 'MCP Server',
+        platformId: mcpPlatformId,
+        transport: mcpTransport,
+        command: mcpTransport === 'stdio' ? mcpCommand.trim() : undefined,
+        args:
+          mcpTransport === 'stdio'
+            ? mcpArgsText
+                .split(/\s+/)
+                .map((s) => s.trim())
+                .filter(Boolean)
             : undefined,
-        url: extTransport === 'http' ? extHttpUrl.trim() : undefined,
+        env: Object.keys(envPayload).length > 0 ? envPayload : undefined,
+        url: mcpTransport === 'http' ? mcpUrl.trim() : undefined,
+        headers:
+          mcpTransport === 'http' && trimmedKey
+            ? { Authorization: `Bearer ${trimmedKey}` }
+            : undefined,
       });
+      if (ok) {
+        await refreshConnectionsStatus();
+      }
     } finally {
-      setConnectingExtMcp(false);
+      setMcpAdding(false);
     }
   };
 
-  const handleSpawnExternalMcpToolNode = (
-    serverId: string,
-    serverName: string,
-    platformId: string | undefined,
-    toolName: string,
-    toolDesc?: string
-  ) => {
-    const lower = `${toolName} ${toolDesc || ''}`.toLowerCase();
-    const toolKind: DreaminaToolId = lower.includes('video')
-      ? 'video'
-      : lower.includes('audio') ||
-        lower.includes('speech') ||
-        lower.includes('tts') ||
-        lower.includes('voice') ||
-        lower.includes('sfx')
-      ? 'audio'
-      : 'image';
-
-    spawnDreaminaNodeAt(toolKind, 260, 180);
-    const createdId = useStudioStore.getState().selectedNodeIds[0];
-    if (createdId) {
-      const resolvedPlat: PlatformId = (platformId as PlatformId) || 'custom-mcp';
-      updateNodeFields(createdId, {
-        platformId: resolvedPlat,
-        connectionMode: 'mcp',
-        modelId:
-          resolvedPlat === 'custom-mcp'
-            ? `${serverId}::${toolName}`
-            : `mcp:${serverId}:${toolName}`,
-        mcpServerId: serverId,
-        mcpToolName: toolName,
-        providerUsed: `${serverName} · ${toolName}`,
-      });
-    }
-    closeProviderModal();
-  };
-
-  const statusBadgeFor = (platformId: PlatformId) => {
-    const st = getPlatformConnectionStatus(
-      platformId,
-      byok,
-      chromeBridge,
-      externalMcpServers,
-      platformsCatalog.find((p) => p.id === platformId)
-    );
-    return (
-      <span
-        className={`px-2 py-0.5 rounded-[5px] font-mono text-[10px] flex items-center gap-1 shrink-0 ${
-          st.connected
-            ? 'bg-[#10b981]/15 text-[#34d399] border border-[#10b981]/30'
-            : 'bg-white/[0.05] text-white/45 border border-white/[0.06]'
-        }`}
-      >
-        <span
-          className={`w-1.5 h-1.5 rounded-full ${
-            st.connected ? 'bg-[#10b981]' : 'bg-white/30'
-          }`}
-        />
-        <span>{st.connected ? `Connected · ${st.summary}` : 'Not connected'}</span>
-      </span>
-    );
-  };
-
-  const isBrowserPlatformConnected = (id: string): boolean => {
-    if (chromeBridge.connectedPlatforms?.[id]) return true;
-    if (id === 'dreamina' && chromeBridge.dreaminaTabConnected) return true;
-    if (id === 'google-flow' && chromeBridge.flowTabConnected) return true;
-    return false;
-  };
+  const localStudioEngine = mcpServers[0];
+  const isCustomMcpSelected = selectedMcpPresetId === 'tpl-http-mcp';
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 select-none"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-3 sm:p-6"
       onClick={closeProviderModal}
     >
       <div
+        className="relative flex flex-col w-full max-w-[1040px] max-h-[90vh] rounded-2xl border border-white/[0.09] bg-[#111111] text-[#e5e5e5] shadow-[0_24px_80px_rgba(0,0,0,0.75)] overflow-hidden"
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[880px] max-h-[89vh] rounded-[16px] dreamina-menu flex flex-col overflow-hidden text-[#f5f5f5]"
       >
-        {/* Modal Header */}
-        <div className="h-[52px] px-5 border-b border-white/[0.08] flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2.5">
-            <ShieldCheck className="w-4 h-4 text-[#20D5EC]" strokeWidth={1.6} />
-            <span className="text-[14px] font-semibold">
-              Connections · Credits · MCP Hub
-            </span>
-            <span className="hidden sm:inline px-2 py-0.5 rounded-[6px] bg-white/[0.06] font-mono text-[10.5px] text-white/65">
-              Higgsfield · Kling 4.0 · Dreamina · Flow · OpenArt · ImagineArt · ElevenLabs
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={closeProviderModal}
-            className="w-7 h-7 rounded-[7px] hover:bg-white/[0.08] flex items-center justify-center text-white/60 hover:text-white"
-          >
-            <X className="w-4 h-4" strokeWidth={1.5} />
-          </button>
-        </div>
-
-        {/* Clean Matte 3-Tab Strip */}
-        <div className="px-5 pt-3 pb-2.5 border-b border-white/[0.06] flex flex-wrap items-center justify-between gap-2 bg-[#161616] shrink-0">
-          <div className="flex items-center gap-1.5">
-            {(
-              [
-                { id: 'byok', label: 'Creator Platforms & API Keys', icon: KeyRound },
-                { id: 'mcp', label: 'MCP Servers (Use Credits via MCP)', icon: Server },
-                { id: 'bridge', label: 'Browser Credit Bridge (7 Platforms)', icon: Chrome },
-              ] as const
-            ).map((tab) => {
-              const Icon = tab.icon;
-              const active = providerModalTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => openProviderModal(tab.id)}
-                  className={`h-8 px-3 rounded-[8px] text-[12px] font-medium flex items-center gap-1.5 transition-colors ${
-                    active
-                      ? 'bg-white text-[#0e0e0e]'
-                      : 'bg-[#252525] text-white/75 hover:text-white hover:bg-[#2e2e2e]'
-                  }`}
-                >
-                  <Icon className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  <span>{tab.label}</span>
-                </button>
-              );
-            })}
+        {/* Top Modal Header */}
+        <div className="flex items-center justify-between gap-4 px-5 py-3.5 border-b border-white/[0.07] bg-[#141414]">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-8 h-8 rounded-xl bg-white/[0.06] border border-white/[0.08] flex items-center justify-center shrink-0">
+              <PlugZap className="w-4 h-4 text-[#20D5EC]" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold text-white tracking-tight truncate">
+                  Connections · Credits &amp; API Keys
+                </h2>
+                <span className="inline-flex items-center gap-1 rounded-full border border-[#10b981]/30 bg-[#10b981]/10 px-2 py-0.5 text-[10px] font-medium text-[#6ee7b7]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
+                  {connectedTotalCount} / {PLATFORM_CATALOG.length} Connected
+                </span>
+              </div>
+              <p className="text-[11px] text-[#9a9a9a] truncate">
+                Use your existing web subscriptions via 1-Click Connected Browser or paste $0-markup API keys.
+              </p>
+            </div>
           </div>
 
-          <div className="flex items-center gap-1.5 text-[11px] font-mono text-white/60">
-            <Sparkles className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
-            <span>$0 Wrapper Markup · Keys Never Leave Your Device</span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => void refreshConnectionsStatus()}
+              title="Refresh live connection status"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.08] px-2.5 py-1.5 text-[11px] text-[#cfcfcf] transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Refresh</span>
+            </button>
+            <button
+              type="button"
+              onClick={closeProviderModal}
+              aria-label="Close Connections Modal"
+              className="w-8 h-8 rounded-lg border border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.09] flex items-center justify-center text-[#bdbdbd] hover:text-white transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-5">
-          {/* TAB 1: CREATOR PLATFORMS & API KEYS */}
-          {providerModalTab === 'byok' && (
-            <div className="space-y-4">
-              <div className="p-3.5 rounded-[12px] bg-[#151515] border border-white/[0.08] flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-[12.5px] font-medium text-white">
-                    Bring Your Own Platform Credits — Zero Wrapper Markup
-                  </div>
-                  <div className="text-[11px] text-white/50">
-                    Connect API keys below, attach an MCP server in the MCP tab, or use your logged-in web subscription via Browser Credit Bridge. Shared workflows never include your credentials.
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setShowSecrets(!showSecrets)}
-                    className="h-7 px-2.5 rounded-[7px] bg-[#252525] hover:bg-[#2e2e2e] text-[11.5px] text-white/80 flex items-center gap-1.5"
-                  >
-                    {showSecrets ? (
-                      <EyeOff className="w-3.5 h-3.5" strokeWidth={1.5} />
-                    ) : (
-                      <Eye className="w-3.5 h-3.5" strokeWidth={1.5} />
-                    )}
-                    <span>{showSecrets ? 'Hide Keys' : 'Reveal Keys'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={clearByokKeys}
-                    className="h-7 px-2.5 rounded-[7px] bg-[#252525] hover:bg-red-500/20 text-[11.5px] text-white/70 hover:text-red-300 flex items-center gap-1"
-                  >
-                    <Trash2 className="w-3 h-3" strokeWidth={1.5} />
-                    <span>Clear All</span>
-                  </button>
-                </div>
+        {/* Hero 1-Click Guided Onboarding Banner */}
+        <div className="px-5 py-3.5 border-b border-white/[0.07] bg-[#161616]">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3.5">
+            <div className="space-y-2 min-w-0">
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <span className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] border border-white/[0.07] px-2 py-1 text-[#d4d4d4]">
+                  <span className="w-4 h-4 rounded-full bg-white text-black font-bold text-[10px] inline-flex items-center justify-center">
+                    1
+                  </span>
+                  Click Launch Connected Browser
+                </span>
+                <ChevronRight className="w-3.5 h-3.5 text-[#666]" />
+                <span className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] border border-white/[0.07] px-2 py-1 text-[#d4d4d4]">
+                  <span className="w-4 h-4 rounded-full bg-white text-black font-bold text-[10px] inline-flex items-center justify-center">
+                    2
+                  </span>
+                  Sign into your accounts once
+                </span>
+                <ChevronRight className="w-3.5 h-3.5 text-[#666]" />
+                <span className="inline-flex items-center gap-1.5 rounded-md bg-[#10b981]/10 border border-[#10b981]/30 px-2 py-1 text-[#6ee7b7]">
+                  <span className="w-4 h-4 rounded-full bg-[#10b981] text-black font-bold text-[10px] inline-flex items-center justify-center">
+                    3
+                  </span>
+                  Green Connected badge lights up automatically
+                </span>
+              </div>
+              <p className="text-[11px] text-[#8f8f8f]">
+                No Chrome DevTools setup required — opens a pre-linked Creator Chrome profile signed into Higgsfield, Sume, Kling, Dreamina, Google Flow, OpenArt, ImagineArt, and ElevenLabs.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void launchConnectedCreatorBrowser('all')}
+              disabled={launchingBrowserTarget !== null}
+              className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl bg-white hover:bg-[#e9e9e9] disabled:opacity-60 px-4 py-2.5 text-xs font-semibold text-[#0e0e0e] shadow-sm transition-colors cursor-pointer"
+            >
+              {launchingBrowserTarget === 'all' ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Globe className="w-4 h-4" />
+              )}
+              <span>
+                {launchingBrowserTarget === 'all'
+                  ? 'Launching Connected Browser...'
+                  : 'Launch Connected Creator Browser (Connect All Accounts)'}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {/* Clean 2-Tab Navigation */}
+        <div className="flex items-center justify-between gap-3 px-5 pt-2.5 border-b border-white/[0.07] bg-[#121212]">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => openProviderModal('byok', selectedPlatform.id)}
+              className={`px-3.5 py-2 text-xs font-medium rounded-t-lg border-b-2 transition-colors ${
+                activeTab === 'platforms'
+                  ? 'border-[#20D5EC] text-white bg-white/[0.04]'
+                  : 'border-transparent text-[#8c8c8c] hover:text-[#d4d4d4]'
+              }`}
+            >
+              Creator Platforms &amp; APIs ({PLATFORM_CATALOG.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => openProviderModal('mcp')}
+              className={`px-3.5 py-2 text-xs font-medium rounded-t-lg border-b-2 transition-colors ${
+                activeTab === 'mcp'
+                  ? 'border-[#20D5EC] text-white bg-white/[0.04]'
+                  : 'border-transparent text-[#8c8c8c] hover:text-[#d4d4d4]'
+              }`}
+            >
+              MCP Servers · 1-Click Presets ({externalMcpServers.length + 1})
+            </button>
+          </div>
+
+          <div className="hidden sm:flex items-center gap-2 pb-1.5 text-[11px] text-[#888]">
+            <ShieldCheck className="w-3.5 h-3.5 text-[#10b981]" />
+            <span>Zero markup · Keys stay local in your browser</span>
+          </div>
+        </div>
+
+        {/* Main Body */}
+        <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+          {activeTab === 'platforms' ? (
+            <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-[260px_1fr] overflow-hidden">
+              {/* Left Sidebar: All 12 Platforms */}
+              <div className="border-b md:border-b-0 md:border-r border-white/[0.07] bg-[#131313] overflow-y-auto p-2.5 space-y-1">
+                {PLATFORM_CATALOG.map((plat) => {
+                  const st = platformStatuses[plat.id];
+                  const isActive = selectedPlatform.id === plat.id;
+                  return (
+                    <button
+                      key={plat.id}
+                      type="button"
+                      onClick={() => setSelectedPlatformId(plat.id)}
+                      className={`w-full text-left rounded-xl px-3 py-2.5 border transition-all flex items-center justify-between gap-2 ${
+                        isActive
+                          ? 'bg-[#1d1d1d] border-white/[0.16] text-white shadow-sm'
+                          : 'bg-transparent border-transparent hover:bg-white/[0.04] text-[#bcbcbc]'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium truncate">{plat.name}</div>
+                        <div className="text-[10px] text-[#7f7f7f] truncate mt-0.5">
+                          {plat.modalities.join(' · ')}
+                        </div>
+                      </div>
+                      <span
+                        className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium border ${
+                          st?.connected
+                            ? 'border-[#10b981]/35 bg-[#10b981]/10 text-[#6ee7b7]'
+                            : 'border-white/[0.08] bg-white/[0.03] text-[#8c8c8c]'
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            st?.connected ? 'bg-[#10b981]' : 'bg-[#5c5c5c]'
+                          }`}
+                        />
+                        <span>{st?.connected ? st.statusLabel.replace('Connected via ', '') : 'Off'}</span>
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
 
-              {/* Primary Creator Platforms Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {/* 1. Higgsfield */}
-                <div
-                  className={`p-3.5 rounded-[12px] bg-[#161616] border space-y-2 ${
-                    providerFocusField === 'higgsfield'
-                      ? 'border-[#20D5EC]/70'
-                      : 'border-white/[0.08]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="text-[12.5px] font-semibold text-white">
-                        Higgsfield
-                      </div>
-                      <div className="text-[10.5px] text-white/45">
-                        ChatGPT Image 2.6 · Soul · DoP Cinema I2V · Wan 2.6
-                      </div>
-                    </div>
-                    {statusBadgeFor('higgsfield')}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      ref={higgsfieldRef}
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.higgsfieldApiKey}
-                      onChange={(e) =>
-                        updateByok({ higgsfieldApiKey: e.target.value })
-                      }
-                      placeholder="hf_... (or connect via MCP / Browser Bridge)"
-                      className="flex-1 h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/35 select-text"
-                    />
-                    <button
-                      type="button"
-                      disabled={Boolean(verifyingProvider.higgsfield)}
-                      onClick={() => void verifyProviderConnection('higgsfield')}
-                      className="h-8 px-2.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[11px] font-semibold shrink-0 flex items-center gap-1"
-                    >
-                      {verifyingProvider.higgsfield && (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      )}
-                      <span>Verify</span>
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between text-[10.5px] text-white/45">
-                    <button
-                      type="button"
-                      onClick={() => openProviderModal('bridge')}
-                      className="text-[#20D5EC] hover:underline"
-                    >
-                      Or use logged-in higgsfield.ai credits →
-                    </button>
-                    <a
-                      href="https://higgsfield.ai"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:text-white flex items-center gap-1"
-                    >
-                      <span>higgsfield.ai</span>
-                      <ExternalLink className="w-3 h-3" strokeWidth={1.5} />
-                    </a>
-                  </div>
-                  <VerificationReadout status={providerVerifyStatus.higgsfield} />
-                </div>
-
-                {/* 2. Kling AI */}
-                <div
-                  className={`p-3.5 rounded-[12px] bg-[#161616] border space-y-2 ${
-                    providerFocusField === 'kling'
-                      ? 'border-[#20D5EC]/70'
-                      : 'border-white/[0.08]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="text-[12.5px] font-semibold text-white">
-                        Kling AI
-                      </div>
-                      <div className="text-[10.5px] text-white/45">
-                        Kling 4.0 (I2V + Native Audio) · Kling 3.0 Master · Kolors
-                      </div>
-                    </div>
-                    {statusBadgeFor('kling')}
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <input
-                      ref={klingRef}
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.klingAccessKey}
-                      onChange={(e) =>
-                        updateByok({ klingAccessKey: e.target.value })
-                      }
-                      placeholder="Access Key (AK)..."
-                      className="h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/35 select-text"
-                    />
-                    <input
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.klingSecretKey}
-                      onChange={(e) =>
-                        updateByok({ klingSecretKey: e.target.value })
-                      }
-                      placeholder="Secret Key (SK)..."
-                      className="h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/35 select-text"
-                    />
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.klingApiKey}
-                      onChange={(e) => updateByok({ klingApiKey: e.target.value })}
-                      placeholder="Or single Kling Bearer / Gateway Token..."
-                      className="flex-1 h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/35 select-text"
-                    />
-                    <button
-                      type="button"
-                      disabled={Boolean(verifyingProvider.kling)}
-                      onClick={() => void verifyProviderConnection('kling')}
-                      className="h-8 px-2.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[11px] font-semibold shrink-0 flex items-center gap-1"
-                    >
-                      {verifyingProvider.kling && (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      )}
-                      <span>Verify</span>
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between text-[10.5px] text-white/45">
-                    <button
-                      type="button"
-                      onClick={() => openProviderModal('bridge')}
-                      className="text-[#20D5EC] hover:underline"
-                    >
-                      Or use app.klingai.com web credits →
-                    </button>
-                    <a
-                      href="https://app.klingai.com"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:text-white flex items-center gap-1"
-                    >
-                      <span>app.klingai.com</span>
-                      <ExternalLink className="w-3 h-3" strokeWidth={1.5} />
-                    </a>
-                  </div>
-                  <VerificationReadout status={providerVerifyStatus.kling} />
-                </div>
-
-                {/* 3. Dreamina / Seedream / Seedance */}
-                <div
-                  className={`p-3.5 rounded-[12px] bg-[#161616] border space-y-2 ${
-                    providerFocusField === 'seedance' ||
-                    providerFocusField === 'dreamina'
-                      ? 'border-[#20D5EC]/70'
-                      : 'border-white/[0.08]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="text-[12.5px] font-semibold text-white">
-                        Dreamina · BytePlus Ark
-                      </div>
-                      <div className="text-[10.5px] text-white/45">
-                        Seedream 5.0 Pro · Seedance 2.5 · Multi-Ref Keyframes
-                      </div>
-                    </div>
-                    {statusBadgeFor('dreamina')}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      ref={seedanceInputRef}
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.seedanceApiKey}
-                      onChange={(e) =>
-                        updateByok({ seedanceApiKey: e.target.value })
-                      }
-                      placeholder="ark-... (BytePlus Ark API Key)"
-                      className="flex-1 h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/35 select-text"
-                    />
-                    <button
-                      type="button"
-                      disabled={Boolean(verifyingProvider.seedance)}
-                      onClick={() => void verifyProviderConnection('seedance')}
-                      className="h-8 px-2.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[11px] font-semibold shrink-0 flex items-center gap-1"
-                    >
-                      {verifyingProvider.seedance && (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      )}
-                      <span>Verify</span>
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between text-[10.5px] text-white/45">
-                    <button
-                      type="button"
-                      onClick={() => openProviderModal('bridge')}
-                      className="text-[#20D5EC] hover:underline"
-                    >
-                      Or use dreamina.capcut.com credits →
-                    </button>
-                    <a
-                      href="https://dreamina.capcut.com/ai-tool/canvas"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:text-white flex items-center gap-1"
-                    >
-                      <span>dreamina.capcut.com</span>
-                      <ExternalLink className="w-3 h-3" strokeWidth={1.5} />
-                    </a>
-                  </div>
-                  <VerificationReadout status={providerVerifyStatus.seedance} />
-                </div>
-
-                {/* 4. Google Flow / Gemini / Veo 3.1 */}
-                <div
-                  className={`p-3.5 rounded-[12px] bg-[#161616] border space-y-2 ${
-                    providerFocusField === 'gemini' ||
-                    providerFocusField === 'google-flow'
-                      ? 'border-[#20D5EC]/70'
-                      : 'border-white/[0.08]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="text-[12.5px] font-semibold text-white">
-                        Google Flow · Gemini / Veo 3.1
-                      </div>
-                      <div className="text-[10.5px] text-white/45">
-                        Imagen 4 · Nano Banana 2 · Veo 3.1 Quality / Fast
-                      </div>
-                    </div>
-                    {statusBadgeFor('google-flow')}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      ref={geminiInputRef}
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.geminiApiKey}
-                      onChange={(e) => updateByok({ geminiApiKey: e.target.value })}
-                      placeholder="AIzaSy... (Google AI Studio Key)"
-                      className="flex-1 h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/35 select-text"
-                    />
-                    <button
-                      type="button"
-                      disabled={Boolean(verifyingProvider.gemini)}
-                      onClick={() => void verifyProviderConnection('gemini')}
-                      className="h-8 px-2.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[11px] font-semibold shrink-0 flex items-center gap-1"
-                    >
-                      {verifyingProvider.gemini && (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      )}
-                      <span>Verify</span>
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between text-[10.5px] text-white/45">
-                    <a
-                      href="https://aistudio.google.com/apikey"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[#20D5EC] hover:underline flex items-center gap-1"
-                    >
-                      <span>Get AI Studio key</span>
-                      <ExternalLink className="w-3 h-3" strokeWidth={1.5} />
-                    </a>
-                    <a
-                      href="https://labs.google/fx/tools/flow"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:text-white flex items-center gap-1"
-                    >
-                      <span>Open Google Flow</span>
-                      <ExternalLink className="w-3 h-3" strokeWidth={1.5} />
-                    </a>
-                  </div>
-                  <VerificationReadout status={providerVerifyStatus.gemini} />
-                </div>
-
-                {/* 5. ElevenLabs */}
-                <div
-                  className={`p-3.5 rounded-[12px] bg-[#161616] border space-y-2 ${
-                    providerFocusField === 'elevenlabs'
-                      ? 'border-[#20D5EC]/70'
-                      : 'border-white/[0.08]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="text-[12.5px] font-semibold text-white">
-                        ElevenLabs
-                      </div>
-                      <div className="text-[10.5px] text-white/45">
-                        Multilingual v2 Voice TTS · Flash v2.5 · Sound Effects v2
-                      </div>
-                    </div>
-                    {statusBadgeFor('elevenlabs')}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      ref={elevenlabsRef}
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.elevenlabsApiKey}
-                      onChange={(e) =>
-                        updateByok({ elevenlabsApiKey: e.target.value })
-                      }
-                      placeholder="sk_... / xi-... (ElevenLabs API Key)"
-                      className="flex-1 h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/35 select-text"
-                    />
-                    <button
-                      type="button"
-                      disabled={Boolean(verifyingProvider.elevenlabs)}
-                      onClick={() => void verifyProviderConnection('elevenlabs')}
-                      className="h-8 px-2.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[11px] font-semibold shrink-0 flex items-center gap-1"
-                    >
-                      {verifyingProvider.elevenlabs && (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      )}
-                      <span>Verify</span>
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between text-[10.5px] text-white/45">
-                    <button
-                      type="button"
-                      onClick={() => openProviderModal('mcp')}
-                      className="text-[#20D5EC] hover:underline"
-                    >
-                      Or 1-click ElevenLabs Official MCP →
-                    </button>
-                    <a
-                      href="https://elevenlabs.io"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:text-white flex items-center gap-1"
-                    >
-                      <span>elevenlabs.io</span>
-                      <ExternalLink className="w-3 h-3" strokeWidth={1.5} />
-                    </a>
-                  </div>
-                  <VerificationReadout status={providerVerifyStatus.elevenlabs} />
-                </div>
-
-                {/* 6. OpenArt */}
-                <div
-                  className={`p-3.5 rounded-[12px] bg-[#161616] border space-y-2 ${
-                    providerFocusField === 'openart'
-                      ? 'border-[#20D5EC]/70'
-                      : 'border-white/[0.08]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="text-[12.5px] font-semibold text-white">
-                        OpenArt
-                      </div>
-                      <div className="text-[10.5px] text-white/45">
-                        ChatGPT Image 2.6 · OpenArt Photoreal · Character Lock · Kling 4.0
-                      </div>
-                    </div>
-                    {statusBadgeFor('openart')}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      ref={openartRef}
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.openartApiKey}
-                      onChange={(e) => updateByok({ openartApiKey: e.target.value })}
-                      placeholder="oa_... (or connect via MCP / Browser Bridge)"
-                      className="flex-1 h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/35 select-text"
-                    />
-                    <button
-                      type="button"
-                      disabled={Boolean(verifyingProvider.openart)}
-                      onClick={() => void verifyProviderConnection('openart')}
-                      className="h-8 px-2.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[11px] font-semibold shrink-0 flex items-center gap-1"
-                    >
-                      {verifyingProvider.openart && (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      )}
-                      <span>Verify</span>
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between text-[10.5px] text-white/45">
-                    <button
-                      type="button"
-                      onClick={() => openProviderModal('bridge')}
-                      className="text-[#20D5EC] hover:underline"
-                    >
-                      Or use openart.ai web credits →
-                    </button>
-                    <a
-                      href="https://openart.ai"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:text-white flex items-center gap-1"
-                    >
-                      <span>openart.ai</span>
-                      <ExternalLink className="w-3 h-3" strokeWidth={1.5} />
-                    </a>
-                  </div>
-                  <VerificationReadout status={providerVerifyStatus.openart} />
-                </div>
-
-                {/* 7. ImagineArt */}
-                <div
-                  className={`p-3.5 rounded-[12px] bg-[#161616] border space-y-2 ${
-                    providerFocusField === 'imagineart'
-                      ? 'border-[#20D5EC]/70'
-                      : 'border-white/[0.08]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="text-[12.5px] font-semibold text-white">
-                        ImagineArt (Vyro)
-                      </div>
-                      <div className="text-[10.5px] text-white/45">
-                        Imagine V2 · Flux Realism · Hailuo 02 · Kling 4.0
-                      </div>
-                    </div>
-                    {statusBadgeFor('imagineart')}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      ref={imagineartRef}
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.imagineartApiKey}
-                      onChange={(e) =>
-                        updateByok({ imagineartApiKey: e.target.value })
-                      }
-                      placeholder="vk-... (Vyro / ImagineArt Bearer Token)"
-                      className="flex-1 h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/35 select-text"
-                    />
-                    <button
-                      type="button"
-                      disabled={Boolean(verifyingProvider.imagineart)}
-                      onClick={() => void verifyProviderConnection('imagineart')}
-                      className="h-8 px-2.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[11px] font-semibold shrink-0 flex items-center gap-1"
-                    >
-                      {verifyingProvider.imagineart && (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      )}
-                      <span>Verify</span>
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between text-[10.5px] text-white/45">
-                    <button
-                      type="button"
-                      onClick={() => openProviderModal('bridge')}
-                      className="text-[#20D5EC] hover:underline"
-                    >
-                      Or use imagine.art web credits →
-                    </button>
-                    <a
-                      href="https://www.imagine.art"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:text-white flex items-center gap-1"
-                    >
-                      <span>imagine.art</span>
-                      <ExternalLink className="w-3 h-3" strokeWidth={1.5} />
-                    </a>
-                  </div>
-                  <VerificationReadout status={providerVerifyStatus.imagineart} />
-                </div>
-
-                {/* 8. OpenAI Direct */}
-                <div
-                  className={`p-3.5 rounded-[12px] bg-[#161616] border space-y-2 ${
-                    providerFocusField === 'openai'
-                      ? 'border-[#20D5EC]/70'
-                      : 'border-white/[0.08]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="text-[12.5px] font-semibold text-white">
-                        OpenAI Direct
-                      </div>
-                      <div className="text-[10.5px] text-white/45">
-                        GPT Image 1.5 / ChatGPT Image · Sora 2 Video
-                      </div>
-                    </div>
-                    {statusBadgeFor('openai')}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      ref={openaiRef}
-                      type={showSecrets ? 'text' : 'password'}
-                      value={byok.openaiApiKey}
-                      onChange={(e) => updateByok({ openaiApiKey: e.target.value })}
-                      placeholder="sk-proj-..."
-                      className="flex-1 h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/35 select-text"
-                    />
-                    <button
-                      type="button"
-                      disabled={Boolean(verifyingProvider.openai)}
-                      onClick={() => void verifyProviderConnection('openai')}
-                      className="h-8 px-2.5 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[11px] font-semibold shrink-0 flex items-center gap-1"
-                    >
-                      {verifyingProvider.openai && (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      )}
-                      <span>Verify</span>
-                    </button>
-                  </div>
-                  <VerificationReadout status={providerVerifyStatus.openai} />
-                </div>
-              </div>
-
-              {/* Raw Compute & Local GPU Pass-Through Row */}
-              <div className="p-3.5 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-3">
-                <div className="text-[11.5px] font-medium text-white/65">
-                  Direct Inference Cloud & Local GPU Pass-Through ($0 Markup)
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {/* Right Detail Pane: Selected Platform */}
+              <div className="overflow-y-auto p-5 space-y-4 bg-[#111111]">
+                {/* Platform Header */}
+                <div className="flex flex-wrap items-start justify-between gap-3 pb-3 border-b border-white/[0.07]">
                   <div>
-                    <label className="block text-[11px] text-white/55 mb-1">
-                      Fal.ai Key (Flux / Kling / Wan)
-                    </label>
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        ref={falInputRef}
-                        type={showSecrets ? 'text' : 'password'}
-                        value={byok.falApiKey}
-                        onChange={(e) => updateByok({ falApiKey: e.target.value })}
-                        placeholder="fal_..."
-                        className="flex-1 h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/30 select-text"
-                      />
+                    <div className="flex items-center gap-2.5">
+                      <h3 className="text-base font-semibold text-white">{selectedPlatform.name}</h3>
+                      <span
+                        className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium border ${
+                          selectedStatus?.connected
+                            ? 'border-[#10b981]/35 bg-[#10b981]/10 text-[#6ee7b7]'
+                            : 'border-white/[0.1] bg-white/[0.04] text-[#9b9b9b]'
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            selectedStatus?.connected ? 'bg-[#10b981]' : 'bg-[#666]'
+                          }`}
+                        />
+                        {selectedStatus?.statusLabel || 'Not Connected'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#9b9b9b] mt-1">
+                      {selectedMeta?.tagline || selectedPlatform.webUrl}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    {selectedPlatform.modalities.map((m) => (
+                      <span
+                        key={m}
+                        className="rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-wider text-[#b5b5b5]"
+                      >
+                        {m}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Two Clean Side-by-Side Cards: Card A (1-Click Sign In) & Card B (Official API Key) */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Card A: Use Web Subscription / Free Credits */}
+                  <div className="flex flex-col justify-between rounded-xl border border-white/[0.08] bg-[#161616] p-4 space-y-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#20D5EC]">
+                          <Globe className="w-3.5 h-3.5" />
+                          Option A · Web Subscription / Free Credits
+                        </span>
+                        {selectedStatus?.hasBrowser && (
+                          <span className="text-[10px] font-medium text-[#6ee7b7]">
+                            ● Connected via Browser
+                          </span>
+                        )}
+                      </div>
+
+                      <h4 className="text-sm font-semibold text-white">1-Click Sign In</h4>
+                      <p className="text-xs text-[#9c9c9c] leading-relaxed">
+                        {selectedPlatform.supportsBrowserBridge
+                          ? `Use your existing ${selectedPlatform.name} subscription or daily free credits directly from your signed-in Creator Browser tab — no API billing needed.`
+                          : `${selectedPlatform.name} runs via API Key or local endpoint (use Option B on the right).`}
+                      </p>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {selectedPlatform.supportsBrowserBridge ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void launchConnectedCreatorBrowser(selectedPlatform.id)}
+                            disabled={launchingBrowserTarget !== null}
+                            className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-white hover:bg-[#eaeaea] disabled:opacity-60 px-4 py-2.5 text-xs font-semibold text-[#0e0e0e] transition-colors cursor-pointer"
+                          >
+                            {launchingBrowserTarget === selectedPlatform.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            )}
+                            <span>
+                              {launchingBrowserTarget === selectedPlatform.id
+                                ? `Opening ${selectedPlatform.name}...`
+                                : `Sign In to ${selectedPlatform.name} ↗`}
+                            </span>
+                          </button>
+
+                          {selectedStatus?.hasBrowser && (
+                            <div className="flex flex-wrap items-center gap-2 pt-1">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void runLiveBridgeTestGeneration(
+                                    selectedPlatform.id as BrowserPlatformTarget,
+                                    selectedPlatform.modalities[0]
+                                  )
+                                }
+                                disabled={liveBridgeTestRunning !== null}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-[#10b981]/35 bg-[#10b981]/10 hover:bg-[#10b981]/20 px-3 py-1.5 text-[11px] font-medium text-[#6ee7b7] transition-colors"
+                              >
+                                {liveBridgeTestRunning === selectedPlatform.id ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Sparkles className="w-3 h-3" />
+                                )}
+                                <span>Test Connection</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const modality = selectedPlatform.modalities[0];
+                                  const kind =
+                                    modality === 'audio'
+                                      ? 'audio'
+                                      : modality === 'video'
+                                        ? 'video'
+                                        : 'image';
+                                  const id = spawnDreaminaNodeAt(kind, 240, 180);
+                                  if (id) {
+                                    updateNodeFields(id, {
+                                      platformId: selectedPlatform.id,
+                                      connectionMode: 'browser-bridge',
+                                    });
+                                  }
+                                  closeProviderModal();
+                                }}
+                                className="inline-flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.04] hover:bg-white/[0.08] px-2.5 py-1.5 text-[11px] text-[#d4d4d4] transition-colors"
+                              >
+                                <Plus className="w-3 h-3" />
+                                <span>Add {selectedPlatform.name} Node</span>
+                              </button>
+                            </div>
+                          )}
+
+                          {liveBridgeStatusText && liveBridgeTestRunning === null && (
+                            <div className="rounded-lg border border-white/[0.08] bg-black/30 px-2.5 py-1.5 text-[11px] text-[#bdbdbd]">
+                              {liveBridgeStatusText}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="rounded-xl border border-white/[0.08] bg-black/25 px-3.5 py-3 text-[11px] text-[#9c9c9c]">
+                          Browser subscription bridge is not needed for {selectedPlatform.name}. Paste your key/URL in Option B to connect immediately.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Card B: Use Official API Key ($0 Markup) */}
+                  <div className="flex flex-col justify-between rounded-xl border border-white/[0.08] bg-[#161616] p-4 space-y-4">
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#d4d4d4]">
+                          <KeyRound className="w-3.5 h-3.5 text-[#20D5EC]" />
+                          Option B · Official API Key ($0 Markup)
+                        </span>
+                        {selectedStatus?.hasApiKey && (
+                          <span className="text-[10px] font-medium text-[#6ee7b7]">
+                            ● Connected via API Key
+                          </span>
+                        )}
+                      </div>
+
+                      {selectedMeta?.apiKeyUrl && (
+                        <a
+                          href={selectedMeta.apiKeyUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="w-full inline-flex items-center justify-between gap-2 rounded-lg border border-white/[0.1] bg-white/[0.04] hover:bg-white/[0.08] px-3 py-2 text-xs font-medium text-white transition-colors"
+                        >
+                          <span>{selectedMeta.apiKeyUrlLabel || `Get ${selectedPlatform.name} API Key ↗`}</span>
+                          <ExternalLink className="w-3.5 h-3.5 text-[#9c9c9c]" />
+                        </a>
+                      )}
+
+                      <div className="space-y-2.5">
+                        {keyFields.map((fieldCfg, idx) => (
+                          <div key={fieldCfg.byokField} className="space-y-1">
+                            <label className="block text-[11px] font-medium text-[#b5b5b5]">
+                              {fieldCfg.label}
+                            </label>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type={fieldCfg.isUrl ? 'text' : 'password'}
+                                value={String(byok[fieldCfg.byokField] ?? '')}
+                                onChange={(e) =>
+                                  updateByok({
+                                    [fieldCfg.byokField]: e.target.value,
+                                  } as Partial<BYOKCredentials>)
+                                }
+                                placeholder={fieldCfg.placeholder}
+                                className="flex-1 min-w-0 rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-2 text-xs text-white placeholder-[#5e5e5e] focus:border-[#20D5EC] focus:outline-none"
+                              />
+                              {idx === 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handlePasteIntoField(fieldCfg.byokField)}
+                                  title="Paste from clipboard"
+                                  className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.05] hover:bg-white/[0.1] px-2.5 py-2 text-[11px] text-[#d4d4d4] transition-colors"
+                                >
+                                  <ClipboardPaste className="w-3.5 h-3.5" />
+                                  <span>Paste</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <VerificationReadout result={selectedVerifyResult} />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 pt-1">
                       <button
                         type="button"
-                        disabled={Boolean(verifyingProvider.fal)}
-                        onClick={() => void verifyProviderConnection('fal')}
-                        className="h-8 px-2.5 rounded-[8px] bg-[#2a2a2a] hover:bg-[#343434] text-[11px] font-medium text-white/85 shrink-0"
+                        onClick={() => {
+                          const patch: Partial<BYOKCredentials> = {};
+                          for (const f of keyFields) {
+                            patch[f.byokField] = '' as never;
+                          }
+                          updateByok(patch);
+                          showToast(`Cleared ${selectedPlatform.name} key`, 'ok');
+                        }}
+                        className="text-[11px] text-[#888] hover:text-[#e5e5e5] transition-colors"
                       >
-                        {verifyingProvider.fal ? '…' : 'Verify'}
+                        Clear key
                       </button>
-                    </div>
-                    <VerificationReadout status={providerVerifyStatus.fal} />
-                  </div>
 
-                  <div>
-                    <label className="block text-[11px] text-white/55 mb-1">
-                      Replicate Token (Flux / Video)
-                    </label>
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        ref={replicateInputRef}
-                        type={showSecrets ? 'text' : 'password'}
-                        value={byok.replicateApiKey}
-                        onChange={(e) =>
-                          updateByok({ replicateApiKey: e.target.value })
-                        }
-                        placeholder="r8_..."
-                        className="flex-1 h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/30 select-text"
-                      />
                       <button
                         type="button"
-                        disabled={Boolean(verifyingProvider.replicate)}
-                        onClick={() => void verifyProviderConnection('replicate')}
-                        className="h-8 px-2.5 rounded-[8px] bg-[#2a2a2a] hover:bg-[#343434] text-[11px] font-medium text-white/85 shrink-0"
+                        onClick={() => void verifyProviderConnection(selectedVerifySlug)}
+                        disabled={isVerifyingSelected}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-white hover:bg-[#e8e8e8] disabled:opacity-60 px-4 py-2 text-xs font-semibold text-[#0e0e0e] transition-colors cursor-pointer"
                       >
-                        {verifyingProvider.replicate ? '…' : 'Verify'}
+                        {isVerifyingSelected ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        )}
+                        <span>{isVerifyingSelected ? 'Verifying...' : 'Save & Verify'}</span>
                       </button>
                     </div>
-                    <VerificationReadout status={providerVerifyStatus.replicate} />
                   </div>
+                </div>
 
-                  <div>
-                    <label className="block text-[11px] text-white/55 mb-1">
-                      ComfyUI Local GPU (:8188)
-                    </label>
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        ref={comfyInputRef}
-                        type="text"
-                        value={byok.comfyUiUrl}
-                        onChange={(e) => updateByok({ comfyUiUrl: e.target.value })}
-                        className="flex-1 h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none focus:border-white/30 select-text"
-                      />
-                      <button
-                        type="button"
-                        disabled={Boolean(verifyingProvider.comfyui)}
-                        onClick={() => void verifyProviderConnection('comfyui')}
-                        className="h-8 px-2.5 rounded-[8px] bg-[#2a2a2a] hover:bg-[#343434] text-[11px] font-medium text-white/85 shrink-0"
+                {/* Available Models on this platform */}
+                <div className="rounded-xl border border-white/[0.07] bg-[#141414] p-3.5">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <span className="text-[11px] font-medium text-[#b5b5b5]">
+                      Models unlocked by connecting {selectedPlatform.name}
+                    </span>
+                    <span className="text-[10px] text-[#7c7c7c]">
+                      {selectedPlatform.models.length} models
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedPlatform.models.map((m) => (
+                      <span
+                        key={m.id}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-[#d6d6d6]"
                       >
-                        {verifyingProvider.comfyui ? '…' : 'Verify'}
-                      </button>
-                    </div>
-                    <VerificationReadout status={providerVerifyStatus.comfyui} />
+                        <span className="font-medium text-white">{m.label}</span>
+                        <span className="text-[10px] text-[#8f8f8f]">· {m.modality}</span>
+                      </span>
+                    ))}
                   </div>
                 </div>
               </div>
             </div>
-          )}
-
-          {/* TAB 2: EXTERNAL & PLATFORM MCP SERVERS */}
-          {providerModalTab === 'mcp' && (
-            <div className="space-y-4">
-              {/* 1-Click MCP Credit Templates */}
-              <div className="p-3.5 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-[12.5px] font-semibold text-white">
-                      1-Click Creator MCP Templates (stdio & Streamable HTTP)
-                    </div>
-                    <div className="text-[11px] text-white/50">
-                      Attach official or Playwright-powered MCP servers so canvas nodes spend your existing platform credits directly.
-                    </div>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {EXTERNAL_MCP_TEMPLATES.map((tpl) => (
-                    <div
+          ) : (
+            /* Tab 2: MCP Servers (1-Click Presets) */
+            <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-5 bg-[#111111]">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                {EXTERNAL_MCP_TEMPLATES.map((tpl) => {
+                  const selected = selectedMcpPresetId === tpl.id;
+                  return (
+                    <button
                       key={tpl.id}
-                      className="p-3 rounded-[10px] bg-[#1c1c1c] border border-white/[0.07] flex items-start justify-between gap-2.5"
-                    >
-                      <div className="min-w-0">
-                        <div className="text-[12px] font-medium text-white truncate">
-                          {tpl.name}
-                        </div>
-                        <div className="text-[10.5px] text-white/45 leading-snug mt-0.5">
-                          {tpl.description}
-                        </div>
-                        <div className="font-mono text-[10px] text-[#20D5EC] mt-1 truncate">
-                          {tpl.transport === 'stdio'
-                            ? `${tpl.command} ${(tpl.args || []).join(' ')}`
-                            : tpl.url}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => applyMcpTemplate(tpl)}
-                        className="h-7 px-2.5 rounded-[7px] bg-[#2b2b2b] hover:bg-white hover:text-[#0e0e0e] text-[11px] font-medium text-white/90 shrink-0 transition-colors"
-                      >
-                        Load
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Register External MCP Server Form */}
-              <form
-                onSubmit={handleConnectExternalMcp}
-                className="p-4 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-3"
-              >
-                <div className="text-[12.5px] font-semibold text-white">
-                  Connect External MCP Server (/api/mcp/servers)
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-                  <div>
-                    <label className="block text-[10.5px] text-white/50 mb-1">
-                      Server Label
-                    </label>
-                    <input
-                      value={extName}
-                      onChange={(e) => setExtName(e.target.value)}
-                      placeholder="e.g. Higgsfield MCP"
-                      className="w-full h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] text-white outline-none select-text"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[10.5px] text-white/50 mb-1">
-                      Bind to Canvas Platform
-                    </label>
-                    <select
-                      value={extPlatformId}
-                      onChange={(e) => setExtPlatformId(e.target.value as PlatformId)}
-                      className="w-full h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] text-white outline-none"
-                    >
-                      {PLATFORM_CATALOG.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[10.5px] text-white/50 mb-1">
-                      MCP Transport
-                    </label>
-                    <select
-                      value={extTransport}
-                      onChange={(e) =>
-                        setExtTransport(e.target.value as 'stdio' | 'http')
-                      }
-                      className="w-full h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] text-white outline-none"
-                    >
-                      <option value="stdio">Local Process (stdio · npx / uvx / node)</option>
-                      <option value="http">Remote / Local HTTP JSON-RPC</option>
-                    </select>
-                  </div>
-                </div>
-
-                {extTransport === 'stdio' ? (
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-2.5">
-                    <div>
-                      <label className="block text-[10.5px] text-white/50 mb-1">
-                        Command
-                      </label>
-                      <input
-                        value={extCommand}
-                        onChange={(e) => setExtCommand(e.target.value)}
-                        placeholder="npx"
-                        className="w-full h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] font-mono text-white outline-none select-text"
-                      />
-                    </div>
-                    <div className="md:col-span-3">
-                      <label className="block text-[10.5px] text-white/50 mb-1">
-                        Arguments (space-separated)
-                      </label>
-                      <input
-                        value={extArgs}
-                        onChange={(e) => setExtArgs(e.target.value)}
-                        placeholder="-y @elevenlabs/elevenlabs-mcp"
-                        className="w-full h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] font-mono text-white outline-none select-text"
-                      />
-                    </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-[10.5px] text-white/50 mb-1">
-                        Optional Env Variable Name
-                      </label>
-                      <input
-                        value={extEnvKey}
-                        onChange={(e) => setExtEnvKey(e.target.value)}
-                        placeholder="ELEVENLABS_API_KEY"
-                        className="w-full h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none select-text"
-                      />
-                    </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-[10.5px] text-white/50 mb-1">
-                        Optional Env Variable Secret
-                      </label>
-                      <input
-                        type={showSecrets ? 'text' : 'password'}
-                        value={extEnvVal}
-                        onChange={(e) => setExtEnvVal(e.target.value)}
-                        placeholder="Paste token passed only to local MCP process"
-                        className="w-full h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[11.5px] font-mono text-white outline-none select-text"
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div>
-                    <label className="block text-[10.5px] text-white/50 mb-1">
-                      MCP HTTP Endpoint URL
-                    </label>
-                    <input
-                      value={extHttpUrl}
-                      onChange={(e) => setExtHttpUrl(e.target.value)}
-                      placeholder="http://localhost:3002/mcp"
-                      className="w-full h-8 px-2.5 rounded-[8px] bg-[#222222] border border-white/[0.08] text-[12px] font-mono text-white outline-none select-text"
-                    />
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between pt-1">
-                  <span className="text-[11px] text-white/45">
-                    Discovered tools automatically appear under the bound platform in every node&apos;s model picker.
-                  </span>
-                  <button
-                    type="submit"
-                    disabled={connectingExtMcp || !extName.trim()}
-                    className="h-8 px-4 rounded-[8px] bg-white hover:bg-[#e5e5e5] disabled:opacity-55 text-[#0e0e0e] text-[12px] font-semibold flex items-center gap-1.5 shrink-0"
-                  >
-                    {connectingExtMcp ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Plus className="w-3.5 h-3.5" strokeWidth={1.8} />
-                    )}
-                    <span>Connect MCP Server</span>
-                  </button>
-                </div>
-              </form>
-
-              {/* Connected External MCP Servers */}
-              {externalMcpServers.length > 0 && (
-                <div className="space-y-2.5">
-                  <div className="text-[11.5px] font-medium text-white/65">
-                    Connected Creator MCP Servers ({externalMcpServers.length})
-                  </div>
-                  {externalMcpServers.map((srv) => (
-                    <div
-                      key={srv.id}
-                      className="p-3.5 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-2.5"
+                      type="button"
+                      onClick={() => handleSelectMcpPreset(tpl.id)}
+                      className={`text-left rounded-xl border p-3.5 transition-all ${
+                        selected
+                          ? 'border-[#20D5EC]/60 bg-[#182225] text-white'
+                          : 'border-white/[0.08] bg-[#161616] hover:bg-[#1b1b1b] text-[#d0d0d0]'
+                      }`}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`w-2 h-2 rounded-full ${
-                                srv.status === 'connected'
-                                  ? 'bg-[#10b981]'
-                                  : 'bg-red-400'
-                              }`}
-                            />
-                            <span className="text-[12.5px] font-semibold text-white truncate">
-                              {srv.name}
-                            </span>
-                            {srv.platformId && (
-                              <span className="px-1.5 py-0.5 rounded-[5px] bg-white/[0.07] font-mono text-[10px] text-[#20D5EC]">
-                                {srv.platformId}
-                              </span>
-                            )}
-                            <span className="px-1.5 py-0.5 rounded-[5px] bg-[#252525] font-mono text-[10px] text-white/65">
-                              {srv.tools.length} tools
-                            </span>
-                          </div>
-                          <div className="text-[11px] font-mono text-white/45 truncate mt-0.5">
-                            {srv.transport === 'stdio'
-                              ? `${srv.command} ${(srv.args || []).join(' ')}`
-                              : srv.url}
-                          </div>
-                          {srv.error && (
-                            <div className="text-[11px] text-red-300 mt-1">
-                              {srv.error}
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => void refreshExternalMcpById(srv.id)}
-                            className="h-7 px-2.5 rounded-[7px] bg-[#252525] hover:bg-[#303030] text-[11px] text-white/85 flex items-center gap-1"
-                          >
-                            <RefreshCw className="w-3 h-3" strokeWidth={1.5} />
-                            <span>Refresh</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void removeExternalMcpById(srv.id)}
-                            className="h-7 px-2 rounded-[7px] bg-[#252525] hover:bg-red-500/20 text-white/65 hover:text-red-300 flex items-center justify-center"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} />
-                          </button>
-                        </div>
+                        <Server className="w-4 h-4 text-[#20D5EC] shrink-0" />
+                        <span className="text-[10px] uppercase tracking-wider text-[#8e8e8e]">
+                          {tpl.id === 'tpl-http-mcp' ? 'Custom' : '1-Click Preset'}
+                        </span>
                       </div>
+                      <div className="text-xs font-semibold text-white mt-2">{tpl.name}</div>
+                      <div className="text-[11px] text-[#959595] mt-1 line-clamp-2">
+                        {tpl.description}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
 
-                      {srv.tools.length > 0 && (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                          {srv.tools.map((tool) => (
-                            <div
-                              key={tool.name}
-                              className="p-2 rounded-[8px] bg-[#1d1d1d] border border-white/[0.06] flex items-center justify-between gap-2"
-                            >
-                              <div className="min-w-0">
-                                <div className="font-mono text-[11px] text-white/90 truncate">
-                                  {tool.name}
-                                </div>
-                                {tool.description && (
-                                  <div className="text-[10.5px] text-white/45 truncate">
-                                    {tool.description}
-                                  </div>
-                                )}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleSpawnExternalMcpToolNode(
-                                    srv.id,
-                                    srv.name,
-                                    srv.platformId,
-                                    tool.name,
-                                    tool.description
-                                  )
-                                }
-                                className="h-6 px-2 rounded-[6px] bg-[#2b2b2b] hover:bg-white hover:text-[#0e0e0e] text-[10.5px] font-medium text-white/90 shrink-0 transition-colors"
-                              >
-                                + Node
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Built-In Studio :3001 MCP Server Card */}
-              <div className="p-3.5 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`w-2 h-2 rounded-full ${
-                        mcpHealth.online ? 'bg-[#10b981]' : 'bg-[#f59e0b]'
-                      }`}
-                    />
-                    <div>
-                      <div className="text-[12px] font-medium text-white">
-                        {mcpHealth.online
-                          ? `Built-In Open-DreamFlow Engine (:3001/mcp · ${mcpHealth.toolCount} tools)`
-                          : 'Built-In Studio MCP Server Offline'}
-                      </div>
-                      <div className="text-[10.5px] font-mono text-white/45">
-                        {mcpHealth.baseUrl} · Multi-platform router + local FFmpeg 8.0 post-tools
-                      </div>
-                    </div>
+              {/* Guided 1-Click MCP Connection Box */}
+              <div className="rounded-xl border border-white/[0.08] bg-[#161616] p-4 space-y-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-sm font-semibold text-white">{mcpName}</h4>
+                    <p className="text-[11px] text-[#959595] mt-0.5">
+                      {isCustomMcpSelected
+                        ? 'Connect any HTTP/SSE or local MCP endpoint to expose its tools directly as canvas nodes.'
+                        : mcpEnvKeyName
+                          ? `Step 1: Paste your ${mcpEnvKeyName} · Step 2: Click Connect MCP`
+                          : 'Click Connect MCP below to activate this built-in browser/automation MCP preset.'}
+                    </p>
                   </div>
-                  {mcpServers[0] && (
+
+                  {!isCustomMcpSelected && (
                     <button
                       type="button"
-                      onClick={() => void refreshMcpServer(mcpServers[0].id)}
-                      className="h-7 px-2.5 rounded-[7px] bg-[#252525] hover:bg-[#303030] text-[11px] text-white/80 flex items-center gap-1"
+                      onClick={() => setMcpAdvancedOpen((v) => !v)}
+                      className="text-[11px] text-[#9a9a9a] hover:text-white underline underline-offset-2"
                     >
-                      <RefreshCw className="w-3 h-3" strokeWidth={1.5} />
-                      <span>Ping</span>
+                      {mcpAdvancedOpen ? 'Hide Advanced Config' : 'Advanced Config'}
                     </button>
                   )}
                 </div>
 
-                {mcpServers[0] && mcpServers[0].tools.length > 0 && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
-                    {mcpServers[0].tools.slice(0, 6).map((tool) => (
-                      <div
-                        key={tool.name}
-                        className="px-2.5 py-1.5 rounded-[8px] bg-[#1c1c1c] border border-white/[0.05] flex items-center justify-between gap-2"
+                {!isCustomMcpSelected && mcpEnvKeyName && (
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <input
+                      type="password"
+                      value={mcpApiKeyInput}
+                      onChange={(e) => setMcpApiKeyInput(e.target.value)}
+                      placeholder={`Paste your ${mcpEnvKeyName}...`}
+                      className="flex-1 rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-2 text-xs text-white placeholder-[#606060] focus:border-[#20D5EC] focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleConnectMcpPreset()}
+                      disabled={mcpAdding}
+                      className="shrink-0 inline-flex items-center justify-center gap-1.5 rounded-xl bg-white hover:bg-[#e9e9e9] disabled:opacity-60 px-4 py-2 text-xs font-semibold text-[#0e0e0e] transition-colors cursor-pointer"
+                    >
+                      {mcpAdding ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <PlugZap className="w-3.5 h-3.5" />
+                      )}
+                      <span>{mcpAdding ? 'Connecting...' : 'Connect MCP'}</span>
+                    </button>
+                  </div>
+                )}
+
+                {!isCustomMcpSelected && !mcpEnvKeyName && (
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => void handleConnectMcpPreset()}
+                      disabled={mcpAdding}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-white hover:bg-[#e9e9e9] disabled:opacity-60 px-4 py-2 text-xs font-semibold text-[#0e0e0e] transition-colors cursor-pointer"
+                    >
+                      {mcpAdding ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <PlugZap className="w-3.5 h-3.5" />
+                      )}
+                      <span>{mcpAdding ? 'Connecting...' : 'Connect Preset MCP'}</span>
+                    </button>
+                  </div>
+                )}
+
+                {(isCustomMcpSelected || mcpAdvancedOpen) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-white/[0.06]">
+                    <div>
+                      <label className="block text-[11px] text-[#a5a5a5] mb-1">Server Name</label>
+                      <input
+                        type="text"
+                        value={mcpName}
+                        onChange={(e) => setMcpName(e.target.value)}
+                        className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-2 text-xs text-white focus:border-[#20D5EC] focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-[#a5a5a5] mb-1">Transport</label>
+                      <select
+                        value={mcpTransport}
+                        onChange={(e) => setMcpTransport(e.target.value as 'stdio' | 'http')}
+                        className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-2 text-xs text-white focus:border-[#20D5EC] focus:outline-none"
                       >
-                        <span className="font-mono text-[11px] text-white/80 truncate">
-                          {tool.name}
-                        </span>
+                        <option value="http">HTTP / SSE Endpoint</option>
+                        <option value="stdio">Local Command (stdio)</option>
+                      </select>
+                    </div>
+
+                    {mcpTransport === 'http' ? (
+                      <div className="sm:col-span-2">
+                        <label className="block text-[11px] text-[#a5a5a5] mb-1">MCP URL</label>
+                        <input
+                          type="text"
+                          value={mcpUrl}
+                          onChange={(e) => setMcpUrl(e.target.value)}
+                          placeholder="http://127.0.0.1:4100/mcp"
+                          className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-2 text-xs text-white focus:border-[#20D5EC] focus:outline-none"
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <div>
+                          <label className="block text-[11px] text-[#a5a5a5] mb-1">Command</label>
+                          <input
+                            type="text"
+                            value={mcpCommand}
+                            onChange={(e) => setMcpCommand(e.target.value)}
+                            className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-2 text-xs text-white font-mono focus:border-[#20D5EC] focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#a5a5a5] mb-1">Args</label>
+                          <input
+                            type="text"
+                            value={mcpArgsText}
+                            onChange={(e) => setMcpArgsText(e.target.value)}
+                            className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-2 text-xs text-white font-mono focus:border-[#20D5EC] focus:outline-none"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {isCustomMcpSelected && (
+                      <div className="sm:col-span-2 flex justify-end">
                         <button
                           type="button"
-                          onClick={() => {
-                            spawnMcpToolAsCanvasNode(tool);
-                            closeProviderModal();
-                          }}
-                          className="h-6 px-2 rounded-[6px] bg-[#282828] hover:bg-white hover:text-[#0e0e0e] text-[10px] font-medium text-white/85 shrink-0"
+                          onClick={() => void handleConnectMcpPreset()}
+                          disabled={mcpAdding}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-white hover:bg-[#e9e9e9] px-4 py-2 text-xs font-semibold text-[#0e0e0e] transition-colors cursor-pointer"
                         >
-                          + Node
+                          {mcpAdding ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Plus className="w-3.5 h-3.5" />
+                          )}
+                          <span>Connect Custom MCP</span>
                         </button>
                       </div>
-                    ))}
+                    )}
                   </div>
                 )}
               </div>
-            </div>
-          )}
 
-          {/* TAB 3: 7-PLATFORM BROWSER CREDIT BRIDGE */}
-          {providerModalTab === 'bridge' && (
-            <div className="space-y-4">
-              <div className="p-4 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-3.5">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[13px] font-semibold text-white">
-                      7-Platform Browser Subscription Credit Bridge
-                    </div>
-                    <div className="text-[11px] text-white/50">
-                      Use the monthly web credits you already pay for on Higgsfield, Kling, Dreamina, Google Flow, OpenArt, ImagineArt, and ElevenLabs via{' '}
-                      <code className="font-mono text-white/80">ws://localhost:3001/bridge</code>.
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span
-                      className={`px-2.5 py-1 rounded-[7px] font-mono text-[11px] flex items-center gap-1.5 ${
-                        bridgeWsConnected
-                          ? 'bg-[#10b981]/15 text-[#34d399] border border-[#10b981]/30'
-                          : 'bg-white/[0.05] text-white/45'
-                      }`}
-                    >
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full ${
-                          bridgeWsConnected ? 'bg-[#10b981]' : 'bg-white/30'
-                        }`}
-                      />
-                      <span>
-                        {bridgeWsConnected
-                          ? `WS Relay Live (${mcpHealth.bridgeClients || 1} peers)`
-                          : 'WS Relay Standby'}
-                      </span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={pingBridge}
-                      className="h-8 px-3 rounded-[8px] bg-white hover:bg-[#e5e5e5] text-[#0e0e0e] text-[11.5px] font-semibold"
-                    >
-                      Ping Bridge
-                    </button>
-                  </div>
+              {/* Connected MCP Servers + Built-In Studio Engine */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-[#9c9c9c]">
+                    Active MCP Servers
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => void refreshPlatformsAndExternalMcp()}
+                    className="inline-flex items-center gap-1 text-[11px] text-[#9c9c9c] hover:text-white"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Sync Tools</span>
+                  </button>
                 </div>
 
-                {/* 7 Supported Creator Web Platforms */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                  {BROWSER_BRIDGE_PLATFORMS.map((plat) => {
-                    const connected = isBrowserPlatformConnected(plat.id);
-                    const testingThis = liveBridgeTestRunning === plat.id;
-                    return (
-                      <div
-                        key={plat.id}
-                        className="p-3 rounded-[10px] bg-[#1c1c1c] border border-white/[0.07] flex items-center justify-between gap-2.5"
-                      >
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`w-2 h-2 rounded-full shrink-0 ${
-                                connected ? 'bg-[#10b981]' : 'bg-white/25'
-                              }`}
-                            />
-                            <span className="text-[12.5px] font-medium text-white truncate">
-                              {plat.name}
-                            </span>
-                            <span className="font-mono text-[10px] text-white/45">
-                              {connected ? 'Tab Live' : 'Open tab to link'}
-                            </span>
-                          </div>
-                          <div className="text-[10.5px] text-white/45 truncate mt-0.5">
-                            {plat.creditNote}
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <a
-                            href={plat.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="h-7 px-2 rounded-[7px] bg-[#262626] hover:bg-[#323232] text-[11px] text-white/85 flex items-center gap-1"
-                          >
-                            <span>Open</span>
-                            <ExternalLink className="w-3 h-3 text-white/55" strokeWidth={1.5} />
-                          </a>
-                          <button
-                            type="button"
-                            disabled={Boolean(liveBridgeTestRunning)}
-                            onClick={() =>
-                              void runLiveBridgeTestGeneration(
-                                plat.id,
-                                plat.id === 'elevenlabs' ? 'audio' : 'image'
-                              )
-                            }
-                            className="h-7 px-2.5 rounded-[7px] bg-white hover:bg-[#e5e5e5] disabled:opacity-55 text-[#0e0e0e] text-[11px] font-semibold flex items-center gap-1"
-                          >
-                            {testingThis ? (
-                              <Loader2 className="w-3 h-3 animate-spin" />
-                            ) : (
-                              <Play className="w-3 h-3" strokeWidth={1.75} />
-                            )}
-                            <span>Test</span>
-                          </button>
-                        </div>
+                {/* Built-in :3001/mcp */}
+                {localStudioEngine && (
+                  <div className="rounded-xl border border-white/[0.08] bg-[#151515] px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            mcpHealth.online ? 'bg-[#10b981]' : 'bg-[#ef4444]'
+                          }`}
+                        />
+                        <span className="text-xs font-semibold text-white">
+                          {localStudioEngine.name}
+                        </span>
+                        <span className="text-[10px] font-mono text-[#7f7f7f]">
+                          {localStudioEngine.url}
+                        </span>
                       </div>
-                    );
-                  })}
-                </div>
-
-                {liveBridgeStatusText && (
-                  <div className="px-3 py-2 rounded-[8px] bg-[#1f1f1f] border border-white/[0.08] font-mono text-[11px] text-white/85">
-                    {liveBridgeStatusText}
+                      <p className="text-[11px] text-[#8d8d8d] mt-0.5">
+                        {mcpHealth.online
+                          ? `${localStudioEngine.tools.length} built-in media & browser tools active`
+                          : 'Waiting for local engine on :3001'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void refreshMcpServer(localStudioEngine.id)}
+                      className="rounded-lg border border-white/[0.1] bg-white/[0.04] hover:bg-white/[0.08] px-2.5 py-1 text-[11px] text-[#d4d4d4]"
+                    >
+                      Ping
+                    </button>
                   </div>
                 )}
-              </div>
 
-              {/* Setup Instructions: Chrome Extension v1.1.0 OR 1-Line Console Script */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="p-3.5 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-2">
-                  <div className="text-[12px] font-medium text-white flex items-center gap-1.5">
-                    <Chrome className="w-3.5 h-3.5 text-white/80" strokeWidth={1.5} />
-                    <span>Option A · Chrome Extension v1.1.0 (All 7 Platforms)</span>
-                  </div>
-                  <p className="text-[11px] text-white/50 leading-relaxed">
-                    Open <code className="font-mono text-white/80">chrome://extensions</code>, enable{' '}
-                    <strong className="text-white/80">Developer mode</strong>, click{' '}
-                    <strong className="text-white/80">Load unpacked</strong>, and select:
-                  </p>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      readOnly
-                      value={CHROME_EXTENSION_DISK_PATH}
-                      className="flex-1 h-8 px-2.5 rounded-[7px] bg-[#202020] border border-white/[0.08] font-mono text-[10.5px] text-white/80 outline-none select-all"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void copyToClipboard(
-                          CHROME_EXTENSION_DISK_PATH,
-                          'Chrome Extension folder path'
-                        )
-                      }
-                      className="h-8 px-2.5 rounded-[7px] bg-[#2b2b2b] hover:bg-white hover:text-[#0e0e0e] text-[11px] font-medium text-white/90 flex items-center gap-1 shrink-0 transition-colors"
-                    >
-                      <Copy className="w-3 h-3" strokeWidth={1.5} />
-                      <span>Copy</span>
-                    </button>
-                  </div>
-                </div>
+                {externalMcpServers.map((srv) => (
+                  <div
+                    key={srv.id}
+                    className="rounded-xl border border-white/[0.08] bg-[#151515] p-3.5 space-y-2.5"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            srv.status === 'connected' ? 'bg-[#10b981]' : 'bg-[#f59e0b]'
+                          }`}
+                        />
+                        <span className="text-xs font-semibold text-white truncate">{srv.name}</span>
+                        <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-[#b4b4b4]">
+                          {srv.tools.length} tools
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void refreshExternalMcpById(srv.id)}
+                          className="rounded-lg border border-white/[0.09] bg-white/[0.04] hover:bg-white/[0.08] px-2 py-1 text-[11px] text-[#d4d4d4]"
+                        >
+                          Refresh
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void removeExternalMcpById(srv.id)}
+                          title="Remove MCP Server"
+                          className="rounded-lg border border-white/[0.09] bg-white/[0.04] hover:bg-[#ef4444]/15 hover:text-[#fca5a5] p-1 text-[#999]"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
 
-                <div className="p-3.5 rounded-[12px] bg-[#151515] border border-white/[0.08] space-y-2">
-                  <div className="text-[12px] font-medium text-white flex items-center gap-1.5">
-                    <Terminal className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.5} />
-                    <span>Option B · 1-Line DevTools Console Connector</span>
+                    {srv.tools.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {srv.tools.slice(0, 8).map((tool) => (
+                          <button
+                            key={tool.name}
+                            type="button"
+                            onClick={() => {
+                              spawnMcpToolAsCanvasNode({
+                                name: tool.name,
+                                description: tool.description || srv.name,
+                                serverUrl: srv.url || srv.id,
+                                serverName: srv.name,
+                                inputSchema: tool.inputSchema || {},
+                              });
+                              closeProviderModal();
+                            }}
+                            className="inline-flex items-center gap-1 rounded-lg border border-white/[0.08] bg-black/30 hover:bg-white/[0.08] px-2 py-1 text-[11px] text-[#d4d4d4]"
+                          >
+                            <Plus className="w-3 h-3 text-[#20D5EC]" />
+                            <span>{tool.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <p className="text-[11px] text-white/50 leading-relaxed">
-                    In any signed-in Higgsfield, Kling, Dreamina, Flow, OpenArt, ImagineArt, or ElevenLabs tab, paste into DevTools Console:
-                  </p>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      readOnly
-                      value={connectorSnippet}
-                      className="flex-1 h-8 px-2.5 rounded-[7px] bg-[#202020] border border-white/[0.08] font-mono text-[10.5px] text-[#20D5EC] outline-none select-all"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void copyToClipboard(connectorSnippet, '1-Line Bridge Connector')
-                      }
-                      className="h-8 px-2.5 rounded-[7px] bg-[#2b2b2b] hover:bg-white hover:text-[#0e0e0e] text-[11px] font-medium text-white/90 flex items-center gap-1 shrink-0 transition-colors"
-                    >
-                      <Copy className="w-3 h-3" strokeWidth={1.5} />
-                      <span>Copy</span>
-                    </button>
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
           )}
+
+          {/* Collapsible Footer Accordion: Manual Chrome Setup (tucked away cleanly) */}
+          <div className="border-t border-white/[0.07] bg-[#131313] px-5 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setManualAccordionOpen((v) => !v)}
+                className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#9f9f9f] hover:text-white transition-colors"
+              >
+                {manualAccordionOpen ? (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5" />
+                )}
+                <span>Already using your own Chrome window? Manual setup</span>
+              </button>
+
+              <div className="flex items-center gap-3 text-[11px]">
+                <span className="text-[#7c7c7c]">
+                  Bridge WS:{' '}
+                  <span className={bridgeWsConnected ? 'text-[#6ee7b7]' : 'text-[#8c8c8c]'}>
+                    {bridgeWsConnected ? 'Online (:3001)' : 'Connecting...'}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={pingBridge}
+                  className="text-[#9e9e9e] hover:text-white transition-colors"
+                >
+                  Ping Bridge
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearByokKeys();
+                    showToast('Cleared all saved API keys', 'ok');
+                  }}
+                  className="text-[#888] hover:text-[#fca5a5] transition-colors"
+                >
+                  Reset All Keys
+                </button>
+              </div>
+            </div>
+
+            {manualAccordionOpen && (
+              <div className="mt-2.5 grid grid-cols-1 md:grid-cols-2 gap-3 rounded-xl border border-white/[0.08] bg-[#0e0e0e] p-3 text-[11px] text-[#b4b4b4]">
+                <div className="space-y-1.5">
+                  <div className="font-semibold text-white">
+                    Method 1 · Unpacked Chrome Extension
+                  </div>
+                  <p className="text-[#8e8e8e]">
+                    Open <code className="text-[#d4d4d4]">chrome://extensions</code> → enable Developer Mode → Load Unpacked folder:
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <code className="flex-1 rounded bg-white/[0.05] px-2 py-1 font-mono text-[10px] text-[#d4d4d4] truncate">
+                      {extensionFolderPath}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyText(extensionFolderPath, 'extension path')}
+                      className="inline-flex items-center gap-1 rounded border border-white/[0.1] bg-white/[0.05] hover:bg-white/[0.1] px-2 py-1 text-[10px] text-white"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>{copiedSnippet === 'extension path' ? 'Copied' : 'Copy'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="font-semibold text-white">
+                    Method 2 · Zero-Install Console Connector
+                  </div>
+                  <p className="text-[#8e8e8e]">
+                    Paste once in DevTools Console on any open creator tab:
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <code className="flex-1 rounded bg-white/[0.05] px-2 py-1 font-mono text-[10px] text-[#d4d4d4] truncate">
+                      {consoleSnippet}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyText(consoleSnippet, 'console snippet')}
+                      className="inline-flex items-center gap-1 rounded border border-white/[0.1] bg-white/[0.05] hover:bg-white/[0.1] px-2 py-1 text-[10px] text-white"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>{copiedSnippet === 'console snippet' ? 'Copied' : 'Copy'}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
