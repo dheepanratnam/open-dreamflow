@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Open-DreamFlow Consumer Subscription Bridge",
-  "version": "1.0.0",
-  "description": "Zero-API-cost bridge connecting Open-DreamFlow Studio to Google Flow (flow.google.com) and Dreamina / Seedance (dreamina.capcut.com).",
+  "name": "Open-DreamFlow Universal Creator Credit Bridge",
+  "version": "1.1.0",
+  "description": "Zero-markup bridge connecting Open-DreamFlow Studio to Dreamina, Google Flow, Higgsfield, Kling AI, OpenArt, ImagineArt, and ElevenLabs.",
   "permissions": [
     "storage",
     "tabs",
@@ -10,10 +10,21 @@
     "alarms"
   ],
   "host_permissions": [
-    "https://flow.google.com/*",
-    "https://labs.google/*",
     "https://dreamina.capcut.com/*",
     "https://jimeng.jianying.com/*",
+    "https://labs.google/*",
+    "https://flow.google.com/*",
+    "https://higgsfield.ai/*",
+    "https://*.higgsfield.ai/*",
+    "https://app.klingai.com/*",
+    "https://klingai.com/*",
+    "https://*.klingai.com/*",
+    "https://openart.ai/*",
+    "https://*.openart.ai/*",
+    "https://imagine.art/*",
+    "https://*.imagine.art/*",
+    "https://elevenlabs.io/*",
+    "https://*.elevenlabs.io/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
@@ -22,7 +33,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Open-DreamFlow Bridge",
+    "default_title": "Open-DreamFlow Universal Credit Bridge",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
@@ -53,6 +64,25 @@
       ],
       "js": [
         "content-dreamina.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://higgsfield.ai/*",
+        "https://*.higgsfield.ai/*",
+        "https://app.klingai.com/*",
+        "https://klingai.com/*",
+        "https://*.klingai.com/*",
+        "https://openart.ai/*",
+        "https://*.openart.ai/*",
+        "https://imagine.art/*",
+        "https://*.imagine.art/*",
+        "https://elevenlabs.io/*",
+        "https://*.elevenlabs.io/*"
+      ],
+      "js": [
+        "content-universal.js"
       ],
       "run_at": "document_idle"
     },

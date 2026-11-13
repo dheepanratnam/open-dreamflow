@@ -2,6 +2,8 @@
  * @open-dreamflow/provider-sdk — Fal.ai & Replicate Zero-Markup Adapters
  */
 
+import { resolveReferenceImageForCloud } from './providers/reference-utils.js';
+
 export type OpenWeightVideoModelFamily =
   | 'wan-2.1-t2v'
   | 'wan-2.1-i2v'
@@ -107,11 +109,20 @@ export class FalClient {
   public async generateOpenWeightVideo(
     req: OpenWeightVideoRequest
   ): Promise<OpenWeightVideoResult> {
+    const resolvedStartUrl = req.imageUrl
+      ? (await resolveReferenceImageForCloud(req.imageUrl, { fetchImpl: this.fetchImpl }))
+          .publicOrDataUrl
+      : undefined;
+    const resolvedEndUrl = req.lastFrameUrl
+      ? (await resolveReferenceImageForCloud(req.lastFrameUrl, { fetchImpl: this.fetchImpl }))
+          .publicOrDataUrl
+      : undefined;
+
     const family: OpenWeightVideoModelFamily =
       req.family ||
-      (req.imageUrl && req.lastFrameUrl
+      (resolvedStartUrl && resolvedEndUrl
         ? 'wan-2.1-flf2v'
-        : req.imageUrl
+        : resolvedStartUrl
           ? 'wan-2.1-i2v'
           : 'wan-2.1-t2v');
 
@@ -132,12 +143,12 @@ export class FalClient {
         ? { num_inference_steps: req.numInferenceSteps }
         : {}),
       ...(typeof req.seed === 'number' ? { seed: req.seed } : {}),
-      ...(req.imageUrl
+      ...(resolvedStartUrl
         ? family === 'wan-2.1-flf2v'
-          ? { start_image_url: req.imageUrl }
-          : { image_url: req.imageUrl }
+          ? { start_image_url: resolvedStartUrl }
+          : { image_url: resolvedStartUrl }
         : {}),
-      ...(req.lastFrameUrl ? { end_image_url: req.lastFrameUrl } : {}),
+      ...(resolvedEndUrl ? { end_image_url: resolvedEndUrl } : {}),
       ...(req.extraInput || {}),
     };
 
@@ -165,6 +176,76 @@ export class FalClient {
       requestId: String(raw.request_id || `fal_${Date.now()}`),
       videoUrl,
       seed: typeof raw.seed === 'number' ? raw.seed : req.seed,
+      rawResponse: raw,
+    };
+  }
+
+  public async generateImage(req: {
+    endpointId?: string;
+    prompt: string;
+    negativePrompt?: string;
+    aspectRatio?: string;
+    numImages?: number;
+    referenceImages?: string[];
+    seed?: number;
+    signal?: AbortSignal;
+  }): Promise<{
+    provider: 'fal';
+    modelId: string;
+    imageUrl: string;
+    imageUrls: string[];
+    rawResponse: Record<string, unknown>;
+  }> {
+    const endpointId = (req.endpointId || 'fal-ai/flux-pro/v1.1').replace(/^\/+/, '');
+    const resolvedRefs: string[] = [];
+    for (const r of (req.referenceImages || []).slice(0, 4)) {
+      const resolved = await resolveReferenceImageForCloud(r, { fetchImpl: this.fetchImpl });
+      resolvedRefs.push(resolved.publicOrDataUrl);
+    }
+
+    const inputPayload: Record<string, unknown> = {
+      prompt: req.prompt,
+      ...(req.negativePrompt ? { negative_prompt: req.negativePrompt } : {}),
+      ...(req.aspectRatio ? { aspect_ratio: req.aspectRatio } : {}),
+      ...(req.numImages ? { num_images: req.numImages } : {}),
+      ...(typeof req.seed === 'number' ? { seed: req.seed } : {}),
+      ...(resolvedRefs.length > 0
+        ? {
+            image_url: resolvedRefs[0],
+            image_urls: resolvedRefs,
+          }
+        : {}),
+    };
+
+    const raw = await this.runQueued(endpointId, inputPayload, undefined, req.signal);
+    const imagesArr = Array.isArray(raw.images)
+      ? (raw.images as Array<Record<string, unknown>>)
+      : [];
+    const urls = imagesArr
+      .map((img) => String(img.url || '').trim())
+      .filter(Boolean);
+    const singleObj = raw.image as Record<string, unknown> | undefined;
+    if (urls.length === 0 && typeof singleObj?.url === 'string') {
+      urls.push(singleObj.url);
+    }
+    if (urls.length === 0 && typeof raw.image_url === 'string') {
+      urls.push(raw.image_url);
+    }
+
+    if (urls.length === 0) {
+      throw new CloudPassThroughError(
+        'fal',
+        `Fal image endpoint ${endpointId} completed without returning image URLs.`,
+        undefined,
+        raw
+      );
+    }
+
+    return {
+      provider: 'fal',
+      modelId: endpointId,
+      imageUrl: urls[0],
+      imageUrls: urls,
       rawResponse: raw,
     };
   }
@@ -345,15 +426,24 @@ export class ReplicateClient {
   public async generateOpenWeightVideo(
     req: OpenWeightVideoRequest
   ): Promise<OpenWeightVideoResult> {
+    const resolvedStartUrl = req.imageUrl
+      ? (await resolveReferenceImageForCloud(req.imageUrl, { fetchImpl: this.fetchImpl }))
+          .publicOrDataUrl
+      : undefined;
+    const resolvedEndUrl = req.lastFrameUrl
+      ? (await resolveReferenceImageForCloud(req.lastFrameUrl, { fetchImpl: this.fetchImpl }))
+          .publicOrDataUrl
+      : undefined;
+
     const family: OpenWeightVideoModelFamily =
-      req.family || (req.imageUrl ? 'wan-2.1-i2v' : 'wan-2.1-t2v');
+      req.family || (resolvedStartUrl ? 'wan-2.1-i2v' : 'wan-2.1-t2v');
     const modelSpec = req.endpointOrModelId || REPLICATE_OPEN_WEIGHT_MODELS[family];
 
     const input: Record<string, unknown> = {
       prompt: req.prompt,
       ...(req.negativePrompt ? { negative_prompt: req.negativePrompt } : {}),
-      ...(req.imageUrl ? { image: req.imageUrl } : {}),
-      ...(req.lastFrameUrl ? { last_frame_image: req.lastFrameUrl } : {}),
+      ...(resolvedStartUrl ? { image: resolvedStartUrl, start_image: resolvedStartUrl } : {}),
+      ...(resolvedEndUrl ? { last_frame_image: resolvedEndUrl } : {}),
       ...(req.aspectRatio ? { aspect_ratio: req.aspectRatio } : {}),
       ...(req.numFrames ? { num_frames: req.numFrames } : {}),
       ...(req.fps ? { fps: req.fps } : {}),
@@ -439,6 +529,104 @@ export class ReplicateClient {
       requestId: predictionId,
       videoUrl,
       seed: req.seed,
+      rawResponse: prediction,
+    };
+  }
+
+  public async generateImage(req: {
+    modelSpec?: string;
+    prompt: string;
+    aspectRatio?: string;
+    referenceImages?: string[];
+    seed?: number;
+    signal?: AbortSignal;
+  }): Promise<{
+    provider: 'replicate';
+    modelId: string;
+    imageUrl: string;
+    imageUrls: string[];
+    rawResponse: Record<string, unknown>;
+  }> {
+    const modelSpec = req.modelSpec || 'black-forest-labs/flux-1.1-pro';
+    const resolvedRef = req.referenceImages?.[0]
+      ? (await resolveReferenceImageForCloud(req.referenceImages[0], { fetchImpl: this.fetchImpl }))
+          .publicOrDataUrl
+      : undefined;
+
+    const input: Record<string, unknown> = {
+      prompt: req.prompt,
+      aspect_ratio: req.aspectRatio || '16:9',
+      output_format: 'png',
+      ...(resolvedRef ? { image_prompt: resolvedRef, image: resolvedRef } : {}),
+      ...(typeof req.seed === 'number' ? { seed: req.seed } : {}),
+    };
+
+    const hasVersion = modelSpec.includes(':');
+    const createUrl = hasVersion
+      ? `${this.baseUrl}/predictions`
+      : `${this.baseUrl}/models/${modelSpec}/predictions`;
+    const createBody: Record<string, unknown> = hasVersion
+      ? { version: modelSpec.split(':')[1], input }
+      : { input };
+
+    let prediction = await this.requestJson(createUrl, 'POST', createBody, req.signal, {
+      Prefer: 'wait=15',
+    });
+    const predictionId = String(prediction.id || `rep_img_${Date.now()}`);
+    const pollUrl =
+      ((prediction.urls as Record<string, unknown> | undefined)?.get as string | undefined) ||
+      `${this.baseUrl}/predictions/${encodeURIComponent(predictionId)}`;
+
+    const startedAt = Date.now();
+    while (
+      prediction.status === 'starting' ||
+      prediction.status === 'processing' ||
+      prediction.status === 'queued'
+    ) {
+      if (req.signal?.aborted) {
+        throw new CloudPassThroughError('replicate', 'Replicate image polling aborted.');
+      }
+      if (Date.now() - startedAt > this.maxWaitMs) {
+        throw new CloudPassThroughError(
+          'replicate',
+          `Replicate image prediction ${predictionId} timed out after ${this.maxWaitMs}ms.`
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
+      prediction = await this.requestJson(pollUrl, 'GET', undefined, req.signal);
+    }
+
+    if (prediction.status === 'failed' || prediction.status === 'canceled') {
+      throw new CloudPassThroughError(
+        'replicate',
+        `Replicate image prediction ${predictionId} ${String(prediction.status)}: ${String(prediction.error || 'Unknown error')}`,
+        undefined,
+        prediction
+      );
+    }
+
+    const output = prediction.output;
+    const urls =
+      typeof output === 'string'
+        ? [output]
+        : Array.isArray(output)
+          ? output.map((u) => String(u || '').trim()).filter(Boolean)
+          : [];
+
+    if (urls.length === 0) {
+      throw new CloudPassThroughError(
+        'replicate',
+        `Replicate image prediction ${predictionId} completed without output URLs.`,
+        undefined,
+        prediction
+      );
+    }
+
+    return {
+      provider: 'replicate',
+      modelId: modelSpec,
+      imageUrl: urls[0],
+      imageUrls: urls,
       rawResponse: prediction,
     };
   }

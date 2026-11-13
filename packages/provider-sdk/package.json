@@ -1,7 +1,7 @@
 {
   "name": "@open-dreamflow/provider-sdk",
-  "version": "1.0.0",
-  "description": "Zero-markup TypeScript BYOK & Local GPU Provider SDK for Open-DreamFlow (Gemini Omni 1.2 Flash, Dreamina Seedream/Seedance, Fal.ai, Replicate, Local ComfyUI)",
+  "version": "1.1.0",
+  "description": "Zero-markup Multi-Platform Creator Credit & BYOK Provider SDK for Open-DreamFlow (Higgsfield, Kling AI, Dreamina, Google Flow, OpenArt, ImagineArt, ElevenLabs, OpenAI, Fal.ai, Replicate, Local ComfyUI)",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -12,6 +12,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./platforms": {
+      "types": "./dist/platforms.d.ts",
+      "import": "./dist/platforms.js"
     },
     "./gemini-omni": {
       "types": "./dist/gemini-omni.d.ts",
@@ -29,6 +33,10 @@
       "types": "./dist/comfyui.d.ts",
       "import": "./dist/comfyui.js"
     },
+    "./providers/*": {
+      "types": "./dist/providers/*.d.ts",
+      "import": "./dist/providers/*.js"
+    },
     "./src/*": "./src/*"
   },
   "files": [
@@ -43,17 +51,21 @@
   },
   "keywords": [
     "open-dreamflow",
+    "higgsfield",
+    "kling-ai",
+    "elevenlabs",
+    "openai",
     "gemini-omni",
     "seedance",
     "seedream",
     "dreamina",
     "google-flow",
+    "openart",
+    "imagineart",
     "fal-ai",
     "replicate",
     "comfyui",
-    "wan-2.1",
-    "ltx-video",
-    "hunyuan-video",
+    "mcp",
     "byok"
   ],
   "devDependencies": {

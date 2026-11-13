@@ -53,6 +53,7 @@ import {
 import type { Duplex } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { McpToolDefinition } from './client.js';
+import { ExternalMcpHost } from './external-mcp-host.js';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -161,13 +162,84 @@ export interface BridgeRelayEvent {
   metadata?: Record<string, unknown>;
 }
 
+export type BridgeTargetPlatform =
+  | 'dreamina'
+  | 'google-flow'
+  | 'higgsfield'
+  | 'kling'
+  | 'openart'
+  | 'imagineart'
+  | 'elevenlabs';
+
+export const BRIDGE_PLATFORM_INFO: Record<
+  BridgeTargetPlatform,
+  { name: string; studioUrl: string; livePrefix: string }
+> = {
+  dreamina: {
+    name: 'Dreamina',
+    studioUrl: 'https://dreamina.capcut.com/ai-tool/home',
+    livePrefix: 'dreamina_live',
+  },
+  'google-flow': {
+    name: 'Google Flow',
+    studioUrl: 'https://labs.google/fx/tools/flow',
+    livePrefix: 'flow_live',
+  },
+  higgsfield: {
+    name: 'Higgsfield',
+    studioUrl: 'https://higgsfield.ai/create',
+    livePrefix: 'higgsfield_live',
+  },
+  kling: {
+    name: 'Kling AI',
+    studioUrl: 'https://app.klingai.com',
+    livePrefix: 'kling_live',
+  },
+  openart: {
+    name: 'OpenArt',
+    studioUrl: 'https://openart.ai/create',
+    livePrefix: 'openart_live',
+  },
+  imagineart: {
+    name: 'ImagineArt',
+    studioUrl: 'https://www.imagine.art/dashboard',
+    livePrefix: 'imagineart_live',
+  },
+  elevenlabs: {
+    name: 'ElevenLabs',
+    studioUrl: 'https://elevenlabs.io/app/speech-synthesis/text-to-speech',
+    livePrefix: 'elevenlabs_live',
+  },
+};
+
+export function normalizeBridgeTarget(rawTarget: unknown): BridgeTargetPlatform {
+  const lowered = String(rawTarget || '')
+    .trim()
+    .toLowerCase();
+  if (lowered.includes('higgsfield') || lowered === 'hf') return 'higgsfield';
+  if (lowered.includes('kling')) return 'kling';
+  if (lowered.includes('openart')) return 'openart';
+  if (lowered.includes('imagine')) return 'imagineart';
+  if (lowered.includes('eleven')) return 'elevenlabs';
+  if (lowered.includes('flow') || lowered.includes('google') || lowered.includes('labs')) {
+    return 'google-flow';
+  }
+  return 'dreamina';
+}
+
 export interface BridgeJobRecord {
   jobId: string;
-  target: 'dreamina' | 'google-flow';
-  mode: 'image' | 'video';
+  target: BridgeTargetPlatform;
+  mode: 'image' | 'video' | 'audio';
+  modelId?: string;
   prompt: string;
+  negativePrompt?: string;
   aspectRatio: string;
+  resolution?: string;
+  batchCount?: number;
   durationSec: number;
+  audioEnabled?: boolean;
+  voiceId?: string;
   referenceImages: string[];
   status: 'queued' | 'running' | 'succeeded' | 'failed';
   createdAt: string;
@@ -176,6 +248,8 @@ export interface BridgeJobRecord {
   mediaUrl?: string | null;
   imageUrl?: string | null;
   videoUrl?: string | null;
+  audioUrl?: string | null;
+  waveform?: number[] | null;
   fullUrl?: string | null;
   error?: string | null;
   creditsRemaining?: number | null;
@@ -188,17 +262,73 @@ export type NormalizedProviderChoice =
   | 'replicate'
   | 'seedance'
   | 'comfyui'
+  | 'kling'
+  | 'elevenlabs'
+  | 'openai'
+  | 'higgsfield'
+  | 'openart'
+  | 'imagineart'
   | 'dreamina-bridge'
-  | 'flow-bridge';
+  | 'flow-bridge'
+  | 'higgsfield-bridge'
+  | 'kling-bridge'
+  | 'openart-bridge'
+  | 'imagineart-bridge'
+  | 'elevenlabs-bridge';
 
 export class BridgeHttpError extends Error {
   public readonly statusCode: number;
+  public readonly platformId?: string;
 
-  constructor(statusCode: number, message: string) {
+  constructor(statusCode: number, message: string, platformId?: string) {
     super(message);
     this.name = 'BridgeHttpError';
     this.statusCode = statusCode;
+    this.platformId = platformId;
   }
+}
+
+/**
+ * Resolves a local `/media/*` or `http://localhost:3001/media/*` reference image into a
+ * self-contained `data:<mime>;base64,...` string so cross-origin browser tabs (`klingai.com`,
+ * `higgsfield.ai`, etc.) and remote cloud APIs receive the exact bytes from upstream nodes.
+ */
+export function resolveReferenceToPublicOrDataUrl(
+  refUrl: string,
+  mediaDir?: string
+): string {
+  const trimmed = String(refUrl || '').trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('data:')) return trimmed;
+
+  const localMatch =
+    /^\/media\/([^?#]+)$/i.exec(trimmed) ||
+    /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/media\/([^?#]+)$/i.exec(
+      trimmed
+    );
+
+  if (localMatch && mediaDir) {
+    const filename = path.basename(decodeURIComponent(localMatch[1]));
+    const studioDistMediaCandidate = path.resolve(mediaDir, '../../dist/media', filename);
+    const primaryCandidate = path.join(mediaDir, filename);
+
+    let chosenPath = '';
+    if (fs.existsSync(studioDistMediaCandidate) && fs.statSync(studioDistMediaCandidate).isFile()) {
+      chosenPath = studioDistMediaCandidate;
+    } else if (fs.existsSync(primaryCandidate) && fs.statSync(primaryCandidate).isFile()) {
+      chosenPath = primaryCandidate;
+    }
+
+    if (chosenPath) {
+      const buf = fs.readFileSync(chosenPath);
+      const ext = path.extname(chosenPath).toLowerCase();
+      const mime =
+        (MIME_BY_EXT[ext] ? MIME_BY_EXT[ext].split(';')[0].trim() : '') || 'image/png';
+      return `data:${mime};base64,${buf.toString('base64')}`;
+    }
+  }
+
+  return trimmed;
 }
 
 export function normalizeProviderChoice(
@@ -223,7 +353,8 @@ export function normalizeProviderChoice(
     lowered === 'google' ||
     lowered === 'google-ai' ||
     lowered === 'veo' ||
-    lowered.startsWith('veo-')
+    lowered.startsWith('veo-') ||
+    (lowered === 'google-flow' && Boolean(rawApiKey))
   ) {
     return 'gemini';
   }
@@ -246,6 +377,41 @@ export function normalizeProviderChoice(
     lowered === 'flow'
   ) {
     return 'flow-bridge';
+  }
+
+  if (lowered === 'higgsfield-bridge' || lowered === 'chrome-bridge-higgsfield') {
+    return 'higgsfield-bridge';
+  }
+  if (lowered === 'kling-bridge' || lowered === 'chrome-bridge-kling') {
+    return 'kling-bridge';
+  }
+  if (lowered === 'openart-bridge' || lowered === 'chrome-bridge-openart') {
+    return 'openart-bridge';
+  }
+  if (lowered === 'imagineart-bridge' || lowered === 'chrome-bridge-imagineart') {
+    return 'imagineart-bridge';
+  }
+  if (lowered === 'elevenlabs-bridge' || lowered === 'chrome-bridge-elevenlabs') {
+    return 'elevenlabs-bridge';
+  }
+
+  if (lowered === 'kling' || lowered === 'kling-ai' || lowered === 'klingai') {
+    return 'kling';
+  }
+  if (lowered === 'elevenlabs' || lowered === 'eleven' || lowered === 'eleven-labs') {
+    return 'elevenlabs';
+  }
+  if (lowered === 'openai' || lowered === 'gpt-image-1' || lowered === 'sora') {
+    return 'openai';
+  }
+  if (lowered === 'higgsfield' || lowered === 'hf') {
+    return 'higgsfield';
+  }
+  if (lowered === 'openart') {
+    return 'openart';
+  }
+  if (lowered === 'imagineart' || lowered === 'imagine.art' || lowered === 'imagine') {
+    return 'imagineart';
   }
 
   if (lowered === 'comfyui' || lowered === 'comfy' || lowered === 'comfy-local') {
@@ -271,7 +437,7 @@ export function normalizeProviderChoice(
 
   throw new BridgeHttpError(
     400,
-    `Unsupported provider "${String(rawProvider)}". Expected one of: gemini, dreamina-bridge, flow-bridge, comfyui, fal, replicate, seedance, ffmpeg-local.`
+    `Unsupported provider "${String(rawProvider)}". Expected one of: gemini, kling, elevenlabs, openai, higgsfield, openart, imagineart, dreamina-bridge, flow-bridge, comfyui, fal, replicate, seedance, ffmpeg-local.`
   );
 }
 
@@ -707,6 +873,7 @@ export class McpStdioBridgeServer {
   public readonly ffprobePath: string;
   public readonly ffmpegAvailable: boolean;
   public readonly ffprobeAvailable: boolean;
+  public readonly externalMcpHost: ExternalMcpHost;
 
   private httpServer: http.Server | null = null;
   private childProc: ChildProcessWithoutNullStreams | null = null;
@@ -715,13 +882,18 @@ export class McpStdioBridgeServer {
 
   private readonly wsClients = new Map<string, WsClientRecord>();
   private readonly bridgeWsClients = new Map<string, WsClientRecord>();
+  private readonly lastBridgePlatformSeenAt = new Map<BridgeTargetPlatform, number>();
   private readonly sseClients = new Map<string, SseClientRecord>();
   private readonly pendingStdioCalls = new Map<string, PendingStdioCall>();
   private bridgeEvents: BridgeRelayEvent[] = [];
   private readonly bridgeJobs = new Map<string, BridgeJobRecord>();
   private readonly bridgeJobWaiters = new Map<
     string,
-    Array<{ resolve: (job: BridgeJobRecord) => void; timer: ReturnType<typeof setTimeout> }>
+    Array<{
+      resolve: (job: BridgeJobRecord) => void;
+      timer: ReturnType<typeof setTimeout>;
+      fastFailTimer?: ReturnType<typeof setTimeout>;
+    }>
   >();
 
   constructor(options: McpStdioBridgeOptions = {}) {
@@ -752,11 +924,16 @@ export class McpStdioBridgeServer {
 
     this.projectsDir = path.join(this.dataDir, 'projects');
     this.bridgeInboxPath = path.join(this.dataDir, 'bridge-inbox.json');
+    this.externalMcpHost = new ExternalMcpHost({
+      dataDir: this.dataDir,
+      quiet: this.quiet,
+    });
 
     try {
       fs.mkdirSync(this.mediaDir, { recursive: true });
       fs.mkdirSync(this.projectsDir, { recursive: true });
       this.hydrateBridgeInbox();
+      this.externalMcpHost.hydrateFromDiskInBackground();
     } catch {
       // Ignore if read-only fs in synthetic harness
     }
@@ -840,9 +1017,14 @@ export class McpStdioBridgeServer {
     this.pendingStdioCalls.clear();
 
     for (const [, waiters] of this.bridgeJobWaiters) {
-      for (const w of waiters) clearTimeout(w.timer);
+      for (const w of waiters) {
+        clearTimeout(w.timer);
+        if (w.fastFailTimer) clearTimeout(w.fastFailTimer);
+      }
     }
     this.bridgeJobWaiters.clear();
+
+    await this.externalMcpHost.stopAll();
 
     for (const [, client] of this.wsClients) {
       try {
@@ -1902,60 +2084,87 @@ export class McpStdioBridgeServer {
   }
 
   /**
-   * Sniffs common image/video magic headers so downloaded CDN buffers or raw base64 payloads
-   * always receive a valid file extension (`.png`, `.jpg`, `.webp`, `.gif`, `.mp4`, `.webm`).
+   * Sniffs common image/video/audio magic headers so downloaded CDN buffers or raw base64 payloads
+   * always receive a valid file extension (`.png`, `.jpg`, `.webp`, `.gif`, `.mp4`, `.webm`, `.mp3`, `.wav`).
    */
   private detectExtensionFromBufferOrMime(
     buf: Buffer,
     mimeHint?: string,
     urlPathHint?: string
-  ): { ext: string; isVideo: boolean } {
+  ): { ext: string; isVideo: boolean; isAudio: boolean } {
     if (buf.length >= 12) {
       if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
-        return { ext: '.png', isVideo: false };
+        return { ext: '.png', isVideo: false, isAudio: false };
       }
       if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
-        return { ext: '.jpg', isVideo: false };
+        return { ext: '.jpg', isVideo: false, isAudio: false };
       }
       if (
         buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
         buf.subarray(8, 12).toString('ascii') === 'WEBP'
       ) {
-        return { ext: '.webp', isVideo: false };
+        return { ext: '.webp', isVideo: false, isAudio: false };
+      }
+      if (
+        buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
+        buf.subarray(8, 12).toString('ascii') === 'WAVE'
+      ) {
+        return { ext: '.wav', isVideo: false, isAudio: true };
       }
       if (buf.subarray(0, 3).toString('ascii') === 'GIF') {
-        return { ext: '.gif', isVideo: false };
+        return { ext: '.gif', isVideo: false, isAudio: false };
+      }
+      if (buf.subarray(0, 3).toString('ascii') === 'ID3') {
+        return { ext: '.mp3', isVideo: false, isAudio: true };
       }
       if (buf.subarray(4, 8).toString('ascii') === 'ftyp') {
-        return { ext: '.mp4', isVideo: true };
+        const brand = buf.subarray(8, 12).toString('ascii');
+        if (brand === 'M4A ') {
+          return { ext: '.m4a', isVideo: false, isAudio: true };
+        }
+        return { ext: '.mp4', isVideo: true, isAudio: false };
       }
       if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) {
-        return { ext: '.webm', isVideo: true };
+        return { ext: '.webm', isVideo: true, isAudio: false };
+      }
+      // Raw MP3 frame sync (0xFF followed by 0xE0..0xFE, excluding JPEG 0xFFD8 already checked above)
+      if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0 && buf[1] !== 0xff) {
+        return { ext: '.mp3', isVideo: false, isAudio: true };
       }
     }
 
     const cleanMime = (mimeHint || '').split(';')[0].trim().toLowerCase();
     if (cleanMime && EXT_BY_MIME[cleanMime]) {
       const ext = EXT_BY_MIME[cleanMime];
-      return { ext, isVideo: /\.(mp4|webm|mov)$/i.test(ext) };
+      return {
+        ext,
+        isVideo: /\.(mp4|webm|mov)$/i.test(ext),
+        isAudio: /\.(mp3|wav|m4a|aiff)$/i.test(ext),
+      };
     }
 
     if (urlPathHint) {
       const pathExt = path.extname(urlPathHint).toLowerCase();
       if (pathExt && MIME_BY_EXT[pathExt]) {
-        return { ext: pathExt, isVideo: /\.(mp4|webm|mov)$/i.test(pathExt) };
+        return {
+          ext: pathExt,
+          isVideo: /\.(mp4|webm|mov)$/i.test(pathExt),
+          isAudio: /\.(mp3|wav|m4a|aiff)$/i.test(pathExt),
+        };
       }
     }
 
     if (cleanMime.startsWith('video/')) {
-      return { ext: '.mp4', isVideo: true };
+      return { ext: '.mp4', isVideo: true, isAudio: false };
     }
-    return { ext: '.png', isVideo: false };
+    if (cleanMime.startsWith('audio/')) {
+      return { ext: '.mp3', isVideo: false, isAudio: true };
+    }
+    return { ext: '.png', isVideo: false, isAudio: false };
   }
 
   /**
-   * Decodes `data:...;base64,...` / raw base64 OR downloads remote `https://` CDN media
-   * (Dreamina `byteimg`/`ibytedtos`, Google `storage.googleapis.com`, Fal, Replicate)
+   * Decodes `data:...;base64,...` / raw base64, copies `absfile:<path>`, OR downloads remote `https://` CDN media
    * into `apps/web-studio/public/media/${prefix}_${ts}.${ext}` (+ mirrors to `dist/media/`).
    */
   public async ingestExternalMediaToDisk(
@@ -1966,10 +2175,13 @@ export class McpStdioBridgeServer {
     mediaUrl: string;
     imageUrl?: string;
     videoUrl?: string;
+    audioUrl?: string;
+    fullPath: string;
     fullUrl: string;
     filename: string;
     bytes: number;
     isVideo: boolean;
+    isAudio: boolean;
   }> {
     const trimmed = String(rawInput || '').trim();
     if (!trimmed) {
@@ -1988,15 +2200,19 @@ export class McpStdioBridgeServer {
         const resident = this.preferResidentMediaPath(existingPath);
         const bytes = fs.statSync(resident).size;
         const isVideo = /\.(mp4|webm|mov)$/i.test(existingName);
+        const isAudio = /\.(mp3|wav|m4a|aiff)$/i.test(existingName);
         const mediaUrl = `/media/${existingName}`;
         return {
           mediaUrl,
-          imageUrl: isVideo ? undefined : mediaUrl,
+          imageUrl: !isVideo && !isAudio ? mediaUrl : undefined,
           videoUrl: isVideo ? mediaUrl : undefined,
+          audioUrl: isAudio ? mediaUrl : undefined,
+          fullPath: resident,
           fullUrl: `${this.getPublicBaseUrl()}${mediaUrl}`,
           filename: existingName,
           bytes,
           isVideo,
+          isAudio,
         };
       }
     }
@@ -2010,15 +2226,19 @@ export class McpStdioBridgeServer {
         const resident = this.preferResidentMediaPath(existingPath);
         const bytes = fs.statSync(resident).size;
         const isVideo = /\.(mp4|webm|mov)$/i.test(existingName);
+        const isAudio = /\.(mp3|wav|m4a|aiff)$/i.test(existingName);
         const mediaUrl = `/media/${existingName}`;
         return {
           mediaUrl,
-          imageUrl: isVideo ? undefined : mediaUrl,
+          imageUrl: !isVideo && !isAudio ? mediaUrl : undefined,
           videoUrl: isVideo ? mediaUrl : undefined,
+          audioUrl: isAudio ? mediaUrl : undefined,
+          fullPath: resident,
           fullUrl: `${this.getPublicBaseUrl()}${mediaUrl}`,
           filename: existingName,
           bytes,
           isVideo,
+          isAudio,
         };
       }
     }
@@ -2027,47 +2247,61 @@ export class McpStdioBridgeServer {
     let detectedMime = explicitMimeType || '';
     let urlPathname = '';
 
-    // 3. `data:<mime>;base64,<payload>` URI
-    const dataMatch = /^data:([^;,]+)?(?:;base64)?,(.*)$/s.exec(trimmed);
-    if (dataMatch) {
-      if (!detectedMime && dataMatch[1]) {
-        detectedMime = dataMatch[1].trim().toLowerCase();
+    // 2b. `absfile:<localPath>` emitted by an external stdio MCP server (e.g. `@elevenlabs/elevenlabs-mcp`)
+    if (trimmed.startsWith('absfile:')) {
+      const absFile = trimmed.slice('absfile:'.length).trim();
+      if (!fs.existsSync(absFile)) {
+        throw new BridgeHttpError(502, `MCP server output file not found on disk: ${absFile}`);
       }
-      buf = Buffer.from(dataMatch[2].replace(/\s+/g, ''), 'base64');
-    } else if (/^https?:\/\//i.test(trimmed)) {
-      // 4. Remote HTTPS/HTTP CDN download
-      const parsedUrl = new URL(trimmed);
-      urlPathname = parsedUrl.pathname;
-      const res = await fetch(trimmed, {
-        method: 'GET',
-        headers: {
-          Accept: 'image/*,video/*,*/*',
-          'User-Agent':
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
-        },
-        redirect: 'follow',
-        signal: AbortSignal.timeout(60_000),
-      });
-      if (!res.ok) {
-        throw new BridgeHttpError(
-          502,
-          `Failed to download remote media (${res.status}) from ${trimmed.slice(0, 140)}`
-        );
-      }
-      if (!detectedMime) {
-        detectedMime = res.headers.get('content-type') || '';
-      }
-      buf = Buffer.from(await res.arrayBuffer());
+      urlPathname = absFile;
+      buf = fs.readFileSync(absFile);
     } else {
-      // 5. Raw base64 payload
-      buf = Buffer.from(trimmed.replace(/\s+/g, ''), 'base64');
+      // 3. `data:<mime>;base64,<payload>` URI
+      const dataMatch = /^data:([^;,]+)?(?:;base64)?,(.*)$/s.exec(trimmed);
+      if (dataMatch) {
+        if (!detectedMime && dataMatch[1]) {
+          detectedMime = dataMatch[1].trim().toLowerCase();
+        }
+        buf = Buffer.from(dataMatch[2].replace(/\s+/g, ''), 'base64');
+      } else if (/^https?:\/\//i.test(trimmed)) {
+        // 4. Remote HTTPS/HTTP CDN download
+        const parsedUrl = new URL(trimmed);
+        urlPathname = parsedUrl.pathname;
+        const res = await fetch(trimmed, {
+          method: 'GET',
+          headers: {
+            Accept: 'image/*,video/*,audio/*,*/*',
+            'User-Agent':
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+          },
+          redirect: 'follow',
+          signal: AbortSignal.timeout(60_000),
+        });
+        if (!res.ok) {
+          throw new BridgeHttpError(
+            502,
+            `Failed to download remote media (${res.status}) from ${trimmed.slice(0, 140)}`
+          );
+        }
+        if (!detectedMime) {
+          detectedMime = res.headers.get('content-type') || '';
+        }
+        buf = Buffer.from(await res.arrayBuffer());
+      } else {
+        // 5. Raw base64 payload
+        buf = Buffer.from(trimmed.replace(/\s+/g, ''), 'base64');
+      }
     }
 
     if (buf.length < 16) {
       throw new BridgeHttpError(400, 'Ingested media payload is empty or truncated (<16 bytes).');
     }
 
-    const { ext, isVideo } = this.detectExtensionFromBufferOrMime(buf, detectedMime, urlPathname);
+    const { ext, isVideo, isAudio } = this.detectExtensionFromBufferOrMime(
+      buf,
+      detectedMime,
+      urlPathname
+    );
     const filename = `${safePrefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`;
     const outFullPath = path.join(this.mediaDir, filename);
     fs.writeFileSync(outFullPath, buf);
@@ -2078,12 +2312,15 @@ export class McpStdioBridgeServer {
 
     return {
       mediaUrl,
-      imageUrl: isVideo ? undefined : mediaUrl,
+      imageUrl: !isVideo && !isAudio ? mediaUrl : undefined,
       videoUrl: isVideo ? mediaUrl : undefined,
+      audioUrl: isAudio ? mediaUrl : undefined,
+      fullPath: outFullPath,
       fullUrl,
       filename,
       bytes: buf.length,
       isVideo,
+      isAudio,
     };
   }
 
@@ -2095,8 +2332,12 @@ export class McpStdioBridgeServer {
     raw: Record<string, unknown>
   ): Promise<BridgeRelayEvent> {
     const hydrated: Record<string, unknown> = { ...raw };
-    const sourceLower = String(raw.source || 'manual').toLowerCase();
-    const prefix = sourceLower.includes('flow') ? 'flow_live' : 'dreamina_live';
+    const sourceRaw = String(raw.source || 'manual').toLowerCase();
+    if (sourceRaw && sourceRaw !== 'manual') {
+      this.lastBridgePlatformSeenAt.set(normalizeBridgeTarget(sourceRaw), Date.now());
+    }
+    const targetPlatform = normalizeBridgeTarget(sourceRaw);
+    const prefix = BRIDGE_PLATFORM_INFO[targetPlatform]?.livePrefix || 'dreamina_live';
 
     const rawDataPayload =
       (typeof raw.dataUrl === 'string' && raw.dataUrl.trim()) ||
@@ -2109,7 +2350,7 @@ export class McpStdioBridgeServer {
         const saved = await this.ingestExternalMediaToDisk(rawDataPayload, prefix, rawMime);
         hydrated.mediaUrl = saved.mediaUrl;
         if (saved.isVideo) hydrated.videoUrl = saved.videoUrl;
-        else hydrated.imageUrl = saved.imageUrl;
+        else if (!saved.isAudio) hydrated.imageUrl = saved.imageUrl;
       } else {
         const candidateUrl =
           (typeof raw.videoUrl === 'string' && raw.videoUrl.trim()) ||
@@ -2126,7 +2367,7 @@ export class McpStdioBridgeServer {
           hydrated.mediaUrl = saved.mediaUrl;
           if (saved.isVideo) {
             hydrated.videoUrl = saved.videoUrl;
-          } else {
+          } else if (!saved.isAudio) {
             hydrated.imageUrl = saved.imageUrl;
           }
         }
@@ -2148,27 +2389,62 @@ export class McpStdioBridgeServer {
   // Bidirectional Live Browser Generation Queue (`/api/bridge/enqueue` & `/jobs/*`)
   // ============================================================================
 
-  public async enqueueBridgeJob(params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const rawTarget = String(params.target || params.provider || 'dreamina').toLowerCase();
-    const target: 'dreamina' | 'google-flow' =
-      rawTarget.includes('flow') || rawTarget.includes('google') ? 'google-flow' : 'dreamina';
+  public isBridgeSessionRecentlyActive(target: BridgeTargetPlatform, windowMs = 120_000): boolean {
+    const lastSeen = this.lastBridgePlatformSeenAt.get(target) || 0;
+    if (Date.now() - lastSeen <= windowMs) return true;
+    const recentEvt = this.bridgeEvents.find((e) => {
+      if (!e.timestamp) return false;
+      const age = Date.now() - new Date(e.timestamp).getTime();
+      return age <= windowMs && normalizeBridgeTarget(e.source) === target;
+    });
+    return Boolean(recentEvt);
+  }
 
-    const rawMode = String(params.mode || 'image').toLowerCase();
-    const mode: 'image' | 'video' = rawMode === 'video' ? 'video' : 'image';
+  public async enqueueBridgeJob(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const rawTarget = String(params.target || params.platformId || params.provider || 'dreamina');
+    const target = normalizeBridgeTarget(rawTarget);
+    const platformMeta = BRIDGE_PLATFORM_INFO[target];
+
+    const rawMode = String(params.mode || params.kind || 'image').toLowerCase();
+    const mode: 'image' | 'video' | 'audio' =
+      rawMode === 'video' ? 'video' : rawMode === 'audio' ? 'audio' : 'image';
 
     const prompt = String(params.prompt || '').trim();
     if (!prompt) {
-      throw new BridgeHttpError(400, 'Prompt is required to enqueue a live browser bridge job.');
+      throw new BridgeHttpError(400, 'Prompt is required to enqueue a live browser bridge job.', target);
     }
 
     const aspectRatio = String(params.aspectRatio || params.aspect_ratio || '16:9').trim();
+    const resolution =
+      typeof params.resolution === 'string' && params.resolution.trim()
+        ? params.resolution.trim()
+        : undefined;
+    const modelId =
+      typeof params.modelId === 'string' && params.modelId.trim()
+        ? params.modelId.trim()
+        : typeof params.model === 'string' && params.model.trim()
+          ? params.model.trim()
+          : undefined;
+    const batchCount = params.batchCount ? Math.max(1, Math.min(4, Number(params.batchCount))) : 1;
+    const negativePrompt =
+      typeof params.negativePrompt === 'string' && params.negativePrompt.trim()
+        ? params.negativePrompt.trim()
+        : undefined;
     const durationSec = Math.max(
       2,
-      Math.min(15, Math.round(Number(params.durationSec ?? params.durationSeconds ?? 5) || 5))
+      Math.min(30, Math.round(Number(params.durationSec ?? params.durationSeconds ?? 5) || 5))
     );
-    const referenceImages = Array.isArray(params.referenceImages)
-      ? params.referenceImages.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+
+    // Resolve any local `/media/*` or `http://localhost:3001/media/*` reference images to `data:<mime>;base64,...`
+    // so cross-origin browser tabs (e.g. Kling 4.0 tab receiving Higgsfield's generated image) can upload them directly!
+    const rawRefList = Array.isArray(params.referenceImages)
+      ? params.referenceImages.filter(
+          (x): x is string => typeof x === 'string' && x.trim().length > 0
+        )
       : [];
+    const referenceImages = rawRefList
+      .map((ref) => resolveReferenceToPublicOrDataUrl(ref, this.mediaDir))
+      .filter(Boolean);
 
     const jobId =
       typeof params.jobId === 'string' && params.jobId.trim()
@@ -2179,9 +2455,15 @@ export class McpStdioBridgeServer {
       jobId,
       target,
       mode,
+      modelId,
       prompt,
+      negativePrompt,
       aspectRatio,
+      resolution,
+      batchCount,
       durationSec,
+      audioEnabled: typeof params.audioEnabled === 'boolean' ? params.audioEnabled : undefined,
+      voiceId: typeof params.voiceId === 'string' ? params.voiceId : undefined,
       referenceImages,
       status: 'queued',
       createdAt: new Date().toISOString(),
@@ -2190,6 +2472,8 @@ export class McpStdioBridgeServer {
       mediaUrl: null,
       imageUrl: null,
       videoUrl: null,
+      audioUrl: null,
+      waveform: null,
       fullUrl: null,
       error: null,
       creditsRemaining: null,
@@ -2218,13 +2502,24 @@ export class McpStdioBridgeServer {
       };
     }
 
-    const timeoutMs = Math.max(
+    const fullTimeoutMs = Math.max(
       1_500,
-      Math.min(300_000, Number(params.timeoutMs) || 180_000)
+      Math.min(300_000, Number(params.timeoutMs) || 150_000)
+    );
+    const useSmartFastFail = Boolean(params.smartFastFail);
+    const hasRecentTargetSession = this.isBridgeSessionRecentlyActive(target);
+    const claimWindowMs = Math.max(
+      500,
+      Math.min(fullTimeoutMs, Number(params.claimTimeoutMs) || 15_000)
     );
 
+    let fastFailedUnclaimed = false;
+
     const finishedJob = await new Promise<BridgeJobRecord>((resolve) => {
+      let fastFailTimer: ReturnType<typeof setTimeout> | undefined;
+
       const timer = setTimeout(() => {
+        if (fastFailTimer) clearTimeout(fastFailTimer);
         const list = this.bridgeJobWaiters.get(jobId) || [];
         this.bridgeJobWaiters.set(
           jobId,
@@ -2234,23 +2529,42 @@ export class McpStdioBridgeServer {
         if (current.status === 'queued' || current.status === 'running') {
           current.status = 'failed';
           current.completedAt = new Date().toISOString();
-          current.error =
-            current.status === 'failed' && current.claimedAt
-              ? `Live ${target} browser tab claimed job ${jobId} but timed out after ${Math.round(timeoutMs / 1000)}s before media finished rendering.`
-              : `No active ${target === 'dreamina' ? 'Dreamina (dreamina.capcut.com)' : 'Google Flow (labs.google)'} browser bridge responded within ${Math.round(timeoutMs / 1000)}s. Open ${target === 'dreamina' ? 'https://dreamina.capcut.com/ai-tool/ai-canvas' : 'https://labs.google/fx/tools/flow'} with the Open-DreamFlow Chrome Extension loaded, or run import('${this.getPublicBaseUrl()}/bridge-connector.js') in DevTools Console.`;
+          current.error = current.claimedAt
+            ? `Live ${platformMeta.name} browser tab claimed job ${jobId} but timed out after ${Math.round(fullTimeoutMs / 1000)}s before media finished rendering.`
+            : `No active ${platformMeta.name} connection found. Connect ${platformMeta.name} via MCP Server, Browser Session (open ${platformMeta.studioUrl} with Chrome Bridge), or Direct API Key in Connections · Credits.`;
         }
         resolve(current);
-      }, timeoutMs);
+      }, fullTimeoutMs);
+
+      if (useSmartFastFail && !hasRecentTargetSession && claimWindowMs < fullTimeoutMs) {
+        fastFailTimer = setTimeout(() => {
+          const current = this.bridgeJobs.get(jobId) || job;
+          if (current.status === 'queued') {
+            clearTimeout(timer);
+            const list = this.bridgeJobWaiters.get(jobId) || [];
+            this.bridgeJobWaiters.set(
+              jobId,
+              list.filter((item) => item.timer !== timer)
+            );
+            fastFailedUnclaimed = true;
+            current.status = 'failed';
+            current.completedAt = new Date().toISOString();
+            current.error = `No active ${platformMeta.name} connection found. Connect ${platformMeta.name} via MCP Server, Browser Session (open ${platformMeta.studioUrl} with Chrome Bridge), or Direct API Key in Connections · Credits.`;
+            resolve(current);
+          }
+        }, claimWindowMs);
+      }
 
       const list = this.bridgeJobWaiters.get(jobId) || [];
-      list.push({ resolve, timer });
+      list.push({ resolve, timer, fastFailTimer });
       this.bridgeJobWaiters.set(jobId, list);
     });
 
     if (finishedJob.status !== 'succeeded') {
       throw new BridgeHttpError(
-        502,
-        finishedJob.error || `Live ${target} browser generation failed.`
+        fastFailedUnclaimed ? 400 : 502,
+        finishedJob.error || `Live ${platformMeta.name} browser generation failed.`,
+        target
       );
     }
 
@@ -2262,8 +2576,10 @@ export class McpStdioBridgeServer {
       mediaUrl: finishedJob.mediaUrl,
       imageUrl: finishedJob.imageUrl,
       videoUrl: finishedJob.videoUrl,
+      audioUrl: finishedJob.audioUrl,
+      waveform: finishedJob.waveform,
       fullUrl: finishedJob.fullUrl,
-      engine: target === 'dreamina' ? 'dreamina-bridge' : 'flow-bridge',
+      engine: `${target === 'google-flow' ? 'flow' : target}-bridge`,
     };
   }
 
@@ -2271,12 +2587,14 @@ export class McpStdioBridgeServer {
     target?: string | null;
     claim?: boolean;
   }): BridgeJobRecord[] {
-    const filterTarget = options.target ? options.target.trim().toLowerCase() : '';
-    const normalizedFilter: 'dreamina' | 'google-flow' | '' = filterTarget
-      ? filterTarget.includes('flow') || filterTarget.includes('google')
-        ? 'google-flow'
-        : 'dreamina'
+    const filterRaw = options.target ? options.target.trim().toLowerCase() : '';
+    const normalizedFilter: BridgeTargetPlatform | '' = filterRaw
+      ? normalizeBridgeTarget(filterRaw)
       : '';
+
+    if (normalizedFilter) {
+      this.lastBridgePlatformSeenAt.set(normalizedFilter, Date.now());
+    }
 
     const matched: BridgeJobRecord[] = [];
     for (const job of this.bridgeJobs.values()) {
@@ -2301,17 +2619,11 @@ export class McpStdioBridgeServer {
   ): Promise<BridgeJobRecord> {
     let job = this.bridgeJobs.get(jobId);
     if (!job) {
-      const inferredTarget: 'dreamina' | 'google-flow' = String(
-        payload.target || 'dreamina'
-      )
-        .toLowerCase()
-        .includes('flow')
-        ? 'google-flow'
-        : 'dreamina';
+      const inferredTarget = normalizeBridgeTarget(payload.target || 'dreamina');
       job = {
         jobId,
         target: inferredTarget,
-        mode: payload.videoUrl ? 'video' : 'image',
+        mode: payload.audioUrl ? 'audio' : payload.videoUrl ? 'video' : 'image',
         prompt: String(payload.prompt || ''),
         aspectRatio: '16:9',
         durationSec: 5,
@@ -2322,18 +2634,21 @@ export class McpStdioBridgeServer {
       this.bridgeJobs.set(jobId, job);
     }
 
+    this.lastBridgePlatformSeenAt.set(job.target, Date.now());
+    const platformMeta = BRIDGE_PLATFORM_INFO[job.target];
     const rawStatus = String(payload.status || '').toLowerCase();
     const hasError = Boolean(payload.error) || rawStatus === 'failed' || rawStatus === 'error';
-    const prefix = job.target === 'google-flow' ? 'flow_live' : 'dreamina_live';
+    const prefix = platformMeta.livePrefix;
 
     if (hasError) {
       job.status = 'failed';
-      job.error = String(payload.error || `Live ${job.target} browser job failed.`);
+      job.error = String(payload.error || `Live ${platformMeta.name} browser job failed.`);
       job.completedAt = new Date().toISOString();
     } else {
       const rawMediaCandidate =
         (typeof payload.dataUrl === 'string' && payload.dataUrl.trim()) ||
         (typeof payload.dataBase64 === 'string' && payload.dataBase64.trim()) ||
+        (typeof payload.audioUrl === 'string' && payload.audioUrl.trim()) ||
         (typeof payload.videoUrl === 'string' && payload.videoUrl.trim()) ||
         (typeof payload.imageUrl === 'string' && payload.imageUrl.trim()) ||
         (typeof payload.mediaUrl === 'string' && payload.mediaUrl.trim()) ||
@@ -2342,7 +2657,8 @@ export class McpStdioBridgeServer {
       if (!rawMediaCandidate) {
         throw new BridgeHttpError(
           400,
-          `Bridge job ${jobId} completion requires imageUrl, videoUrl, dataUrl, or dataBase64.`
+          `Bridge job ${jobId} completion requires imageUrl, videoUrl, audioUrl, dataUrl, or dataBase64.`,
+          job.target
         );
       }
 
@@ -2351,8 +2667,16 @@ export class McpStdioBridgeServer {
 
       job.status = 'succeeded';
       job.mediaUrl = saved.mediaUrl;
-      job.imageUrl = saved.isVideo ? null : saved.mediaUrl;
+      job.imageUrl = !saved.isVideo && !saved.isAudio ? saved.mediaUrl : null;
       job.videoUrl = saved.isVideo ? saved.mediaUrl : null;
+      job.audioUrl = saved.isAudio ? saved.mediaUrl : null;
+      if (saved.isAudio) {
+        try {
+          job.waveform = await this.computeAudioWaveform64(saved.fullPath);
+        } catch {
+          job.waveform = Array.from({ length: 64 }, () => 0.35);
+        }
+      }
       job.fullUrl = saved.fullUrl;
       job.error = null;
       job.completedAt = new Date().toISOString();
@@ -2363,17 +2687,16 @@ export class McpStdioBridgeServer {
       // Record in bridge inbox & push real-time `bridge_asset` event to Studio
       this.recordAndBroadcastBridgeEvent({
         type: 'bridge_asset',
-        source: job.target === 'google-flow' ? 'flow' : 'dreamina',
+        source: job.target === 'google-flow' ? 'flow' : job.target,
         mediaUrl: job.mediaUrl,
         videoUrl: job.videoUrl,
         imageUrl: job.imageUrl,
-        title:
-          job.target === 'google-flow'
-            ? 'Google Flow · Live Capture'
-            : 'Dreamina · Live Capture',
+        title: `${platformMeta.name} · Live Capture`,
         prompt: job.prompt,
         metadata: {
           jobId: job.jobId,
+          platformId: job.target,
+          modelId: job.modelId,
           mode: job.mode,
           aspectRatio: job.aspectRatio,
           creditsRemaining: job.creditsRemaining,
@@ -2381,12 +2704,13 @@ export class McpStdioBridgeServer {
       });
     }
 
-    // Wake any waiting `/api/bridge/enqueue` HTTP caller immediately
+    // Wake any waiting `/api/bridge/enqueue` or `/api/generate-node` HTTP caller immediately
     const waiters = this.bridgeJobWaiters.get(jobId);
     if (waiters && waiters.length > 0) {
       this.bridgeJobWaiters.delete(jobId);
       for (const w of waiters) {
         clearTimeout(w.timer);
+        if (w.fastFailTimer) clearTimeout(w.fastFailTimer);
         w.resolve(job);
       }
     }
@@ -2591,26 +2915,221 @@ export class McpStdioBridgeServer {
       }
     }
 
-    if (provider === 'dreamina-bridge' || provider === 'flow-bridge') {
-      const targetLabel = provider === 'dreamina-bridge' ? 'dreamina' : 'flow';
+    if (
+      provider === 'dreamina-bridge' ||
+      provider === 'flow-bridge' ||
+      provider === 'higgsfield-bridge' ||
+      provider === 'kling-bridge' ||
+      provider === 'openart-bridge' ||
+      provider === 'imagineart-bridge' ||
+      provider === 'elevenlabs-bridge'
+    ) {
+      const targetPlatform = normalizeBridgeTarget(provider.replace(/-bridge$/, ''));
+      const meta = BRIDGE_PLATFORM_INFO[targetPlatform];
       const hasWsClient = this.bridgeWsClients.size > 0;
-      const recentSession = this.bridgeEvents.find((e) =>
-        String(e.source || '')
-          .toLowerCase()
-          .includes(targetLabel)
+      const isRecentlySeen = this.isBridgeSessionRecentlyActive(targetPlatform);
+      const recentSession = this.bridgeEvents.find(
+        (e) => normalizeBridgeTarget(e.source) === targetPlatform
       );
-      const valid = hasWsClient || Boolean(recentSession);
+      const valid = hasWsClient || isRecentlySeen;
       return {
         ok: valid,
         valid,
         provider,
+        platformId: targetPlatform,
         connectedClients: this.bridgeWsClients.size,
         lastSeenAt: recentSession?.timestamp || null,
         connectorUrl: `${this.getPublicBaseUrl()}/bridge-connector.js`,
         error: valid
           ? undefined
-          : `No live ${provider === 'dreamina-bridge' ? 'Dreamina' : 'Google Flow'} browser tab connected yet. Load extensions/chrome-bridge or run import('${this.getPublicBaseUrl()}/bridge-connector.js') in the tab's DevTools Console.`,
+          : `No live ${meta.name} browser tab connected yet. Open ${meta.studioUrl} with extensions/chrome-bridge v1.1.0 loaded or run import('${this.getPublicBaseUrl()}/bridge-connector.js') in DevTools Console.`,
       };
+    }
+
+    if (provider === 'kling') {
+      const accessKey =
+        typeof params.accessKey === 'string' && params.accessKey.trim()
+          ? params.accessKey.trim()
+          : '';
+      const secretKey =
+        typeof params.secretKey === 'string' && params.secretKey.trim()
+          ? params.secretKey.trim()
+          : '';
+      if (!apiKey && !(accessKey && secretKey)) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'kling',
+          error: 'Kling AI requires (accessKey + secretKey) or a Bearer apiKey.',
+        };
+      }
+      try {
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.KlingClient({
+          accessKey: accessKey || undefined,
+          secretKey: secretKey || undefined,
+          apiKey: apiKey || undefined,
+          baseUrl: baseUrl || undefined,
+        });
+        const verified = await client.verifyAccount(AbortSignal.timeout(10_000));
+        return {
+          ok: true,
+          valid: true,
+          provider: 'kling',
+          authMode: verified.authMode,
+          models: verified.models,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'kling',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    if (provider === 'elevenlabs') {
+      if (!apiKey) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'elevenlabs',
+          error: 'ElevenLabs xi-api-key is required.',
+        };
+      }
+      try {
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.ElevenLabsClient({
+          apiKey,
+          baseUrl: baseUrl || undefined,
+        });
+        const verified = await client.verifyAccount(AbortSignal.timeout(10_000));
+        return {
+          ok: true,
+          valid: true,
+          provider: 'elevenlabs',
+          voicesCount: verified.voicesCount,
+          sampleVoices: verified.sampleVoices,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'elevenlabs',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    if (provider === 'openai') {
+      if (!apiKey) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'openai',
+          error: 'OpenAI API key is required.',
+        };
+      }
+      try {
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.OpenAIClient({
+          apiKey,
+          baseUrl: baseUrl || undefined,
+        });
+        const verified = await client.verifyAccount(AbortSignal.timeout(10_000));
+        return {
+          ok: true,
+          valid: true,
+          provider: 'openai',
+          models: verified.models,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'openai',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    if (provider === 'higgsfield') {
+      const secretKey =
+        typeof params.secretKey === 'string' && params.secretKey.trim()
+          ? params.secretKey.trim()
+          : undefined;
+      if (!apiKey) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'higgsfield',
+          error: 'Higgsfield API key is required (or use Browser Credit Bridge on higgsfield.ai).',
+        };
+      }
+      try {
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.HiggsfieldClient({
+          apiKey,
+          secretKey,
+          baseUrl: baseUrl || undefined,
+        });
+        const verified = await client.verifyAccount(AbortSignal.timeout(10_000));
+        return {
+          ok: true,
+          valid: true,
+          provider: 'higgsfield',
+          endpoint: verified.endpoint,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          valid: false,
+          provider: 'higgsfield',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    if (provider === 'openart' || provider === 'imagineart') {
+      if (!apiKey) {
+        return {
+          ok: false,
+          valid: false,
+          provider,
+          error: `${provider === 'openart' ? 'OpenArt' : 'ImagineArt'} API key is required (or connect via Browser Session Bridge).`,
+        };
+      }
+      try {
+        const checkUrl =
+          provider === 'openart'
+            ? (baseUrl || 'https://openart.ai/api/v1/user').replace(/\/+$/, '')
+            : (baseUrl || 'https://api.vyro.ai/v2/models').replace(/\/+$/, '');
+        const res = await fetch(checkUrl, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            Accept: 'application/json',
+          },
+          signal: AbortSignal.timeout(8_000),
+        });
+        if (!res.ok) {
+          return {
+            ok: false,
+            valid: false,
+            provider,
+            error: `${provider} API verification returned HTTP ${res.status}.`,
+          };
+        }
+        return { ok: true, valid: true, provider };
+      } catch (err) {
+        return {
+          ok: false,
+          valid: false,
+          provider,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
     }
 
     if (provider === 'replicate') {
@@ -2994,17 +3513,1197 @@ export class McpStdioBridgeServer {
     }
   }
 
+  // ============================================================================
+  // Stage 7 Universal Multi-Platform Catalog, External MCP Call & Unified Node Router
+  // ============================================================================
+
+  private hasServerEnvKeyForPlatform(platformId: string): boolean {
+    switch (platformId) {
+      case 'google-flow':
+        return Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+      case 'kling':
+        return Boolean(
+          (process.env.KLING_ACCESS_KEY && process.env.KLING_SECRET_KEY) ||
+            process.env.KLING_API_KEY
+        );
+      case 'elevenlabs':
+        return Boolean(process.env.ELEVENLABS_API_KEY);
+      case 'openai':
+        return Boolean(process.env.OPENAI_API_KEY);
+      case 'higgsfield':
+        return Boolean(process.env.HIGGSFIELD_API_KEY);
+      case 'dreamina':
+        return Boolean(process.env.ARK_API_KEY || process.env.SEEDANCE_API_KEY);
+      case 'fal':
+        return Boolean(process.env.FAL_KEY || process.env.FAL_API_KEY);
+      case 'replicate':
+        return Boolean(process.env.REPLICATE_API_TOKEN);
+      case 'openart':
+        return Boolean(process.env.OPENART_API_KEY);
+      case 'imagineart':
+        return Boolean(process.env.IMAGINEART_API_KEY || process.env.VYRO_API_KEY);
+      default:
+        return false;
+    }
+  }
+
+  public async getPlatformsCatalogWithStatus(): Promise<Record<string, unknown>> {
+    const sdk = await this.loadProviderSdk();
+    const rawCatalog = (Array.isArray(sdk.PLATFORM_CATALOG) ? sdk.PLATFORM_CATALOG : []) as Array<
+      Record<string, unknown>
+    >;
+    const allMcpServers = this.externalMcpHost.listServers();
+
+    const platforms = rawCatalog.map((p) => {
+      const id = String(p.id || '');
+      const matchingMcp = allMcpServers.filter(
+        (s) => s.status === 'connected' && (s.platformId === id || id === 'custom-mcp')
+      );
+      const isBridgeSupported = Boolean(p.browserBridgeSupported);
+      const bridgeActive = isBridgeSupported
+        ? this.isBridgeSessionRecentlyActive(normalizeBridgeTarget(id))
+        : false;
+      const envConfigured = this.hasServerEnvKeyForPlatform(id);
+
+      let models = Array.isArray(p.models)
+        ? (p.models as Array<Record<string, unknown>>)
+        : [];
+
+      if (id === 'custom-mcp') {
+        models = [];
+        for (const srv of matchingMcp) {
+          for (const t of srv.tools) {
+            const lower = `${t.name} ${t.description || ''}`.toLowerCase();
+            const inferredModality =
+              /audio|speech|tts|voice|sound|sfx|eleven/i.test(lower)
+                ? 'audio'
+                : /video|animate|i2v|t2v|kling|veo|seedance|wan|sora/i.test(lower)
+                  ? 'video'
+                  : 'image';
+            models.push({
+              id: `${srv.id}::${t.name}`,
+              label: `${srv.name} · ${t.name}`,
+              modality: inferredModality,
+              platformId: 'custom-mcp',
+              mcpServerId: srv.id,
+              mcpToolName: t.name,
+              description: t.description,
+              supportsReferences: true,
+              maxReferences: 4,
+            });
+          }
+        }
+      }
+
+      return {
+        ...p,
+        models,
+        status: {
+          connected: matchingMcp.length > 0 || bridgeActive || envConfigured,
+          mcpConnected: matchingMcp.length > 0,
+          mcpServerIds: matchingMcp.map((s) => s.id),
+          browserBridgeActive: bridgeActive,
+          serverEnvConfigured: envConfigured,
+        },
+      };
+    });
+
+    return {
+      ok: true,
+      platforms,
+      bridgeClients: this.bridgeWsClients.size,
+      mcpServers: allMcpServers,
+    };
+  }
+
+  private async writeRawLiveBytesToMedia(
+    bytes: Uint8Array | Buffer,
+    prefix: string,
+    ext: string
+  ): Promise<{
+    mediaUrl: string;
+    fullUrl: string;
+    fullPath: string;
+    filename: string;
+    bytes: number;
+    waveform?: number[];
+  }> {
+    fs.mkdirSync(this.mediaDir, { recursive: true });
+    const safePrefix =
+      prefix.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'live_node';
+    const cleanExt = ext.startsWith('.') ? ext : `.${ext}`;
+    const filename = `${safePrefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${cleanExt}`;
+    const fullPath = path.join(this.mediaDir, filename);
+    const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+    fs.writeFileSync(fullPath, buf);
+    this.mirrorToDistMedia(filename, fullPath);
+
+    let waveform: number[] | undefined;
+    if (/\.(mp3|wav|m4a|aiff)$/i.test(cleanExt)) {
+      try {
+        waveform = await this.computeAudioWaveform64(fullPath);
+      } catch {
+        waveform = Array.from({ length: 64 }, () => 0.35);
+      }
+    }
+
+    const mediaUrl = `/media/${filename}`;
+    return {
+      mediaUrl,
+      fullUrl: `${this.getPublicBaseUrl()}${mediaUrl}`,
+      fullPath,
+      filename,
+      bytes: buf.length,
+      waveform,
+    };
+  }
+
+  public async executeExternalMcpToolCall(
+    params: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const serverId = String(params.serverId || '').trim();
+    const toolName = String(params.toolName || params.name || '').trim();
+    const toolArgs =
+      typeof params.arguments === 'object' && params.arguments !== null
+        ? (params.arguments as Record<string, unknown>)
+        : typeof params.args === 'object' && params.args !== null
+          ? (params.args as Record<string, unknown>)
+          : {};
+
+    if (!serverId || !toolName) {
+      throw new BridgeHttpError(
+        400,
+        'POST /api/mcp/call requires non-empty "serverId" and "toolName".'
+      );
+    }
+
+    const callOut = await this.externalMcpHost.callTool({
+      serverId,
+      toolName,
+      arguments: toolArgs,
+      timeoutMs: Number(params.timeoutMs) || 180_000,
+    });
+
+    const platformPrefix = `${callOut.server.platformId || 'external'}_mcp`;
+    let savedMedia:
+      | {
+          mediaUrl: string;
+          imageUrl?: string;
+          videoUrl?: string;
+          audioUrl?: string;
+          fullPath: string;
+          fullUrl: string;
+          bytes: number;
+          isVideo: boolean;
+          isAudio: boolean;
+        }
+      | undefined;
+
+    let lastIngestErr = '';
+    for (const candidate of callOut.mediaCandidates) {
+      try {
+        savedMedia = await this.ingestExternalMediaToDisk(
+          candidate.source,
+          platformPrefix,
+          candidate.mimeType
+        );
+        break;
+      } catch (err) {
+        lastIngestErr = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    if (!savedMedia) {
+      throw new BridgeHttpError(
+        502,
+        `MCP tool "${toolName}" on "${callOut.server.name}" completed without returning ingestible media${
+          callOut.textSummary ? `: ${callOut.textSummary.slice(0, 220)}` : lastIngestErr ? ` (${lastIngestErr})` : ''
+        }`,
+        callOut.server.platformId
+      );
+    }
+
+    let waveform: number[] | undefined;
+    if (savedMedia.isAudio) {
+      try {
+        waveform = await this.computeAudioWaveform64(savedMedia.fullPath);
+      } catch {
+        waveform = Array.from({ length: 64 }, () => 0.35);
+      }
+    }
+
+    return {
+      ok: true,
+      status: 'COMPLETED',
+      serverId,
+      toolName,
+      platformId: callOut.server.platformId,
+      mediaUrl: savedMedia.mediaUrl,
+      fullUrl: savedMedia.fullUrl,
+      imageUrl: savedMedia.imageUrl,
+      videoUrl: savedMedia.videoUrl,
+      audioUrl: savedMedia.audioUrl,
+      waveform,
+      bytes: savedMedia.bytes,
+      textSummary: callOut.textSummary,
+      rawResult: callOut.rawResult,
+    };
+  }
+
   /**
-   * Self-contained Browser Live-Bridge Connector (`GET /bridge-connector.js`):
-   * Can be loaded via `import('http://localhost:3001/bridge-connector.js')` or Userscript
-   * directly inside `https://dreamina.capcut.com/*` or `https://labs.google/*` (`flow.google.com`).
+   * `POST /api/generate-node`:
+   * Unified per-node Zero-Markup Execution Router across:
+   *   1. `mcp` (any external user-connected Stdio or Streamable HTTP MCP server)
+   *   2. `api-key` (Official REST adapters: Kling JWT, ElevenLabs, OpenAI, Higgsfield, Google Veo/Gemini, Dreamina/Seedance, Fal, Replicate, ComfyUI)
+   *   3. `browser-bridge` (7 creator browser credit tabs with 15s smart fast-fail when unclaimed & 150s full window once claimed)
+   * Automatically resolves local `/media/*` and `http://localhost:3001/media/*` `referenceImages` into `data:<mime>;base64,...`
+   * so cross-platform node chaining (`Higgsfield ChatGPT 2.6 -> Kling 4.0 -> ElevenLabs`) works out of the box!
+   * NEVER silently fakes cloud/MCP/browser generations with local FFmpeg.
+   */
+  public async generateNode(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const nodeId = typeof params.nodeId === 'string' ? params.nodeId : undefined;
+    const rawKind = String(params.kind || params.modality || params.mode || 'image')
+      .trim()
+      .toLowerCase();
+    const kind: 'image' | 'video' | 'audio' =
+      rawKind === 'video' ? 'video' : rawKind === 'audio' ? 'audio' : 'image';
+
+    const platformId = String(params.platformId || params.provider || 'higgsfield')
+      .trim()
+      .toLowerCase();
+
+    const rawConnectionMode = String(params.connectionMode || 'auto')
+      .trim()
+      .toLowerCase();
+    const connectionMode: 'auto' | 'mcp' | 'browser-bridge' | 'api-key' =
+      rawConnectionMode === 'mcp'
+        ? 'mcp'
+        : rawConnectionMode === 'browser-bridge' || rawConnectionMode === 'bridge'
+          ? 'browser-bridge'
+          : rawConnectionMode === 'api-key' || rawConnectionMode === 'api' || rawConnectionMode === 'local'
+            ? 'api-key'
+            : 'auto';
+
+    let modelId = String(params.modelId || params.model || '').trim();
+    const prompt = String(params.prompt || '').trim();
+    if (!prompt) {
+      throw new BridgeHttpError(400, 'Prompt is required to generate this node.', platformId);
+    }
+
+    const settings =
+      typeof params.settings === 'object' && params.settings !== null
+        ? (params.settings as Record<string, unknown>)
+        : {};
+
+    const negativePrompt = String(
+      params.negativePrompt ?? settings.negativePrompt ?? ''
+    ).trim() || undefined;
+    const aspectRatio = String(
+      settings.aspectRatio ?? params.aspectRatio ?? '16:9'
+    ).trim();
+    const resolution = String(
+      settings.resolution ?? params.resolution ?? (kind === 'video' ? '1080p' : '2K')
+    ).trim();
+    const durationSec = Math.max(
+      2,
+      Math.min(
+        30,
+        Math.round(
+          Number(settings.durationSec ?? params.durationSec ?? params.durationSeconds ?? (kind === 'audio' ? 8 : 5)) || 5
+        )
+      )
+    );
+    const batchCount = Math.max(
+      1,
+      Math.min(4, Math.round(Number(settings.batchCount ?? params.batchCount ?? 1) || 1))
+    );
+    const audioEnabled =
+      typeof settings.audioEnabled === 'boolean'
+        ? settings.audioEnabled
+        : typeof params.audioEnabled === 'boolean'
+          ? params.audioEnabled
+          : true;
+    const voiceId =
+      typeof settings.voiceId === 'string' && settings.voiceId.trim()
+        ? settings.voiceId.trim()
+        : typeof params.voiceId === 'string' && params.voiceId.trim()
+          ? params.voiceId.trim()
+          : undefined;
+    const audioMode = String(settings.audioMode ?? params.audioMode ?? '').toLowerCase();
+
+    // Collect & resolve all local `/media/*` / `http://localhost:3001/media/*` references to `data:<mime>;base64,...`
+    const collectedRefs: string[] = [];
+    if (typeof params.startImageUrl === 'string' && params.startImageUrl.trim()) {
+      collectedRefs.push(params.startImageUrl.trim());
+    }
+    if (Array.isArray(params.referenceImages)) {
+      for (const r of params.referenceImages) {
+        if (typeof r === 'string' && r.trim() && !collectedRefs.includes(r.trim())) {
+          collectedRefs.push(r.trim());
+        }
+      }
+    }
+    if (typeof params.endImageUrl === 'string' && params.endImageUrl.trim()) {
+      collectedRefs.push(params.endImageUrl.trim());
+    }
+
+    const resolvedReferenceImages = collectedRefs
+      .map((ref) => resolveReferenceToPublicOrDataUrl(ref, this.mediaDir))
+      .filter(Boolean);
+
+    // Extract credentials from `params.credentials`, top-level fields, or server environment
+    const credsObj =
+      typeof params.credentials === 'object' && params.credentials !== null
+        ? (params.credentials as Record<string, unknown>)
+        : {};
+    let apiKey = String(credsObj.apiKey ?? params.apiKey ?? '').trim();
+    let accessKey = String(credsObj.accessKey ?? params.accessKey ?? '').trim();
+    let secretKey = String(credsObj.secretKey ?? params.secretKey ?? '').trim();
+    const baseUrl = String(credsObj.baseUrl ?? params.baseUrl ?? '').trim() || undefined;
+
+    if (!apiKey && !accessKey) {
+      if (platformId === 'google-flow') {
+        apiKey = String(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
+      } else if (platformId === 'kling') {
+        accessKey = String(process.env.KLING_ACCESS_KEY || '').trim();
+        secretKey = secretKey || String(process.env.KLING_SECRET_KEY || '').trim();
+        apiKey = String(process.env.KLING_API_KEY || '').trim();
+      } else if (platformId === 'elevenlabs') {
+        apiKey = String(process.env.ELEVENLABS_API_KEY || '').trim();
+      } else if (platformId === 'openai') {
+        apiKey = String(process.env.OPENAI_API_KEY || '').trim();
+      } else if (platformId === 'higgsfield') {
+        apiKey = String(process.env.HIGGSFIELD_API_KEY || '').trim();
+        secretKey = secretKey || String(process.env.HIGGSFIELD_SECRET_KEY || '').trim();
+      } else if (platformId === 'dreamina') {
+        apiKey = String(process.env.ARK_API_KEY || process.env.SEEDANCE_API_KEY || '').trim();
+      } else if (platformId === 'fal') {
+        apiKey = String(process.env.FAL_KEY || process.env.FAL_API_KEY || '').trim();
+      } else if (platformId === 'replicate') {
+        apiKey = String(process.env.REPLICATE_API_TOKEN || '').trim();
+      } else if (platformId === 'openart') {
+        apiKey = String(process.env.OPENART_API_KEY || '').trim();
+      } else if (platformId === 'imagineart') {
+        apiKey = String(process.env.IMAGINEART_API_KEY || process.env.VYRO_API_KEY || '').trim();
+      }
+    }
+
+    let mcpServerId = typeof params.mcpServerId === 'string' ? params.mcpServerId.trim() : '';
+    let mcpToolName = typeof params.mcpToolName === 'string' ? params.mcpToolName.trim() : '';
+    if (modelId.includes('::')) {
+      const [srvPart, toolPart] = modelId.split('::');
+      if (!mcpServerId && srvPart) mcpServerId = srvPart;
+      if (!mcpToolName && toolPart) mcpToolName = toolPart;
+    }
+
+    // -------------------------------------------------------------------------
+    // Route 1: External MCP Server (`connectionMode === 'mcp'` or `auto` match)
+    // -------------------------------------------------------------------------
+    const candidateMcpServer =
+      connectionMode === 'mcp' || connectionMode === 'auto' || platformId === 'custom-mcp'
+        ? this.externalMcpHost.findBestServerForExecution({
+            mcpServerId: mcpServerId || undefined,
+            platformId,
+          })
+        : null;
+
+    if (connectionMode === 'mcp' || platformId === 'custom-mcp' || candidateMcpServer) {
+      if (!candidateMcpServer) {
+        throw new BridgeHttpError(
+          400,
+          `No connected MCP server found for "${platformId}". Open Connections · Credits → MCP Servers to register an MCP server.`,
+          platformId
+        );
+      }
+
+      const chosenTool = this.externalMcpHost.selectBestToolForModality(
+        candidateMcpServer.id,
+        kind,
+        mcpToolName || undefined
+      );
+      if (!chosenTool) {
+        throw new BridgeHttpError(
+          400,
+          `MCP server "${candidateMcpServer.name}" exposed 0 callable tools in tools/list.`,
+          platformId
+        );
+      }
+
+      const builtArgs = this.externalMcpHost.buildArgumentsForToolSchema(chosenTool, {
+        prompt,
+        negativePrompt,
+        aspectRatio,
+        resolution,
+        durationSec,
+        voiceId,
+        modelId: modelId.includes('::') ? undefined : modelId || undefined,
+        referenceImages: resolvedReferenceImages,
+      });
+
+      const explicitMcpArgs =
+        typeof params.mcpArguments === 'object' && params.mcpArguments !== null
+          ? (params.mcpArguments as Record<string, unknown>)
+          : {};
+
+      const mcpOut = await this.executeExternalMcpToolCall({
+        serverId: candidateMcpServer.id,
+        toolName: chosenTool.name,
+        arguments: { ...builtArgs, ...explicitMcpArgs },
+        timeoutMs: params.timeoutMs,
+      });
+
+      return {
+        ok: true,
+        status: 'COMPLETED',
+        nodeId,
+        kind,
+        platformId,
+        modelId: modelId || chosenTool.name,
+        transportUsed: 'mcp',
+        providerUsed: `${platformId}-mcp`,
+        mcpServerId: candidateMcpServer.id,
+        mcpToolName: chosenTool.name,
+        mediaUrl: mcpOut.mediaUrl,
+        fullUrl: mcpOut.fullUrl,
+        imageUrl: mcpOut.imageUrl,
+        videoUrl: mcpOut.videoUrl,
+        audioUrl: mcpOut.audioUrl,
+        waveform: mcpOut.waveform,
+        outputs: [mcpOut.mediaUrl],
+      };
+    }
+
+    // -------------------------------------------------------------------------
+    // Route 2: Direct Official BYOK REST API / Local ComfyUI (`api-key`)
+    // -------------------------------------------------------------------------
+    const hasDirectCredentials = Boolean(apiKey || accessKey);
+    const isApiOnlyPlatform =
+      platformId === 'openai' ||
+      platformId === 'fal' ||
+      platformId === 'replicate' ||
+      platformId === 'comfyui';
+
+    if (
+      connectionMode === 'api-key' ||
+      isApiOnlyPlatform ||
+      (connectionMode === 'auto' && hasDirectCredentials)
+    ) {
+      const sdk = await this.loadProviderSdk();
+
+      try {
+        if (platformId === 'kling') {
+          if (!apiKey && !(accessKey && secretKey)) {
+            throw new BridgeHttpError(
+              400,
+              'Kling AI API credentials missing. Enter Kling Access Key + Secret Key in Connections · Credits, or use Browser Session Bridge on app.klingai.com.',
+              platformId
+            );
+          }
+          const client = new sdk.KlingClient({
+            accessKey: accessKey || undefined,
+            secretKey: secretKey || undefined,
+            apiKey: apiKey || undefined,
+            baseUrl,
+            mediaDir: this.mediaDir,
+          });
+          if (kind === 'image') {
+            const out = await client.generateImage({
+              model: modelId || 'kolors-2.0',
+              prompt,
+              negativePrompt,
+              aspectRatio,
+              n: batchCount,
+              referenceImages: resolvedReferenceImages,
+            });
+            const saved = await this.ingestExternalMediaToDisk(out.imageUrl, 'kling_live');
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId,
+              modelId: out.model,
+              transportUsed: 'api-key',
+              providerUsed: 'kling-api',
+              mediaUrl: saved.mediaUrl,
+              fullUrl: saved.fullUrl,
+              imageUrl: saved.mediaUrl,
+              outputs: [saved.mediaUrl],
+            };
+          } else {
+            const out = await client.generateVideo({
+              model: modelId || 'kling-4.0',
+              prompt,
+              negativePrompt,
+              aspectRatio: (aspectRatio === '9:16' || aspectRatio === '1:1'
+                ? aspectRatio
+                : '16:9') as '16:9' | '9:16' | '1:1',
+              durationSeconds: durationSec,
+              sound: audioEnabled,
+              referenceImages: resolvedReferenceImages,
+            });
+            const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'kling_live');
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId,
+              modelId: out.model,
+              transportUsed: 'api-key',
+              providerUsed: 'kling-api',
+              mediaUrl: saved.mediaUrl,
+              fullUrl: saved.fullUrl,
+              videoUrl: saved.mediaUrl,
+              outputs: [saved.mediaUrl],
+            };
+          }
+        }
+
+        if (platformId === 'elevenlabs') {
+          if (!apiKey) {
+            throw new BridgeHttpError(
+              400,
+              'ElevenLabs API key missing. Paste your xi-api-key in Connections · Credits or connect @elevenlabs/elevenlabs-mcp.',
+              platformId
+            );
+          }
+          const client = new sdk.ElevenLabsClient({ apiKey, baseUrl });
+          const isSfx =
+            modelId === 'eleven_text_to_sound_v2' || audioMode === 'sfx' || audioMode === 'sound';
+          const out = isSfx
+            ? await client.generateSoundEffect({
+                prompt,
+                durationSeconds: durationSec,
+              })
+            : await client.generateSpeech({
+                text: prompt,
+                modelId: modelId || 'eleven_multilingual_v2',
+                voiceId,
+              });
+          const saved = await this.writeRawLiveBytesToMedia(
+            out.audioBytes,
+            'elevenlabs_live',
+            '.mp3'
+          );
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            nodeId,
+            kind: 'audio',
+            platformId,
+            modelId: out.modelId,
+            transportUsed: 'api-key',
+            providerUsed: 'elevenlabs-api',
+            mediaUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            audioUrl: saved.mediaUrl,
+            waveform: saved.waveform,
+            outputs: [saved.mediaUrl],
+          };
+        }
+
+        if (platformId === 'openai') {
+          if (!apiKey) {
+            throw new BridgeHttpError(
+              400,
+              'OpenAI API key missing. Paste your sk-... key in Connections · Credits.',
+              platformId
+            );
+          }
+          const client = new sdk.OpenAIClient({
+            apiKey,
+            baseUrl,
+            mediaDir: this.mediaDir,
+          });
+          if (kind === 'video') {
+            const out = await client.generateVideo({
+              model: modelId || 'sora-2',
+              prompt,
+              aspectRatio,
+              durationSeconds: durationSec,
+              referenceImages: resolvedReferenceImages,
+            });
+            const saved = await this.writeRawLiveBytesToMedia(
+              out.videoBytes,
+              'openai_live',
+              '.mp4'
+            );
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId,
+              modelId: out.model,
+              transportUsed: 'api-key',
+              providerUsed: 'openai-api',
+              mediaUrl: saved.mediaUrl,
+              fullUrl: saved.fullUrl,
+              videoUrl: saved.mediaUrl,
+              outputs: [saved.mediaUrl],
+            };
+          } else {
+            const out = await client.generateImage({
+              model: modelId || 'gpt-image-1',
+              prompt,
+              aspectRatio,
+              n: batchCount,
+              referenceImages: resolvedReferenceImages,
+            });
+            const savedOutputs: string[] = [];
+            for (const item of out.outputs) {
+              if (item.b64_json) {
+                const s = await this.writeRawLiveBytesToMedia(
+                  Buffer.from(item.b64_json, 'base64'),
+                  'openai_live',
+                  '.png'
+                );
+                savedOutputs.push(s.mediaUrl);
+              } else if (item.url) {
+                const s = await this.ingestExternalMediaToDisk(item.url, 'openai_live');
+                savedOutputs.push(s.mediaUrl);
+              }
+            }
+            const primary = savedOutputs[0];
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId,
+              modelId: out.model,
+              transportUsed: 'api-key',
+              providerUsed: 'openai-api',
+              mediaUrl: primary,
+              fullUrl: `${this.getPublicBaseUrl()}${primary}`,
+              imageUrl: primary,
+              outputs: savedOutputs,
+            };
+          }
+        }
+
+        if (platformId === 'higgsfield') {
+          if (!apiKey) {
+            throw new BridgeHttpError(
+              400,
+              'Higgsfield API key missing. Open https://higgsfield.ai with Chrome Bridge for Browser Credits, connect an MCP server, or enter a Higgsfield API key.',
+              platformId
+            );
+          }
+          const client = new sdk.HiggsfieldClient({
+            apiKey,
+            secretKey: secretKey || undefined,
+            baseUrl,
+            mediaDir: this.mediaDir,
+          });
+          const out = await client.generate({
+            modality: kind === 'video' ? 'video' : 'image',
+            model: modelId || (kind === 'video' ? 'higgsfield-dop-i2v' : 'chatgpt-image-2.6'),
+            prompt,
+            negativePrompt,
+            aspectRatio,
+            resolution,
+            durationSeconds: durationSec,
+            batchSize: batchCount,
+            referenceImages: resolvedReferenceImages,
+          });
+          const saved = await this.ingestExternalMediaToDisk(out.mediaUrl, 'higgsfield_live');
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            nodeId,
+            kind,
+            platformId,
+            modelId: out.model,
+            transportUsed: 'api-key',
+            providerUsed: 'higgsfield-api',
+            mediaUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            imageUrl: saved.imageUrl,
+            videoUrl: saved.videoUrl,
+            outputs: [saved.mediaUrl],
+          };
+        }
+
+        if (platformId === 'google-flow' || platformId === 'gemini') {
+          if (!apiKey) {
+            throw new BridgeHttpError(
+              400,
+              'Google AI Studio API key missing. Paste your Gemini/Veo key in Connections · Credits, or open https://labs.google/fx/tools/flow with Chrome Bridge.',
+              platformId
+            );
+          }
+          const client = new sdk.GeminiOmniClient({ apiKey });
+          if (kind === 'video') {
+            let startImg: { bytesBase64Encoded: string; mimeType: string } | undefined;
+            let endImg: { bytesBase64Encoded: string; mimeType: string } | undefined;
+            if (resolvedReferenceImages[0]) {
+              const inline0 = await sdk.toGeminiInlineData(resolvedReferenceImages[0]);
+              startImg = { bytesBase64Encoded: inline0.data, mimeType: inline0.mime_type };
+            }
+            if (resolvedReferenceImages[1]) {
+              const inline1 = await sdk.toGeminiInlineData(resolvedReferenceImages[1]);
+              endImg = { bytesBase64Encoded: inline1.data, mimeType: inline1.mime_type };
+            }
+            const out = await client.generateVeoVideo({
+              prompt,
+              model: modelId || 'veo-3.1-fast-generate-preview',
+              aspectRatio,
+              durationSeconds: durationSec,
+              startImage: startImg,
+              endImage: endImg,
+            });
+            const saved = await this.writeRawLiveBytesToMedia(
+              out.videoBytes,
+              'google_live',
+              '.mp4'
+            );
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId: 'google-flow',
+              modelId: out.model,
+              transportUsed: 'api-key',
+              providerUsed: 'google-veo-live',
+              mediaUrl: saved.mediaUrl,
+              fullUrl: saved.fullUrl,
+              videoUrl: saved.mediaUrl,
+              outputs: [saved.mediaUrl],
+            };
+          } else {
+            const inlineRefs: Array<{ data: string; mimeType: string }> = [];
+            for (const ref of resolvedReferenceImages.slice(0, 6)) {
+              const inline = await sdk.toGeminiInlineData(ref);
+              inlineRefs.push({ data: inline.data, mimeType: inline.mime_type });
+            }
+            const out = await client.generateNativeImage({
+              prompt,
+              model: modelId || 'gemini-3.1-flash-image-preview',
+              aspectRatio,
+              referenceImages: inlineRefs,
+            });
+            const saved = await this.writeGoogleLiveImagePng(out.base64Data, out.mimeType);
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId: 'google-flow',
+              modelId: out.model,
+              transportUsed: 'api-key',
+              providerUsed: 'google-gemini-live',
+              mediaUrl: saved.imageUrl,
+              fullUrl: saved.fullUrl,
+              imageUrl: saved.imageUrl,
+              outputs: [saved.imageUrl],
+            };
+          }
+        }
+
+        if (platformId === 'dreamina' || platformId === 'seedance') {
+          if (!apiKey) {
+            throw new BridgeHttpError(
+              400,
+              'Dreamina / BytePlus API key missing. Open https://dreamina.capcut.com with Chrome Bridge for Browser Credits, or enter a BytePlus API key.',
+              platformId
+            );
+          }
+          const client = new sdk.SeedanceClient({ apiKey, baseUrl });
+          if (kind === 'video') {
+            const out = await client.generateVideo({
+              model: modelId || 'seedance-2.5',
+              prompt,
+              aspectRatio,
+              durationSeconds: durationSec,
+              referenceImages: resolvedReferenceImages,
+            });
+            const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'dreamina_live');
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId: 'dreamina',
+              modelId: out.model,
+              transportUsed: 'api-key',
+              providerUsed: 'seedance-api',
+              mediaUrl: saved.mediaUrl,
+              fullUrl: saved.fullUrl,
+              videoUrl: saved.mediaUrl,
+              outputs: [saved.mediaUrl],
+            };
+          } else {
+            const out = await client.generateImage({
+              model: modelId || 'seedream-5.0-lite',
+              prompt,
+              aspectRatio,
+              n: batchCount,
+              referenceImages: resolvedReferenceImages,
+            });
+            const rawImg = out.imageUrl || (out.imageBase64 ? `data:image/png;base64,${out.imageBase64}` : '');
+            const saved = await this.ingestExternalMediaToDisk(rawImg, 'dreamina_live');
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId: 'dreamina',
+              modelId: out.model,
+              transportUsed: 'api-key',
+              providerUsed: 'seedream-api',
+              mediaUrl: saved.mediaUrl,
+              fullUrl: saved.fullUrl,
+              imageUrl: saved.mediaUrl,
+              outputs: [saved.mediaUrl],
+            };
+          }
+        }
+
+        if (platformId === 'fal') {
+          if (!apiKey) {
+            throw new BridgeHttpError(
+              400,
+              'Fal.ai API key missing. Paste your Fal key in Connections · Credits.',
+              platformId
+            );
+          }
+          const client = new sdk.FalClient({ apiKey });
+          if (kind === 'video') {
+            const out = await client.generateOpenWeightVideo({
+              endpointOrModelId: modelId || 'fal-ai/kling-video/v2/master/image-to-video',
+              prompt,
+              negativePrompt,
+              imageUrl: resolvedReferenceImages[0],
+              lastFrameUrl: resolvedReferenceImages[1],
+              aspectRatio: (aspectRatio === '9:16' || aspectRatio === '1:1'
+                ? aspectRatio
+                : '16:9') as '16:9' | '9:16' | '1:1',
+            });
+            const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'fal_live');
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId,
+              modelId: out.modelId,
+              transportUsed: 'api-key',
+              providerUsed: 'fal-api',
+              mediaUrl: saved.mediaUrl,
+              fullUrl: saved.fullUrl,
+              videoUrl: saved.mediaUrl,
+              outputs: [saved.mediaUrl],
+            };
+          } else {
+            const out = await client.generateImage({
+              endpointId: modelId || 'fal-ai/flux-pro/v1.1',
+              prompt,
+              negativePrompt,
+              aspectRatio,
+              numImages: batchCount,
+              referenceImages: resolvedReferenceImages,
+            });
+            const savedOutputs: string[] = [];
+            for (const u of out.imageUrls) {
+              const s = await this.ingestExternalMediaToDisk(u, 'fal_live');
+              savedOutputs.push(s.mediaUrl);
+            }
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId,
+              modelId: out.modelId,
+              transportUsed: 'api-key',
+              providerUsed: 'fal-api',
+              mediaUrl: savedOutputs[0],
+              fullUrl: `${this.getPublicBaseUrl()}${savedOutputs[0]}`,
+              imageUrl: savedOutputs[0],
+              outputs: savedOutputs,
+            };
+          }
+        }
+
+        if (platformId === 'replicate') {
+          if (!apiKey) {
+            throw new BridgeHttpError(
+              400,
+              'Replicate API token missing. Paste your r8_... token in Connections · Credits.',
+              platformId
+            );
+          }
+          const client = new sdk.ReplicateClient({ apiToken: apiKey });
+          if (kind === 'video') {
+            const out = await client.generateOpenWeightVideo({
+              endpointOrModelId: modelId || 'kwaivgi/kling-v2.0',
+              prompt,
+              negativePrompt,
+              imageUrl: resolvedReferenceImages[0],
+              lastFrameUrl: resolvedReferenceImages[1],
+              aspectRatio: (aspectRatio === '9:16' || aspectRatio === '1:1'
+                ? aspectRatio
+                : '16:9') as '16:9' | '9:16' | '1:1',
+            });
+            const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'replicate_live');
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId,
+              modelId: out.modelId,
+              transportUsed: 'api-key',
+              providerUsed: 'replicate-api',
+              mediaUrl: saved.mediaUrl,
+              fullUrl: saved.fullUrl,
+              videoUrl: saved.mediaUrl,
+              outputs: [saved.mediaUrl],
+            };
+          } else {
+            const out = await client.generateImage({
+              modelSpec: modelId || 'black-forest-labs/flux-1.1-pro',
+              prompt,
+              aspectRatio,
+              referenceImages: resolvedReferenceImages,
+            });
+            const savedOutputs: string[] = [];
+            for (const u of out.imageUrls) {
+              const s = await this.ingestExternalMediaToDisk(u, 'replicate_live');
+              savedOutputs.push(s.mediaUrl);
+            }
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId,
+              modelId: out.modelId,
+              transportUsed: 'api-key',
+              providerUsed: 'replicate-api',
+              mediaUrl: savedOutputs[0],
+              fullUrl: `${this.getPublicBaseUrl()}${savedOutputs[0]}`,
+              imageUrl: savedOutputs[0],
+              outputs: savedOutputs,
+            };
+          }
+        }
+
+        if (platformId === 'comfyui') {
+          const cleanBase = (baseUrl || process.env.COMFYUI_URL || 'http://127.0.0.1:8188').replace(
+            /\/+$/,
+            ''
+          );
+          const check = await this.verifyProvider({ provider: 'comfyui', baseUrl: cleanBase });
+          if (!check.valid) {
+            throw new BridgeHttpError(
+              400,
+              `ComfyUI Local GPU is not reachable at ${cleanBase}. Start ComfyUI on :8188 or choose another platform.`,
+              'comfyui'
+            );
+          }
+          const client = new sdk.ComfyUIClient({ baseUrl: cleanBase });
+          const out = await client.generateLocalVideo({
+            modelFamily: resolvedReferenceImages[0] ? 'wan-2.1-i2v' : 'wan-2.1-t2v',
+            prompt,
+            negativePrompt,
+          });
+          const mediaRemote = out.outputUrls?.[0] || out.videoUrl;
+          if (!mediaRemote) {
+            throw new BridgeHttpError(502, 'ComfyUI workflow completed without output files.', 'comfyui');
+          }
+          const saved = await this.ingestExternalMediaToDisk(mediaRemote, 'comfyui_live');
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            nodeId,
+            kind,
+            platformId: 'comfyui',
+            modelId: modelId || 'wan-i2v-local',
+            transportUsed: 'api-key',
+            providerUsed: 'comfyui-local',
+            mediaUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            imageUrl: saved.imageUrl,
+            videoUrl: saved.videoUrl,
+            outputs: [saved.mediaUrl],
+          };
+        }
+
+        if (platformId === 'openart' || platformId === 'imagineart') {
+          if (!apiKey) {
+            const targetMeta = BRIDGE_PLATFORM_INFO[normalizeBridgeTarget(platformId)];
+            throw new BridgeHttpError(
+              400,
+              `No API key provided for ${targetMeta.name}. Switch transport to Browser Credits (open ${targetMeta.studioUrl} with Chrome Bridge) or connect an MCP server.`,
+              platformId
+            );
+          }
+          const apiEndpoint =
+            platformId === 'openart'
+              ? (baseUrl || 'https://openart.ai/api/v1/generations').replace(/\/+$/, '')
+              : (baseUrl || 'https://api.vyro.ai/v2/image/generations').replace(/\/+$/, '');
+          const res = await fetch(apiEndpoint, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body: JSON.stringify({
+              model: modelId,
+              prompt,
+              negative_prompt: negativePrompt,
+              aspect_ratio: aspectRatio,
+              ...(resolvedReferenceImages[0] ? { image_url: resolvedReferenceImages[0] } : {}),
+            }),
+            signal: AbortSignal.timeout(90_000),
+          });
+          if (!res.ok) {
+            const errTxt = await res.text();
+            throw new BridgeHttpError(
+              res.status === 401 || res.status === 403 ? 401 : 502,
+              `${platformId} API error (${res.status}): ${errTxt.slice(0, 240)}`,
+              platformId
+            );
+          }
+          const cType = (res.headers.get('content-type') || '').toLowerCase();
+          if (cType.startsWith('image/') || cType.startsWith('video/')) {
+            const bytes = new Uint8Array(await res.arrayBuffer());
+            const ext = cType.startsWith('video/') ? '.mp4' : '.png';
+            const saved = await this.writeRawLiveBytesToMedia(bytes, `${platformId}_live`, ext);
+            return {
+              ok: true,
+              status: 'COMPLETED',
+              nodeId,
+              kind,
+              platformId,
+              modelId,
+              transportUsed: 'api-key',
+              providerUsed: `${platformId}-api`,
+              mediaUrl: saved.mediaUrl,
+              fullUrl: saved.fullUrl,
+              imageUrl: ext === '.png' ? saved.mediaUrl : undefined,
+              videoUrl: ext === '.mp4' ? saved.mediaUrl : undefined,
+              outputs: [saved.mediaUrl],
+            };
+          }
+          const jsonOut = (await res.json()) as Record<string, unknown>;
+          const outUrl = String(
+            jsonOut.url || jsonOut.image_url || jsonOut.video_url || ''
+          ).trim();
+          if (!outUrl) {
+            throw new BridgeHttpError(502, `${platformId} API returned no media URL.`, platformId);
+          }
+          const saved = await this.ingestExternalMediaToDisk(outUrl, `${platformId}_live`);
+          return {
+            ok: true,
+            status: 'COMPLETED',
+            nodeId,
+            kind,
+            platformId,
+            modelId,
+            transportUsed: 'api-key',
+            providerUsed: `${platformId}-api`,
+            mediaUrl: saved.mediaUrl,
+            fullUrl: saved.fullUrl,
+            imageUrl: saved.imageUrl,
+            videoUrl: saved.videoUrl,
+            outputs: [saved.mediaUrl],
+          };
+        }
+      } catch (err) {
+        if (err instanceof BridgeHttpError) throw err;
+        const statusCode =
+          typeof (err as { statusCode?: number })?.statusCode === 'number' &&
+          ((err as { statusCode: number }).statusCode === 400 ||
+            (err as { statusCode: number }).statusCode === 401 ||
+            (err as { statusCode: number }).statusCode === 403)
+            ? (err as { statusCode: number }).statusCode
+            : 502;
+        throw new BridgeHttpError(
+          statusCode,
+          err instanceof Error ? err.message : String(err),
+          platformId
+        );
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // Route 3: 7-Platform Browser Credit Bridge (`browser-bridge` or `auto` fallback)
+    // -------------------------------------------------------------------------
+    const supportedBridgeIds = new Set([
+      'dreamina',
+      'google-flow',
+      'higgsfield',
+      'kling',
+      'openart',
+      'imagineart',
+      'elevenlabs',
+    ]);
+
+    if (connectionMode === 'browser-bridge' || supportedBridgeIds.has(platformId)) {
+      const target = normalizeBridgeTarget(platformId);
+      const bridgeOut = await this.enqueueBridgeJob({
+        target,
+        mode: kind,
+        modelId: modelId || undefined,
+        prompt,
+        negativePrompt,
+        aspectRatio,
+        resolution,
+        batchCount,
+        durationSec,
+        audioEnabled,
+        voiceId,
+        referenceImages: resolvedReferenceImages,
+        smartFastFail: true,
+        claimTimeoutMs: Number(params.claimTimeoutMs) || 15_000,
+        timeoutMs: Number(params.timeoutMs) || 150_000,
+        waitForResult: params.waitForResult !== false,
+      });
+
+      return {
+        ok: true,
+        status: bridgeOut.queued ? 'QUEUED' : 'COMPLETED',
+        nodeId,
+        kind,
+        platformId: target,
+        modelId: modelId || undefined,
+        transportUsed: 'browser-bridge',
+        providerUsed: `${target}-bridge`,
+        jobId: bridgeOut.jobId,
+        mediaUrl: bridgeOut.mediaUrl,
+        fullUrl: bridgeOut.fullUrl,
+        imageUrl: bridgeOut.imageUrl,
+        videoUrl: bridgeOut.videoUrl,
+        audioUrl: bridgeOut.audioUrl,
+        waveform: bridgeOut.waveform,
+        outputs: bridgeOut.mediaUrl ? [bridgeOut.mediaUrl] : [],
+      };
+    }
+
+    throw new BridgeHttpError(
+      400,
+      `Unsupported platform "${platformId}". Connect via MCP Server, Browser Credit Bridge, or Official API Key in Connections · Credits.`,
+      platformId
+    );
+  }
+
+  /**
+   * Self-contained 7-Platform Browser Live-Bridge Connector (`GET /bridge-connector.js`):
+   * Can be loaded via `import('http://localhost:3001/bridge-connector.js')` or Chrome Extension
+   * across Dreamina, Google Flow, Higgsfield, Kling AI, OpenArt, ImagineArt, and ElevenLabs.
    */
   public buildBrowserBridgeConnectorScript(): string {
     const origin = this.getPublicBaseUrl();
     const wsUrl = `${origin.replace(/^http/i, 'ws')}/bridge`;
 
     return `/**
- * Open-DreamFlow Live Browser Bridge Connector
+ * Open-DreamFlow 7-Platform Live Browser Credit Bridge Connector (v1.1.0)
  * Origin: ${origin}
  */
 (function () {
@@ -3019,9 +4718,32 @@ export class McpStdioBridgeServer {
   const BRIDGE_WS = ${JSON.stringify(wsUrl)};
   const host = String(location.hostname || '').toLowerCase();
   const TARGET =
-    host.includes('dreamina') || host.includes('capcut') || host.includes('jimeng')
-      ? 'dreamina'
-      : 'google-flow';
+    host === 'higgsfield.ai' || host.endsWith('.higgsfield.ai') || host.includes('higgsfield')
+      ? 'higgsfield'
+      : host === 'klingai.com' || host.endsWith('.klingai.com') || host.includes('kling')
+        ? 'kling'
+        : host === 'openart.ai' || host.endsWith('.openart.ai') || host.includes('openart')
+          ? 'openart'
+          : host === 'imagine.art' || host.endsWith('.imagine.art') || host.includes('imagineart')
+            ? 'imagineart'
+            : host === 'elevenlabs.io' || host.endsWith('.elevenlabs.io') || host.includes('elevenlabs')
+              ? 'elevenlabs'
+              : host.endsWith('dreamina.capcut.com') || host.includes('dreamina') || host.includes('capcut') || host.includes('jimeng')
+                ? 'dreamina'
+                : host === 'labs.google' || host === 'flow.google.com'
+                  ? 'google-flow'
+                  : 'google-flow';
+
+  const TARGET_LABELS = {
+    dreamina: 'Dreamina',
+    'google-flow': 'Google Flow',
+    higgsfield: 'Higgsfield',
+    kling: 'Kling AI',
+    openart: 'OpenArt',
+    imagineart: 'ImagineArt',
+    elevenlabs: 'ElevenLabs',
+  };
+  const TARGET_LABEL = TARGET_LABELS[TARGET] || TARGET;
 
   let busy = false;
   const handledIds = new Set();
@@ -3063,7 +4785,7 @@ export class McpStdioBridgeServer {
     badgeDotEl = dot;
 
     const text = document.createElement('span');
-    text.textContent = 'Open-DreamFlow · ' + (TARGET === 'dreamina' ? 'Dreamina' : 'Google Flow') + ' Ready';
+    text.textContent = 'Open-DreamFlow · ' + TARGET_LABEL + ' Ready';
     badgeTextEl = text;
 
     const sendBtn = document.createElement('button');
@@ -3154,6 +4876,7 @@ export class McpStdioBridgeServer {
   function snapshotExistingMedia() {
     const imgs = new Set();
     const vids = new Set();
+    const auds = new Set();
     document.querySelectorAll('img').forEach(function (img) {
       const s = img.currentSrc || img.src;
       if (s) imgs.add(s);
@@ -3162,7 +4885,71 @@ export class McpStdioBridgeServer {
       const s = v.currentSrc || v.src;
       if (s) vids.add(s);
     });
-    return { imgs: imgs, vids: vids };
+    document.querySelectorAll('audio, audio source').forEach(function (a) {
+      const s = a.currentSrc || a.src;
+      if (s) auds.add(s);
+    });
+    return { imgs: imgs, vids: vids, auds: auds };
+  }
+
+  async function decodeRefUrlToFile(refUrl, idx) {
+    if (!refUrl) return null;
+    if (typeof refUrl === 'string' && refUrl.indexOf('data:') === 0) {
+      try {
+        const m = /^data:([^;,]+)?(?:;base64)?,(.*)$/i.exec(refUrl);
+        if (m) {
+          const mime = m[1] || 'image/png';
+          const raw = atob(m[2]);
+          const arr = new Uint8Array(raw.length);
+          for (let k = 0; k < raw.length; k++) arr[k] = raw.charCodeAt(k);
+          const ext = mime.indexOf('jpeg') >= 0 ? 'jpg' : mime.indexOf('webp') >= 0 ? 'webp' : 'png';
+          return new File([arr], 'dreamflow_ref_' + (idx + 1) + '.' + ext, { type: mime });
+        }
+      } catch (_e0) {
+        // Fallback below
+      }
+    }
+    try {
+      const resp = await fetch(refUrl);
+      if (!resp.ok) return null;
+      const blob = await resp.blob();
+      const mime = blob.type || 'image/png';
+      const ext = mime.indexOf('jpeg') >= 0 ? 'jpg' : mime.indexOf('webp') >= 0 ? 'webp' : 'png';
+      return new File([blob], 'dreamflow_ref_' + (idx + 1) + '.' + ext, { type: mime });
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  async function injectReferenceImagesIntoDom(referenceImages) {
+    if (!Array.isArray(referenceImages) || referenceImages.length === 0) return false;
+    const files = [];
+    for (let i = 0; i < Math.min(4, referenceImages.length); i++) {
+      const f = await decodeRefUrlToFile(referenceImages[i], i);
+      if (f) files.push(f);
+    }
+    if (files.length === 0) return false;
+
+    const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+    const imageInput =
+      inputs.find(function (inp) {
+        const acc = String(inp.getAttribute('accept') || '').toLowerCase();
+        return !acc || acc.indexOf('image') >= 0 || acc.indexOf('.png') >= 0 || acc.indexOf('*') >= 0;
+      }) || inputs[0];
+
+    if (imageInput) {
+      const dt = new DataTransfer();
+      for (let j = 0; j < files.length; j++) {
+        if (!imageInput.multiple && j > 0) break;
+        dt.items.add(files[j]);
+      }
+      imageInput.files = dt.files;
+      imageInput.dispatchEvent(new Event('input', { bubbles: true }));
+      imageInput.dispatchEvent(new Event('change', { bubbles: true }));
+      await sleep(900);
+      return true;
+    }
+    return false;
   }
 
   function findPromptEditor() {
@@ -3326,6 +5113,11 @@ export class McpStdioBridgeServer {
       );
     }
 
+    if (Array.isArray(job.referenceImages) && job.referenceImages.length > 0) {
+      setStatus('Uploading reference frame to ' + TARGET_LABEL + '…', true);
+      await injectReferenceImagesIntoDom(job.referenceImages);
+    }
+
     injectPromptIntoEditor(editor, job.prompt);
     await sleep(450);
 
@@ -3338,17 +5130,34 @@ export class McpStdioBridgeServer {
     if (!genBtn) {
       throw new Error(
         'Generate button remained disabled or hidden on ' +
-          TARGET +
+          TARGET_LABEL +
           '. Check credits or sign-in status.'
       );
     }
 
     genBtn.click();
-    setStatus('Synthesizing on ' + (TARGET === 'dreamina' ? 'Dreamina' : 'Flow') + '…', true);
+    setStatus('Synthesizing on ' + TARGET_LABEL + '…', true);
 
     const deadline = Date.now() + 175000;
     while (Date.now() < deadline) {
       await sleep(2000);
+
+      // 0. Check for newly rendered <audio> when mode === 'audio'
+      if (job.mode === 'audio') {
+        const audios = Array.from(document.querySelectorAll('audio'));
+        for (let aIdx = 0; aIdx < audios.length; aIdx++) {
+          const a = audios[aIdx];
+          const srcEl = a.querySelector('source');
+          const aSrc = a.currentSrc || a.src || (srcEl ? srcEl.src : '');
+          if (!aSrc || baseline.auds.has(aSrc)) continue;
+          const dataUrl = await extractElementDataUrl(a);
+          return {
+            status: 'succeeded',
+            audioUrl: aSrc.startsWith('http') ? aSrc : undefined,
+            dataUrl: dataUrl || undefined,
+          };
+        }
+      }
 
       // 1. Check for newly rendered <video>
       const videos = Array.from(document.querySelectorAll('video'));
@@ -5584,6 +7393,8 @@ export class McpStdioBridgeServer {
           mediaUrl: job.mediaUrl,
           imageUrl: job.imageUrl,
           videoUrl: job.videoUrl,
+          audioUrl: job.audioUrl,
+          waveform: job.waveform,
           fullUrl: job.fullUrl,
         });
       } catch (err) {
@@ -5645,10 +7456,95 @@ export class McpStdioBridgeServer {
       return;
     }
 
+    // 4b. Stage 7 Multi-Platform Catalog & External Multi-Server MCP Host Routes
+    if (pathname === '/api/platforms' && req.method === 'GET') {
+      try {
+        this.sendJson(res, 200, await this.getPlatformsCatalogWithStatus());
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+        this.sendJson(res, status, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/mcp/servers' && req.method === 'GET') {
+      this.sendJson(res, 200, {
+        ok: true,
+        servers: this.externalMcpHost.listServers(),
+      });
+      return;
+    }
+
+    if (pathname === '/api/mcp/servers' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const server = await this.externalMcpHost.registerOrUpdateServer(bodyObj);
+        this.sendJson(res, 200, { ok: true, server });
+      } catch (err) {
+        this.sendJson(res, 400, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    const mcpRefreshMatch = /^\/api\/mcp\/servers\/([^/]+)\/refresh$/.exec(pathname);
+    if (mcpRefreshMatch && req.method === 'POST') {
+      try {
+        const serverId = decodeURIComponent(mcpRefreshMatch[1]);
+        const server = await this.externalMcpHost.refreshServerTools(serverId);
+        this.sendJson(res, 200, { ok: true, server });
+      } catch (err) {
+        this.sendJson(res, 400, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    const mcpDeleteMatch = /^\/api\/mcp\/servers\/([^/]+)$/.exec(pathname);
+    if (mcpDeleteMatch && req.method === 'DELETE') {
+      try {
+        const serverId = decodeURIComponent(mcpDeleteMatch[1]);
+        const out = await this.externalMcpHost.removeServer(serverId);
+        this.sendJson(res, 200, out);
+      } catch (err) {
+        this.sendJson(res, 500, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/mcp/call' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const out = await this.executeExternalMcpToolCall(bodyObj);
+        this.sendJson(res, 200, out);
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 502;
+        this.sendJson(res, status, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
     // 5. Real Cloud API, Live Browser Bridge & Local FFmpeg Synthesis Endpoints (`POST /api/*`)
     if (req.method === 'POST' && pathname.startsWith('/api/')) {
       const bodyObj = (await this.readJsonBody(req)) || {};
       try {
+        if (pathname === '/api/generate-node') {
+          this.sendJson(res, 200, await this.generateNode(bodyObj));
+          return;
+        }
         if (pathname === '/api/verify-provider') {
           this.sendJson(res, 200, await this.verifyProvider(bodyObj));
           return;
@@ -5704,7 +7600,12 @@ export class McpStdioBridgeServer {
       } catch (err) {
         const status = err instanceof BridgeHttpError ? err.statusCode : 500;
         const message = err instanceof Error ? err.message : String(err);
-        this.sendJson(res, status, { ok: false, error: message });
+        const platformId = err instanceof BridgeHttpError ? err.platformId : undefined;
+        this.sendJson(res, status, {
+          ok: false,
+          ...(platformId ? { platformId } : {}),
+          error: message,
+        });
         return;
       }
     }

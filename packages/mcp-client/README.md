@@ -1,20 +1,12 @@
-# `@open-dreamflow/mcp-client`
+# `@open-dreamflow/mcp-client` (`v1.1.0`)
 
-Universal Model Context Protocol (MCP) Client (`WebSocket`, `Streamable HTTP`, and `HTTP+SSE`), Canvas Node Schema Mapper, and Stage 4 Local **FFmpeg 8.0 + Inline Editor + Project Persistence + Bridge Relay + 10-Tool MCP Server** (`ws://localhost:3001/mcp`, `ws://localhost:3001/bridge`, `http://localhost:3001`).
+Universal Model Context Protocol (MCP) Client, **External Multi-Server MCP Host** (`stdio` + `Streamable HTTP`), **12-Platform Unified Node Router** (`POST /api/generate-node`), **7-Platform Chrome Credit Bridge Relay**, and Local **FFmpeg 8.0 + 12-Tool MCP Server** (`http://localhost:3001`).
 
-## 10 Built-in MCP Tools & REST Endpoints
-1. `generate_video` (`POST /api/render-video`) — Zero-markup BYOK pass-through OR local FFmpeg 1280x720 24fps H.264 + stereo AAC synthesis.
-2. `inpaint_frame` (`POST /api/inpaint`) — Masked brush composite (`maskedmerge` + prompt relight/detail synthesis or BYOK cloud inpaint).
-3. `outpaint_expand` (`POST /api/outpaint`) — Aspect expansion (`16:9` 1920x1080, `9:16` 1080x1920, `21:9` 2520x1080, `1:1` 1440x1440).
-4. `remove_background` (`POST /api/remove-bg`) — RGBA `colorkey` alpha-channel cutout PNG.
-5. `upscale_4k` (`POST /api/upscale`) — 3840px Lanczos 4K super-sharpen PNG.
-6. `extract_style_dna` — Extracts palette, lens, lighting, and film stock Style DNA tokens.
-7. `flow_scene_builder` (`POST /api/compile-timeline`) — Multi-clip H.264 + stereo AAC timeline stitcher (`+faststart`).
-8. `slice_contact_sheet` (`POST /api/slice-grid`) — Single-pass FFmpeg `3x3` / `2x2` contact sheet PNG slicer.
-9. `extract_last_frame` (`POST /api/extract-last-frame`) — Exact final-frame PNG extractor (`ffmpeg -sseof -0.1`).
-10. `save_project` (`POST /api/projects`) — Atomic disk project + snapshot persistence in `.dreamflow-data.nosync/projects/`.
+## Stage 7 Universal Multi-Platform & External MCP Endpoints
+- **`GET /api/platforms`** — Returns the 12-platform catalog (`PLATFORM_CATALOG`) enriched with live connection status (`mcpConnected`, `browserBridgeActive`, `serverEnvConfigured`) and dynamically discovered `custom-mcp` tools.
+- **`POST /api/generate-node`** — Unified per-node generation router (`connectionMode: 'auto' | 'mcp' | 'browser-bridge' | 'api-key'`) with automatic cross-platform reference resolution (`resolveReferenceToPublicOrDataUrl`) so upstream `/media/*` outputs chain directly into downstream nodes (e.g. Higgsfield `chatgpt-image-2.6` → Kling `kling-4.0` → ElevenLabs `eleven_multilingual_v2`).
+- **`GET / POST /api/mcp/servers`, `POST /api/mcp/servers/:id/refresh`, `DELETE /api/mcp/servers/:id`, `POST /api/mcp/call`** — Spawns and manages real external `stdio` & `http` MCP servers (persisted in `.dreamflow-data.nosync/mcp-servers.json` with `"***"` secret redaction on `GET`) and ingests returned media into `/media/*`.
+- **`POST /api/verify-provider`** — Live verification across Google, OpenAI, ElevenLabs, Kling (HS256 JWT), Higgsfield, Seedance, Fal, Replicate, ComfyUI, External MCP servers, and Browser Credit Bridge sessions.
 
-## Upload, Project Bundle & Live Chrome Bridge Relay
-- `POST /api/upload-media` — Device base64 upload persisted to `/media/upload_<ts>_<safeName>`.
-- `GET /api/projects`, `GET /api/projects/:id`, `POST /api/projects`, `DELETE /api/projects/:id`, `GET /api/projects/:id/export`, `POST /api/projects/import`.
-- `ws://localhost:3001/bridge`, `POST /api/bridge/push`, `GET /api/bridge/events` — Real-time Chrome Extension capture relay persisted in `.dreamflow-data.nosync/bridge-inbox.json`.
+## 12 Built-in MCP Tools (`/mcp`) & Local Media Engine
+`generate_image`, `generate_video`, `keyframe_bridge`, `generate_audio`, `inpaint_frame`, `outpaint_expand`, `remove_background`, `upscale_4k`, `extract_style_dna`, `flow_scene_builder`, `slice_contact_sheet`, `extract_last_frame`, and `save_project`.

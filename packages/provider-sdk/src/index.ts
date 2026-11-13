@@ -1,11 +1,17 @@
 /**
- * @open-dreamflow/provider-sdk — Unified Zero-Markup Router
+ * @open-dreamflow/provider-sdk — Unified Zero-Markup Multi-Platform Router
  */
 
+export * from './platforms.js';
 export * from './gemini-omni.js';
 export * from './seedance.js';
 export * from './fal-replicate.js';
 export * from './comfyui.js';
+export * from './providers/reference-utils.js';
+export * from './providers/kling.js';
+export * from './providers/elevenlabs.js';
+export * from './providers/openai.js';
+export * from './providers/higgsfield.js';
 
 import {
   GeminiOmniClient,
@@ -42,6 +48,10 @@ import {
   type ComfyWorkflowBuildOptions,
   type ComfyExecutionResult,
 } from './comfyui.js';
+import { KlingClient, type KlingClientConfig } from './providers/kling.js';
+import { ElevenLabsClient, type ElevenLabsClientConfig } from './providers/elevenlabs.js';
+import { OpenAIClient, type OpenAIClientConfig } from './providers/openai.js';
+import { HiggsfieldClient, type HiggsfieldClientConfig } from './providers/higgsfield.js';
 
 export type ProviderId =
   | 'gemini-omni'
@@ -49,8 +59,17 @@ export type ProviderId =
   | 'fal'
   | 'replicate'
   | 'comfyui'
+  | 'kling'
+  | 'elevenlabs'
+  | 'openai'
+  | 'higgsfield'
   | 'chrome-bridge-flow'
-  | 'chrome-bridge-dreamina';
+  | 'chrome-bridge-dreamina'
+  | 'chrome-bridge-higgsfield'
+  | 'chrome-bridge-kling'
+  | 'chrome-bridge-openart'
+  | 'chrome-bridge-imagineart'
+  | 'chrome-bridge-elevenlabs';
 
 export interface DreamFlowProviderCredentials {
   gemini?: string | GeminiOmniClientConfig;
@@ -58,6 +77,10 @@ export interface DreamFlowProviderCredentials {
   fal?: string | FalClientConfig;
   replicate?: string | ReplicateClientConfig;
   comfyui?: string | ComfyUIClientConfig;
+  kling?: string | KlingClientConfig;
+  elevenlabs?: string | ElevenLabsClientConfig;
+  openai?: string | OpenAIClientConfig;
+  higgsfield?: string | HiggsfieldClientConfig;
 }
 
 export interface ZeroMarkupCostEstimate {
@@ -86,6 +109,16 @@ export function estimateZeroMarkupCost(params: {
     case 'seedance':
       rawCost = Number((durationSeconds * (resolution === '1080p' ? 0.035 : 0.022)).toFixed(4));
       break;
+    case 'kling':
+    case 'higgsfield':
+      rawCost = Number((durationSeconds * 0.032).toFixed(4));
+      break;
+    case 'openai':
+      rawCost = Number((durationSeconds * 0.05).toFixed(4));
+      break;
+    case 'elevenlabs':
+      rawCost = Number((durationSeconds * 0.008).toFixed(4));
+      break;
     case 'fal':
     case 'replicate':
       rawCost = Number((durationSeconds * 0.028).toFixed(4));
@@ -93,6 +126,11 @@ export function estimateZeroMarkupCost(params: {
     case 'comfyui':
     case 'chrome-bridge-flow':
     case 'chrome-bridge-dreamina':
+    case 'chrome-bridge-higgsfield':
+    case 'chrome-bridge-kling':
+    case 'chrome-bridge-openart':
+    case 'chrome-bridge-imagineart':
+    case 'chrome-bridge-elevenlabs':
       rawCost = 0;
       break;
   }
@@ -117,6 +155,10 @@ export class DreamFlowProviderRouter {
   public seedance?: SeedanceClient;
   public fal?: FalClient;
   public replicate?: ReplicateClient;
+  public kling?: KlingClient;
+  public elevenlabs?: ElevenLabsClient;
+  public openai?: OpenAIClient;
+  public higgsfield?: HiggsfieldClient;
   public comfyui: ComfyUIClient;
 
   constructor(credentials: DreamFlowProviderCredentials = {}) {
@@ -144,6 +186,30 @@ export class DreamFlowProviderRouter {
           ? new ReplicateClient({ apiToken: credentials.replicate })
           : new ReplicateClient(credentials.replicate);
     }
+    if (credentials.kling) {
+      this.kling =
+        typeof credentials.kling === 'string'
+          ? new KlingClient({ apiKey: credentials.kling })
+          : new KlingClient(credentials.kling);
+    }
+    if (credentials.elevenlabs) {
+      this.elevenlabs =
+        typeof credentials.elevenlabs === 'string'
+          ? new ElevenLabsClient({ apiKey: credentials.elevenlabs })
+          : new ElevenLabsClient(credentials.elevenlabs);
+    }
+    if (credentials.openai) {
+      this.openai =
+        typeof credentials.openai === 'string'
+          ? new OpenAIClient({ apiKey: credentials.openai })
+          : new OpenAIClient(credentials.openai);
+    }
+    if (credentials.higgsfield) {
+      this.higgsfield =
+        typeof credentials.higgsfield === 'string'
+          ? new HiggsfieldClient({ apiKey: credentials.higgsfield })
+          : new HiggsfieldClient(credentials.higgsfield);
+    }
     this.comfyui =
       typeof credentials.comfyui === 'string'
         ? new ComfyUIClient({ baseUrl: credentials.comfyui })
@@ -156,6 +222,10 @@ export class DreamFlowProviderRouter {
     if (this.seedance) active.push('seedance');
     if (this.fal) active.push('fal');
     if (this.replicate) active.push('replicate');
+    if (this.kling) active.push('kling');
+    if (this.elevenlabs) active.push('elevenlabs');
+    if (this.openai) active.push('openai');
+    if (this.higgsfield) active.push('higgsfield');
     return active;
   }
 

@@ -43,6 +43,19 @@
     return rect.width > 8 && rect.height > 8;
   }
 
+  function dataUrlToFile(dataUrl, filename) {
+    const match = /^data:([^;,]+)?(?:;base64)?,(.*)$/i.exec(dataUrl);
+    if (!match) return null;
+    const mimeType = (match[1] || 'image/png').trim();
+    const byteChars = atob(match[2]);
+    const bytes = new Uint8Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i += 1) {
+      bytes[i] = byteChars.charCodeAt(i);
+    }
+    const ext = (mimeType.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '') || 'png';
+    return new File([bytes], filename || `element.${ext}`, { type: mimeType });
+  }
+
   async function referenceToFile(ref, index) {
     const rawSource =
       typeof ref === 'string'
@@ -50,16 +63,42 @@
         : ref?.dataUrl || ref?.image || ref?.url || '';
     if (!rawSource) return null;
 
+    const defaultName =
+      (typeof ref === 'object' && ref?.name) || `element_${index + 1}.png`;
+
+    if (rawSource.startsWith('data:')) {
+      const direct = dataUrlToFile(rawSource, defaultName);
+      if (direct) return direct;
+    }
+
     try {
       const response = await fetch(rawSource);
-      const blob = await response.blob();
-      const ext = (blob.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '');
-      const filename =
-        (typeof ref === 'object' && ref?.name) || `element_${index + 1}.${ext}`;
-      return new File([blob], filename, { type: blob.type || 'image/png' });
+      if (response.ok) {
+        const blob = await response.blob();
+        const ext = (blob.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '');
+        const filename =
+          (typeof ref === 'object' && ref?.name) || `element_${index + 1}.${ext}`;
+        return new File([blob], filename, { type: blob.type || 'image/png' });
+      }
     } catch {
-      return null;
+      // Fallback to MV3 background fetch when page CSP blocks localhost/cross-origin URLs
     }
+
+    try {
+      const bgRes = await new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+          { type: 'FETCH_REFERENCE_DATA_URL', url: rawSource },
+          (res) => resolve(chrome.runtime.lastError ? null : res)
+        );
+      });
+      if (bgRes && bgRes.ok && typeof bgRes.dataUrl === 'string') {
+        return dataUrlToFile(bgRes.dataUrl, defaultName);
+      }
+    } catch {
+      // Ignore
+    }
+
+    return null;
   }
 
   async function injectElementReferences(referenceImages) {
@@ -360,12 +399,12 @@
 
     (async () => {
       try {
-        const baseline = snapshotExistingMedia();
-
         if (Array.isArray(job.referenceImages) && job.referenceImages.length > 0) {
           await injectElementReferences(job.referenceImages);
-          await sleep(600);
+          await sleep(650);
         }
+
+        const baseline = snapshotExistingMedia();
 
         const promptOk = injectPromptText(job.prompt || '');
         if (!promptOk) {

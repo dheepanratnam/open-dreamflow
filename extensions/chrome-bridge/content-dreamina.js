@@ -59,6 +59,19 @@
     return rect.width > 8 && rect.height > 8;
   }
 
+  function dataUrlToFile(dataUrl, filename) {
+    const match = /^data:([^;,]+)?(?:;base64)?,(.*)$/i.exec(dataUrl);
+    if (!match) return null;
+    const mimeType = (match[1] || 'image/png').trim();
+    const byteChars = atob(match[2]);
+    const bytes = new Uint8Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i += 1) {
+      bytes[i] = byteChars.charCodeAt(i);
+    }
+    const ext = (mimeType.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '') || 'png';
+    return new File([bytes], filename || `keyframe.${ext}`, { type: mimeType });
+  }
+
   async function sourceToFile(item, index, prefix = 'keyframe') {
     const rawUrl =
       typeof item === 'string'
@@ -66,16 +79,39 @@
         : item?.imageUrl || item?.dataUrl || item?.image || item?.url || '';
     if (!rawUrl) return null;
 
+    if (rawUrl.startsWith('data:')) {
+      const direct = dataUrlToFile(rawUrl, `${prefix}_${index + 1}.png`);
+      if (direct) return direct;
+    }
+
     try {
       const response = await fetch(rawUrl);
-      const blob = await response.blob();
-      const ext = (blob.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '');
-      return new File([blob], `${prefix}_${index + 1}.${ext}`, {
-        type: blob.type || 'image/png',
-      });
+      if (response.ok) {
+        const blob = await response.blob();
+        const ext = (blob.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '');
+        return new File([blob], `${prefix}_${index + 1}.${ext}`, {
+          type: blob.type || 'image/png',
+        });
+      }
     } catch {
-      return null;
+      // Fallback to MV3 background fetch when page CSP blocks localhost/cross-origin URLs
     }
+
+    try {
+      const bgRes = await new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+          { type: 'FETCH_REFERENCE_DATA_URL', url: rawUrl },
+          (res) => resolve(chrome.runtime.lastError ? null : res)
+        );
+      });
+      if (bgRes && bgRes.ok && typeof bgRes.dataUrl === 'string') {
+        return dataUrlToFile(bgRes.dataUrl, `${prefix}_${index + 1}.png`);
+      }
+    } catch {
+      // Ignore
+    }
+
+    return null;
   }
 
   /**
@@ -476,9 +512,11 @@
           );
         }
 
+        const injectedFrames = await injectDreaminaFrames(job);
+        if (injectedFrames > 0) {
+          await sleep(600);
+        }
         const baseline = snapshotExistingMedia();
-        await injectDreaminaFrames(job);
-        await sleep(350);
 
         const okPrompt = injectDreaminaPrompt(editor, job.prompt || '');
         if (!okPrompt) {

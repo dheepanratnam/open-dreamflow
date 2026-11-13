@@ -1,8 +1,18 @@
 /**
- * Open-DreamFlow Chrome Bridge — Stage 4 Popup Controller (`popup.js`)
+ * Open-DreamFlow Chrome Bridge — v1.1.0 Multi-Platform Popup Controller (`popup.js`)
  */
 
-function setIndicator(dotId, labelId, connected, onlineText = 'Connected', offlineText = 'Not Open') {
+const PLATFORM_IDS = [
+  'higgsfield',
+  'kling',
+  'dreamina',
+  'google-flow',
+  'openart',
+  'imagineart',
+  'elevenlabs',
+];
+
+function setRowIndicator(dotId, labelId, connected, onlineText, offlineText) {
   const dot = document.getElementById(dotId);
   const label = document.getElementById(labelId);
   if (dot) {
@@ -10,48 +20,54 @@ function setIndicator(dotId, labelId, connected, onlineText = 'Connected', offli
   }
   if (label) {
     label.textContent = connected ? onlineText : offlineText;
-    label.style.color = connected ? '#34d399' : '#8e8e93';
+    label.style.color = connected ? '#5e9e79' : '#8b8882';
+  }
+}
+
+function setPlatformButton(platformId, connected) {
+  const dot = document.getElementById(`dot-${platformId}`);
+  const btn = document.getElementById(`lbl-${platformId}`);
+  if (dot) {
+    dot.classList.toggle('online', Boolean(connected));
+  }
+  if (btn) {
+    btn.textContent = connected ? 'Connected' : 'Open Tab';
+    btn.classList.toggle('connected', Boolean(connected));
   }
 }
 
 function renderPopupState(response) {
   const status = response?.status || {};
-  setIndicator(
+  setRowIndicator(
     'dot-studio',
     'lbl-studio',
     (status.studioTabsCount || 0) > 0,
     `${status.studioTabsCount} tab(s)`,
     'Offline'
   );
-  setIndicator(
+  setRowIndicator(
     'dot-relay',
     'lbl-relay',
     Boolean(status.relayConnected),
     'Live WS (:3001)',
     'Standby'
   );
-  setIndicator(
-    'dot-flow',
-    'lbl-flow',
-    Boolean(status.flowConnected),
-    'Ready ($0 Bridge)',
-    'Tab Closed'
-  );
-  setIndicator(
-    'dot-dreamina',
-    'lbl-dreamina',
-    Boolean(status.dreaminaConnected),
-    'Ready ($0 Bridge)',
-    'Tab Closed'
-  );
+
+  const connectedMap = status.platformsConnected || {};
+  for (const id of PLATFORM_IDS) {
+    setPlatformButton(id, Boolean(connectedMap[id]));
+  }
 
   const queuedEl = document.getElementById('val-queued');
   const completedEl = document.getElementById('val-completed');
   const savedEl = document.getElementById('val-saved');
 
-  const activeCount =
-    (status.activeJobs?.['google-flow'] ? 1 : 0) +
-    (status.activeJobs?.dreamina ? 1 : 0);
+  let activeCount = 0;
+  if (status.activeJobs && typeof status.activeJobs === 'object') {
+    for (const val of Object.values(status.activeJobs)) {
+      if (val) activeCount += 1;
+    }
+  }
 
   if (queuedEl) queuedEl.textContent = String((status.queuedCount || 0) + activeCount);
   if (completedEl) completedEl.textContent = String(status.stats?.completedCount || 0);
@@ -68,21 +84,16 @@ function refresh() {
   });
 }
 
-document.getElementById('btn-open-flow')?.addEventListener('click', () => {
-  chrome.runtime.sendMessage({
-    type: 'POPUP_OPEN_TARGET',
-    target: 'google-flow',
-    url: 'https://flow.google.com/',
+for (const btn of document.querySelectorAll('[data-open-target]')) {
+  btn.addEventListener('click', () => {
+    const target = btn.getAttribute('data-open-target');
+    if (!target) return;
+    chrome.runtime.sendMessage({
+      type: 'POPUP_OPEN_TARGET',
+      target,
+    });
   });
-});
-
-document.getElementById('btn-open-dreamina')?.addEventListener('click', () => {
-  chrome.runtime.sendMessage({
-    type: 'POPUP_OPEN_TARGET',
-    target: 'dreamina',
-    url: 'https://dreamina.capcut.com/',
-  });
-});
+}
 
 document.getElementById('btn-test-relay')?.addEventListener('click', () => {
   const feedback = document.getElementById('relay-feedback');
@@ -94,7 +105,7 @@ document.getElementById('btn-test-relay')?.addEventListener('click', () => {
       feedback.textContent = response?.ok
         ? 'Relayed to Studio Canvas via :3001!'
         : 'Start :3001 MCP server to relay live.';
-      feedback.style.color = response?.ok ? '#20d5ec' : '#8e8e93';
+      feedback.style.color = response?.ok ? '#c89f81' : '#8b8882';
     }
     if (response?.status) renderPopupState(response);
   });

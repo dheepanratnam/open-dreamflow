@@ -1,7 +1,7 @@
 {
   "name": "@open-dreamflow/mcp-client",
-  "version": "1.0.0",
-  "description": "Universal Model Context Protocol (MCP) Client (WebSocket/SSE/HTTP), Canvas Node Schema Converter, and Local STDIO Bridge Server for Open-DreamFlow",
+  "version": "1.1.0",
+  "description": "Universal Model Context Protocol (MCP) Client, Multi-Server External MCP Host, 12-Platform Node Router, and Local Media & Credit Bridge Server for Open-DreamFlow",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -23,6 +23,10 @@
     "./server-bridge": {
       "types": "./dist/server-bridge.d.ts",
       "import": "./dist/server-bridge.js"
+    },
+    "./external-mcp-host": {
+      "types": "./dist/external-mcp-host.d.ts",
+      "import": "./dist/external-mcp-host.js"
     },
     "./src/*": "./src/*"
   },

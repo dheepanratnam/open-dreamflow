@@ -2,6 +2,8 @@
  * @open-dreamflow/provider-sdk — Dreamina / BytePlus Seedream & Seedance Adapter
  */
 
+import { resolveReferenceImageForCloud } from './providers/reference-utils.js';
+
 export const SEEDANCE_DEFAULT_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3';
 export const SEEDANCE_DEFAULT_VIDEO_MODEL = 'seedance-2.0-pro';
 export const SEEDREAM_DEFAULT_IMAGE_MODEL = 'seedream-3.0';
@@ -281,12 +283,15 @@ export class SeedanceClient {
       const role =
         i === 0 ? 'first_frame' : i === req.keyframes.length - 1 ? 'last_frame' : 'key_frame';
 
+      const resolvedKf = await resolveReferenceImageForCloud(kf.imageUrl, {
+        fetchImpl: this.fetchImpl,
+      });
       contentParts.push({
         type: 'image_url',
         role,
         keyframe_index: i,
         timestamp_seconds: timestamp,
-        image_url: { url: kf.imageUrl },
+        image_url: { url: resolvedKf.publicOrDataUrl },
       });
 
       if (i < req.keyframes.length - 1) {
@@ -507,6 +512,143 @@ export class SeedanceClient {
       panels,
       estimatedRawCostUsd: gridLayout === '9-grid' ? 0.045 : 0.035,
       rawResponse: raw,
+    };
+  }
+
+  public async generateImage(req: {
+    model?: string;
+    prompt: string;
+    aspectRatio?: SeedanceAspectRatio;
+    referenceImages?: string[];
+    n?: number;
+    seed?: number;
+    signal?: AbortSignal;
+  }): Promise<{
+    provider: 'seedream';
+    model: string;
+    imageUrl?: string;
+    imageBase64?: string;
+    rawResponse: Record<string, unknown>;
+  }> {
+    const model = req.model || this.defaultImageModel;
+    const sizeByRatio: Record<SeedanceAspectRatio, string> = {
+      '16:9': '2560x1440',
+      '9:16': '1440x2560',
+      '21:9': '2688x1152',
+      '1:1': '2048x2048',
+      '4:3': '2304x1728',
+      '3:4': '1728x2304',
+    };
+    const resolvedRefs: string[] = [];
+    for (const ref of (req.referenceImages || []).slice(0, 6)) {
+      const resolved = await resolveReferenceImageForCloud(ref, { fetchImpl: this.fetchImpl });
+      resolvedRefs.push(resolved.publicOrDataUrl);
+    }
+
+    const payload: Record<string, unknown> = {
+      model,
+      prompt: req.prompt,
+      size: sizeByRatio[req.aspectRatio || '16:9'] || '2048x2048',
+      response_format: 'url',
+      ...(req.n ? { n: req.n } : {}),
+      ...(resolvedRefs.length > 0
+        ? { image: resolvedRefs[0], reference_images: resolvedRefs }
+        : {}),
+      ...(typeof req.seed === 'number' ? { seed: req.seed } : {}),
+    };
+
+    const raw = await this.requestJson(
+      `${this.baseUrl}/images/generations`,
+      'POST',
+      payload,
+      req.signal
+    );
+    const firstItem = this.extractFirstImageItem(raw);
+    return {
+      provider: 'seedream',
+      model,
+      imageUrl: firstItem.url,
+      imageBase64: firstItem.b64_json,
+      rawResponse: raw,
+    };
+  }
+
+  public async generateVideo(req: {
+    model?: string;
+    prompt: string;
+    aspectRatio?: SeedanceAspectRatio;
+    resolution?: '480p' | '720p' | '1080p';
+    durationSeconds?: number;
+    referenceImages?: string[];
+    seed?: number;
+    signal?: AbortSignal;
+  }): Promise<SeedanceVideoResult> {
+    const refs = (req.referenceImages || []).filter(Boolean);
+    if (refs.length >= 2) {
+      return this.synthesizeKeyframeSequence({
+        prompt: req.prompt,
+        model: req.model,
+        aspectRatio: req.aspectRatio,
+        resolution: req.resolution,
+        seed: req.seed,
+        signal: req.signal,
+        keyframes: refs.slice(0, 10).map((url) => ({ imageUrl: url })),
+      });
+    }
+
+    const model = req.model || this.defaultVideoModel;
+    const resolution = req.resolution || '1080p';
+    const aspectRatio = req.aspectRatio || '16:9';
+    const duration = Math.max(4, Math.min(12, req.durationSeconds ?? 5));
+
+    const contentParts: Array<Record<string, unknown>> = [
+      {
+        type: 'text',
+        text: `${req.prompt.trim()} --rs ${resolution} --rt ${aspectRatio} --dur ${duration}`,
+      },
+    ];
+
+    if (refs[0]) {
+      const resolved = await resolveReferenceImageForCloud(refs[0], { fetchImpl: this.fetchImpl });
+      contentParts.push({
+        type: 'image_url',
+        role: 'first_frame',
+        image_url: { url: resolved.publicOrDataUrl },
+      });
+    }
+
+    const created = await this.requestJson(
+      `${this.baseUrl}/contents/generations/tasks`,
+      'POST',
+      {
+        model,
+        content: contentParts,
+        parameters: {
+          resolution,
+          aspect_ratio: aspectRatio,
+          duration,
+          ...(typeof req.seed === 'number' ? { seed: req.seed } : {}),
+        },
+      },
+      req.signal
+    );
+
+    const taskId = String(created.id || created.task_id || `sd_task_${Date.now()}`);
+    const finalTask = await this.waitForTask(taskId, undefined, req.signal);
+    const perSecRate = resolution === '1080p' ? 0.035 : 0.022;
+
+    return {
+      provider: 'seedance',
+      model,
+      taskId,
+      status: finalTask.status,
+      videoUrl: finalTask.videoUrl,
+      coverImageUrl: finalTask.coverImageUrl,
+      keyframeCount: refs.length,
+      totalDurationSeconds: duration,
+      aspectRatio,
+      estimatedRawCostUsd: Number((duration * perSecRate).toFixed(4)),
+      rawResponse: finalTask.raw || created,
     };
   }
 

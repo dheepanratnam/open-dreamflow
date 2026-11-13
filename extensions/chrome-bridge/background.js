@@ -1,19 +1,49 @@
 /**
- * Open-DreamFlow Chrome Bridge — Manifest V3 Background Service Worker (Stage 4)
+ * Open-DreamFlow Chrome Bridge — Manifest V3 Background Service Worker (v1.1.0)
  *
- * Coordinates zero-API-cost job queuing between Open-DreamFlow Web Studio
- * (`localhost` / `127.0.0.1`), consumer web sessions on:
- *   - Google Flow (`https://flow.google.com/*`)
- *   - Dreamina / Seedance (`https://dreamina.capcut.com/*`)
- * and the Stage 4 Live Bridge Relay (`ws://localhost:3001/bridge` & `http://localhost:3001/api/bridge/push`).
+ * Coordinates zero-markup job queuing & chained reference forwarding between
+ * Open-DreamFlow Web Studio (`localhost` / `127.0.0.1`), 7 creator platforms:
+ *   1. Dreamina (`dreamina.capcut.com`, `jimeng.jianying.com`)
+ *   2. Google Flow (`labs.google`, `flow.google.com`)
+ *   3. Higgsfield (`higgsfield.ai`)
+ *   4. Kling AI (`app.klingai.com`, `klingai.com`)
+ *   5. OpenArt (`openart.ai`)
+ *   6. ImagineArt (`imagine.art`)
+ *   7. ElevenLabs (`elevenlabs.io`)
+ * and the Local Bridge Relay (`ws://localhost:3001/bridge` & `http://localhost:3001/api/bridge/*`).
  *
- * Includes strict `isKnownJobId()` deduplication so dual-envelope Studio posts
- * (`open-dreamflow-studio` + `OPEN_DREAMFLOW_STUDIO`) never double-enqueue jobs.
+ * Preserves strict `isKnownJobId()` deduplication and provides `FETCH_REFERENCE_DATA_URL`
+ * so content scripts can inject chained `/media/*` outputs across any domain's CSP.
  */
 
+const ALL_TARGETS = /** @type {const} */ ([
+  'higgsfield',
+  'kling',
+  'dreamina',
+  'google-flow',
+  'openart',
+  'imagineart',
+  'elevenlabs',
+]);
+
 const TARGET_URLS = {
+  higgsfield: 'https://higgsfield.ai/create',
+  kling: 'https://app.klingai.com/global/image-to-video/frame-mode',
+  dreamina: 'https://dreamina.capcut.com/ai-tool/home',
   'google-flow': 'https://labs.google/fx/tools/flow',
-  dreamina: 'https://dreamina.capcut.com/ai-tool/ai-canvas',
+  openart: 'https://openart.ai/create',
+  imagineart: 'https://www.imagine.art/dashboard/tool/text-to-image',
+  elevenlabs: 'https://elevenlabs.io/app/speech-synthesis/text-to-speech',
+};
+
+const TARGET_LABELS = {
+  higgsfield: 'Higgsfield',
+  kling: 'Kling AI',
+  dreamina: 'Dreamina',
+  'google-flow': 'Google Flow',
+  openart: 'OpenArt',
+  imagineart: 'ImagineArt',
+  elevenlabs: 'ElevenLabs',
 };
 
 const LOCAL_RELAY_BASE = 'http://localhost:3001';
@@ -27,17 +57,27 @@ let relayConnected = false;
 const STATE = {
   /** @type {Array<Record<string, any>>} */
   queue: [],
-  /** @type {Record<'google-flow' | 'dreamina', Record<string, any> | null>} */
+  /** @type {Record<string, Record<string, any> | null>} */
   activeByTarget: {
-    'google-flow': null,
+    higgsfield: null,
+    kling: null,
     dreamina: null,
+    'google-flow': null,
+    openart: null,
+    imagineart: null,
+    elevenlabs: null,
   },
   /** @type {Array<Record<string, any>>} */
   history: [],
-  /** @type {{ 'google-flow': Set<number>, dreamina: Set<number>, studio: Set<number> }} */
+  /** @type {Record<string, Set<number>>} */
   tabs: {
-    'google-flow': new Set(),
+    higgsfield: new Set(),
+    kling: new Set(),
     dreamina: new Set(),
+    'google-flow': new Set(),
+    openart: new Set(),
+    imagineart: new Set(),
+    elevenlabs: new Set(),
     studio: new Set(),
   },
   stats: {
@@ -101,12 +141,16 @@ function isKnownJobId(jobId) {
 }
 
 /**
- * Normalizes target aliases (`flow`, `google-flow`, `dreamina`, `seedance`).
+ * Normalizes target aliases across all 7 creator platforms.
  * @param {string | undefined} rawTarget
- * @returns {'google-flow' | 'dreamina'}
+ * @returns {'higgsfield' | 'kling' | 'dreamina' | 'google-flow' | 'openart' | 'imagineart' | 'elevenlabs'}
  */
 function normalizeTarget(rawTarget) {
-  const lowered = String(rawTarget || 'google-flow').toLowerCase();
+  const lowered = String(rawTarget || 'google-flow').toLowerCase().trim();
+  if (lowered.includes('higgsfield')) return 'higgsfield';
+  if (lowered.includes('kling') && !lowered.includes('openart') && !lowered.includes('-hf')) {
+    return 'kling';
+  }
   if (
     lowered.includes('dreamina') ||
     lowered.includes('seedance') ||
@@ -115,7 +159,68 @@ function normalizeTarget(rawTarget) {
   ) {
     return 'dreamina';
   }
+  if (lowered.includes('openart')) return 'openart';
+  if (lowered.includes('imagine')) return 'imagineart';
+  if (lowered.includes('eleven')) return 'elevenlabs';
   return 'google-flow';
+}
+
+/**
+ * Detects which creator platform a browser tab URL belongs to.
+ * @param {string} rawUrl
+ * @returns {string | null}
+ */
+function detectTabPlatform(rawUrl) {
+  if (!rawUrl) return null;
+  let u;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  const host = u.hostname.toLowerCase();
+  if (host === 'localhost' || host === '127.0.0.1') return 'studio';
+  if (host === 'flow.google.com' || host === 'labs.google') return 'google-flow';
+  if (host.endsWith('dreamina.capcut.com') || host.endsWith('jimeng.jianying.com')) {
+    return 'dreamina';
+  }
+  if (host === 'higgsfield.ai' || host.endsWith('.higgsfield.ai')) return 'higgsfield';
+  if (host === 'klingai.com' || host.endsWith('.klingai.com')) return 'kling';
+  if (host === 'openart.ai' || host.endsWith('.openart.ai')) return 'openart';
+  if (host === 'imagine.art' || host.endsWith('.imagine.art')) return 'imagineart';
+  if (host === 'elevenlabs.io' || host.endsWith('.elevenlabs.io')) return 'elevenlabs';
+  return null;
+}
+
+/**
+ * Sends per-platform session heartbeats over `ws://localhost:3001/bridge` for all
+ * currently open creator platform tabs so `:3001` tracks active browser sessions accurately.
+ */
+function sendRelayPlatformHeartbeats() {
+  if (!relaySocket || relaySocket.readyState !== WebSocket.OPEN) return;
+  try {
+    relaySocket.send(
+      JSON.stringify({
+        type: 'bridge_session',
+        source: 'chrome-extension',
+        title: 'Open-DreamFlow Universal Credit Bridge v1.1.0',
+        metadata: buildBridgeStatusPayload(),
+      })
+    );
+    for (const target of ALL_TARGETS) {
+      if (STATE.tabs[target].size > 0) {
+        relaySocket.send(
+          JSON.stringify({
+            type: 'bridge_session',
+            source: target,
+            title: `${TARGET_LABELS[target]} Tab Ready`,
+          })
+        );
+      }
+    }
+  } catch {
+    // Ignore transient WS frame error
+  }
 }
 
 /**
@@ -137,18 +242,7 @@ function ensureLocalRelaySocket() {
 
     ws.onopen = () => {
       relayConnected = true;
-      try {
-        ws.send(
-          JSON.stringify({
-            type: 'bridge_session',
-            source: 'chrome-extension',
-            title: 'Open-DreamFlow Chrome Bridge Connected',
-            metadata: buildBridgeStatusPayload(),
-          })
-        );
-      } catch {
-        // Ignore transient send error
-      }
+      sendRelayPlatformHeartbeats();
       void pollLocalServerPendingJobs();
     };
 
@@ -178,43 +272,55 @@ function ensureLocalRelaySocket() {
 }
 
 /**
- * Claims pending live browser jobs from `:3001/api/bridge/jobs/pending?claim=1`
- * and queues them for the open Dreamina / Google Flow consumer tab.
+ * Claims pending live browser jobs from `:3001/api/bridge/jobs/pending?target=<platform>&claim=1`
+ * ONLY for creator platforms that currently have an open browser tab, preserving `:3001`'s
+ * smart 15s fast-fail for platforms that have no open session.
  * @param {string} [targetHint]
  */
 async function pollLocalServerPendingJobs(targetHint) {
-  try {
-    const query = targetHint
-      ? `?target=${encodeURIComponent(normalizeTarget(targetHint))}&claim=1`
-      : '?claim=1';
-    const res = await fetch(`${LOCAL_RELAY_BASE}/api/bridge/jobs/pending${query}`);
-    if (!res.ok) return;
-    const data = await res.json();
-    if (!Array.isArray(data?.jobs) || data.jobs.length === 0) return;
+  await refreshConnectedTabs();
 
-    let added = false;
-    for (const rawJob of data.jobs) {
-      if (!rawJob?.jobId || isKnownJobId(rawJob.jobId)) continue;
-      STATE.queue.push(
-        normalizeIncomingJob({
-          ...rawJob,
-          fromServerQueue: true,
-        })
+  const candidateTargets = targetHint
+    ? [normalizeTarget(targetHint)].filter((t) => STATE.tabs[t].size > 0)
+    : ALL_TARGETS.filter((t) => STATE.tabs[t].size > 0);
+
+  if (candidateTargets.length === 0) return;
+
+  let added = false;
+  for (const target of candidateTargets) {
+    try {
+      const res = await fetch(
+        `${LOCAL_RELAY_BASE}/api/bridge/jobs/pending?target=${encodeURIComponent(target)}&claim=1`
       );
-      added = true;
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (!Array.isArray(data?.jobs) || data.jobs.length === 0) continue;
+
+      for (const rawJob of data.jobs) {
+        if (!rawJob?.jobId || isKnownJobId(rawJob.jobId)) continue;
+        STATE.queue.push(
+          normalizeIncomingJob({
+            ...rawJob,
+            target,
+            fromServerQueue: true,
+          })
+        );
+        added = true;
+      }
+    } catch {
+      // Local `:3001` server may not be running
     }
-    if (added) {
-      await persistState();
-      await processQueue();
-    }
-  } catch {
-    // Local `:3001` server may not be running
+  }
+
+  if (added) {
+    await persistState();
+    await processQueue();
   }
 }
 
 /**
  * Reports job completion (or failure) back to `:3001/api/bridge/jobs/:jobId/complete`
- * so `POST /api/bridge/enqueue` callers receive local `/media/*` files immediately.
+ * so `POST /api/generate-node` & `POST /api/bridge/enqueue` callers receive local `/media/*` files.
  * @param {string} jobId
  * @param {Record<string, any>} completionBody
  */
@@ -232,8 +338,49 @@ async function reportServerBridgeJobCompletion(jobId, completionBody) {
 }
 
 /**
- * Pushes a captured Dreamina / Google Flow asset or prompt event to `:3001/api/bridge/push`
- * so connected Web Studio canvases spawn the node immediately in real time.
+ * Fetches a reference image (`http://localhost:3001/media/...` or HTTPS URL) in the
+ * extension service worker context and converts it to a `data:<mime>;base64,...` URI
+ * so content scripts on strict-CSP domains (`klingai.com`, `higgsfield.ai`, etc.)
+ * can construct `File` objects for `DataTransfer` upload inputs without CORS/CSP blocks.
+ * @param {string} rawUrl
+ */
+async function fetchUrlAsDataUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') {
+    throw new Error('Missing reference URL');
+  }
+  if (rawUrl.startsWith('data:')) {
+    const mimeMatch = /^data:([^;,]+)/i.exec(rawUrl);
+    return {
+      dataUrl: rawUrl,
+      mimeType: mimeMatch ? mimeMatch[1] : 'image/png',
+    };
+  }
+  const normalizedUrl = rawUrl.startsWith('/media/')
+    ? `${LOCAL_RELAY_BASE}${rawUrl}`
+    : rawUrl;
+
+  const response = await fetch(normalizedUrl);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} fetching reference ${normalizedUrl}`);
+  }
+  const arrayBuf = await response.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuf);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  const base64 = btoa(binary);
+  const contentType =
+    (response.headers.get('content-type') || 'image/png').split(';')[0].trim() || 'image/png';
+  return {
+    dataUrl: `data:${contentType};base64,${base64}`,
+    mimeType: contentType,
+  };
+}
+
+/**
+ * Pushes a captured creator asset event to `:3001/api/bridge/push`.
  * @param {Record<string, any>} eventBody
  */
 async function pushEventToLocalRelay(eventBody) {
@@ -247,7 +394,6 @@ async function pushEventToLocalRelay(eventBody) {
       return await res.json();
     }
   } catch {
-    // Fallback to open WS frame if HTTP fetch failed
     if (relaySocket && relaySocket.readyState === WebSocket.OPEN) {
       try {
         relaySocket.send(JSON.stringify(eventBody));
@@ -263,27 +409,15 @@ async function pushEventToLocalRelay(eventBody) {
 async function refreshConnectedTabs() {
   try {
     const allTabs = await chrome.tabs.query({});
-    STATE.tabs['google-flow'].clear();
-    STATE.tabs.dreamina.clear();
-    STATE.tabs.studio.clear();
+    for (const key of Object.keys(STATE.tabs)) {
+      STATE.tabs[key].clear();
+    }
 
     for (const tab of allTabs) {
       if (!tab.id || !tab.url) continue;
-      if (
-        tab.url.startsWith('https://flow.google.com/') ||
-        tab.url.startsWith('https://labs.google/')
-      ) {
-        STATE.tabs['google-flow'].add(tab.id);
-      } else if (
-        tab.url.startsWith('https://dreamina.capcut.com/') ||
-        tab.url.startsWith('https://jimeng.jianying.com/')
-      ) {
-        STATE.tabs.dreamina.add(tab.id);
-      } else if (
-        tab.url.startsWith('http://localhost:') ||
-        tab.url.startsWith('http://127.0.0.1:')
-      ) {
-        STATE.tabs.studio.add(tab.id);
+      const detected = detectTabPlatform(tab.url);
+      if (detected && STATE.tabs[detected]) {
+        STATE.tabs[detected].add(tab.id);
       }
     }
   } catch {
@@ -292,19 +426,36 @@ async function refreshConnectedTabs() {
 }
 
 function buildBridgeStatusPayload() {
+  /** @type {Record<string, boolean>} */
+  const platformsConnected = {};
+  /** @type {Record<string, number>} */
+  const platformTabCounts = {};
+  /** @type {Record<string, string | null>} */
+  const activeJobs = {};
+
+  for (const target of ALL_TARGETS) {
+    platformsConnected[target] = STATE.tabs[target].size > 0;
+    platformTabCounts[target] = STATE.tabs[target].size;
+    activeJobs[target] = STATE.activeByTarget[target]?.jobId || null;
+  }
+
   return {
-    extensionVersion: '1.0.0',
-    flowConnected: STATE.tabs['google-flow'].size > 0,
-    dreaminaConnected: STATE.tabs.dreamina.size > 0,
+    extensionVersion: '1.1.0',
+    flowConnected: platformsConnected['google-flow'],
+    dreaminaConnected: platformsConnected.dreamina,
+    higgsfieldConnected: platformsConnected.higgsfield,
+    klingConnected: platformsConnected.kling,
+    openartConnected: platformsConnected.openart,
+    imagineartConnected: platformsConnected.imagineart,
+    elevenlabsConnected: platformsConnected.elevenlabs,
+    platformsConnected,
+    platformTabCounts,
     relayConnected,
     studioTabsCount: STATE.tabs.studio.size,
     flowTabsCount: STATE.tabs['google-flow'].size,
     dreaminaTabsCount: STATE.tabs.dreamina.size,
     queuedCount: STATE.queue.length,
-    activeJobs: {
-      'google-flow': STATE.activeByTarget['google-flow']?.jobId || null,
-      dreamina: STATE.activeByTarget.dreamina?.jobId || null,
-    },
+    activeJobs,
     stats: { ...STATE.stats },
   };
 }
@@ -331,11 +482,19 @@ function normalizeIncomingJob(raw) {
     typeof raw?.jobId === 'string' && raw.jobId.trim()
       ? raw.jobId.trim()
       : `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const rawMode = String(raw?.mode || '').toLowerCase();
+  const mode =
+    rawMode === 'video'
+      ? 'video'
+      : rawMode === 'audio' || target === 'elevenlabs'
+        ? 'audio'
+        : 'image';
 
   return {
     jobId,
     target,
-    mode: raw?.mode === 'video' ? 'video' : 'image',
+    modelId: raw?.modelId ? String(raw.modelId) : undefined,
+    mode,
     prompt: String(raw?.prompt || '').trim(),
     aspectRatio: raw?.aspectRatio || '16:9',
     durationSec: Number(raw?.durationSec || raw?.durationSeconds || 5),
@@ -351,7 +510,7 @@ function normalizeIncomingJob(raw) {
 
 async function ensureTargetTab(target, autoOpen = true) {
   await refreshConnectedTabs();
-  const existing = Array.from(STATE.tabs[target]);
+  const existing = Array.from(STATE.tabs[target] || []);
   if (existing.length > 0) {
     return existing[0];
   }
@@ -373,7 +532,7 @@ async function ensureTargetTab(target, autoOpen = true) {
 async function processQueue() {
   await hydrateState();
 
-  for (const target of /** @type {const} */ (['google-flow', 'dreamina'])) {
+  for (const target of ALL_TARGETS) {
     if (STATE.activeByTarget[target]) continue;
 
     const nextIdx = STATE.queue.findIndex((item) => item.target === target);
@@ -390,16 +549,16 @@ async function processQueue() {
       target: job.target,
       status: 'running',
       progress: 0.15,
-      message: `Dispatching batch job to ${target} session...`,
+      message: `Dispatching job to ${TARGET_LABELS[target]} session...`,
     });
 
-    const tabId = await ensureTargetTab(target, job.autoOpenTab);
+    const tabId = await ensureTargetTab(target, !job.fromServerQueue && job.autoOpenTab);
     if (!tabId) {
       STATE.activeByTarget[target] = null;
       const failedRecord = {
         ...job,
         status: 'failed',
-        error: `No open ${target} tab found. Open ${TARGET_URLS[target]} and sign in first.`,
+        error: `No open ${TARGET_LABELS[target]} tab found. Open ${TARGET_URLS[target]} and sign in first.`,
         completedAt: new Date().toISOString(),
       };
       STATE.history.unshift(failedRecord);
@@ -428,7 +587,7 @@ async function processQueue() {
     } catch (err) {
       STATE.activeByTarget[target] = null;
       const errorMessage = err instanceof Error ? err.message : String(err);
-      const errOut = `Content script unreachable on ${target}: ${errorMessage}`;
+      const errOut = `Content script unreachable on ${TARGET_LABELS[target]}: ${errorMessage}`;
       STATE.history.unshift({
         ...job,
         status: 'failed',
@@ -447,7 +606,7 @@ async function processQueue() {
         jobId: job.jobId,
         target: job.target,
         status: 'failed',
-        error: `Unable to reach ${target} tab. Refresh the tab and retry.`,
+        error: `Unable to reach ${TARGET_LABELS[target]} tab. Refresh the tab and retry.`,
       });
     }
   }
@@ -456,15 +615,16 @@ async function processQueue() {
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
   if (changeInfo.status === 'complete' && tab.url) {
     refreshConnectedTabs().then(() => {
+      sendRelayPlatformHeartbeats();
       broadcastToStudio('DREAMFLOW_BRIDGE_STATUS', buildBridgeStatusPayload());
     });
   }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  STATE.tabs['google-flow'].delete(tabId);
-  STATE.tabs.dreamina.delete(tabId);
-  STATE.tabs.studio.delete(tabId);
+  for (const set of Object.values(STATE.tabs)) {
+    set.delete(tabId);
+  }
   broadcastToStudio('DREAMFLOW_BRIDGE_STATUS', buildBridgeStatusPayload());
 });
 
@@ -472,6 +632,7 @@ chrome.alarms.create('dreamflow-queue-watchdog', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'dreamflow-queue-watchdog') {
     ensureLocalRelaySocket();
+    sendRelayPlatformHeartbeats();
     void pollLocalServerPendingJobs();
     processQueue();
   }
@@ -488,9 +649,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (sender.tab?.id) {
           STATE.tabs[target].add(sender.tab.id);
         }
+        sendRelayPlatformHeartbeats();
+        void pollLocalServerPendingJobs(target);
         const status = buildBridgeStatusPayload();
         await broadcastToStudio('DREAMFLOW_BRIDGE_STATUS', status);
         sendResponse({ ok: true, status });
+        return;
+      }
+
+      case 'FETCH_REFERENCE_DATA_URL':
+      case 'fetch_reference_data_url': {
+        try {
+          const result = await fetchUrlAsDataUrl(message.url);
+          sendResponse({ ok: true, ...result });
+        } catch (err) {
+          sendResponse({
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
         return;
       }
 
@@ -499,6 +676,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           STATE.tabs.studio.add(sender.tab.id);
         }
         await refreshConnectedTabs();
+        sendRelayPlatformHeartbeats();
         const status = buildBridgeStatusPayload();
         sendResponse({ ok: true, status });
         return;
@@ -571,7 +749,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'STUDIO_CANCEL_JOB': {
         const cancelId = message.payload?.jobId;
         STATE.queue = STATE.queue.filter((j) => j.jobId !== cancelId);
-        for (const target of /** @type {const} */ (['google-flow', 'dreamina'])) {
+        for (const target of ALL_TARGETS) {
           if (STATE.activeByTarget[target]?.jobId === cancelId) {
             STATE.activeByTarget[target] = null;
           }
@@ -584,12 +762,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case 'TARGET_JOB_PROGRESS': {
         const payload = message.payload || {};
+        const target = normalizeTarget(payload.target);
         await broadcastToStudio('DREAMFLOW_JOB_PROGRESS', {
           jobId: payload.jobId,
-          target: normalizeTarget(payload.target),
+          target,
           status: payload.status || 'generating',
           progress: typeof payload.progress === 'number' ? payload.progress : 0.5,
-          message: payload.message || 'Synthesizing frames in consumer session...',
+          message: payload.message || `Synthesizing output on ${TARGET_LABELS[target]}...`,
         });
         sendResponse({ ok: true });
         return;
@@ -610,6 +789,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           status: payload.error ? 'failed' : payload.status || 'succeeded',
           videoUrl: payload.videoUrl || null,
           imageUrl: payload.imageUrl || null,
+          audioUrl: payload.audioUrl || null,
           error: payload.error || null,
           completedAt: new Date().toISOString(),
         };
@@ -624,6 +804,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             target,
             videoUrl: completedRecord.videoUrl,
             imageUrl: completedRecord.imageUrl,
+            audioUrl: completedRecord.audioUrl,
             dataUrl: payload.dataUrl || null,
             error: completedRecord.error,
           });
@@ -633,20 +814,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           STATE.stats.completedCount += 1;
           STATE.stats.savedEstimateUsd = Number((STATE.stats.savedEstimateUsd + 0.35).toFixed(2));
 
-          // For extension-initiated jobs, push captured Dreamina / Google Flow media to `:3001/api/bridge/push`
           if (!isServerJob) {
-            const relaySource = target === 'dreamina' ? 'dreamina' : 'flow';
             await pushEventToLocalRelay({
               type: 'bridge_asset',
-              source: relaySource,
-              mediaUrl: completedRecord.videoUrl || completedRecord.imageUrl,
+              source: target === 'google-flow' ? 'flow' : target,
+              mediaUrl:
+                completedRecord.videoUrl ||
+                completedRecord.audioUrl ||
+                completedRecord.imageUrl,
               videoUrl: completedRecord.videoUrl,
               imageUrl: completedRecord.imageUrl,
+              audioUrl: completedRecord.audioUrl,
               dataUrl: payload.dataUrl || null,
-              title:
-                target === 'dreamina'
-                  ? 'Dreamina · Seedance Capture'
-                  : 'Google Flow · Omni Capture',
+              title: `${TARGET_LABELS[target]} · Live Credit Capture`,
               prompt: completedRecord.prompt || '',
               metadata: {
                 jobId: completedRecord.jobId,
@@ -666,6 +846,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           status: completedRecord.status,
           videoUrl: completedRecord.videoUrl,
           imageUrl: completedRecord.imageUrl,
+          audioUrl: completedRecord.audioUrl,
           error: completedRecord.error,
         });
         await broadcastToStudio('DREAMFLOW_BRIDGE_STATUS', buildBridgeStatusPayload());
@@ -678,7 +859,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'POPUP_TEST_RELAY_PUSH': {
         const pushResult = await pushEventToLocalRelay({
           type: 'bridge_asset',
-          source: message.source || 'dreamina',
+          source: message.source || 'higgsfield',
           mediaUrl: message.mediaUrl || '/media/real_alpine_road.jpg',
           videoUrl: message.videoUrl || null,
           imageUrl: message.imageUrl || '/media/real_alpine_road.jpg',
@@ -709,8 +890,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case 'POPUP_CLEAR_QUEUE': {
         STATE.queue = [];
-        STATE.activeByTarget['google-flow'] = null;
-        STATE.activeByTarget.dreamina = null;
+        for (const target of ALL_TARGETS) {
+          STATE.activeByTarget[target] = null;
+        }
         await persistState();
         const status = buildBridgeStatusPayload();
         await broadcastToStudio('DREAMFLOW_BRIDGE_STATUS', status);

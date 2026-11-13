@@ -913,6 +913,62 @@ export class GeminiOmniClient {
     let lastErrorMsg = 'No Gemini native image model returned image bytes.';
     let lastBody: unknown;
 
+    // If caller explicitly requested an Imagen model (e.g. `imagen-4.0-generate-001`) with text-to-image, try Imagen `:predict` first
+    if (requestedModel && /^imagen/i.test(requestedModel) && inlineRefParts.length === 0) {
+      const validImagenAspect =
+        req.aspectRatio === '9:16' ||
+        req.aspectRatio === '1:1' ||
+        req.aspectRatio === '4:3' ||
+        req.aspectRatio === '3:4'
+          ? req.aspectRatio
+          : '16:9';
+      const url = `${GOOGLE_GENERATIVE_LANGUAGE_BASE}/models/${encodeURIComponent(requestedModel)}:predict`;
+      const res = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': this.apiKey,
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          instances: [{ prompt }],
+          parameters: {
+            sampleCount: 1,
+            aspectRatio: validImagenAspect,
+          },
+        }),
+        signal: req.signal,
+      });
+      const body = await this.safeParseJson(res);
+      if (res.ok) {
+        const predictions = Array.isArray(body.predictions)
+          ? (body.predictions as Array<Record<string, unknown>>)
+          : [];
+        const firstPred = predictions[0];
+        const b64 =
+          typeof firstPred?.bytesBase64Encoded === 'string'
+            ? firstPred.bytesBase64Encoded.trim()
+            : '';
+        if (b64.length > 64) {
+          return {
+            base64Data: b64,
+            mimeType: String(firstPred?.mimeType || 'image/png').toLowerCase(),
+            model: requestedModel,
+          };
+        }
+      } else if (res.status === 401 || res.status === 403) {
+        throw new GeminiOmniError(
+          `Imagen ${requestedModel} failed (${res.status}): ${this.extractErrorMessage(body)}`,
+          res.status,
+          body
+        );
+      } else {
+        lastStatus = res.status;
+        lastErrorMsg = `Imagen ${requestedModel} failed (${res.status}): ${this.extractErrorMessage(body)}`;
+        lastBody = body;
+      }
+    }
+
     for (const model of geminiImageCandidates) {
       const url = `${GOOGLE_GENERATIVE_LANGUAGE_BASE}/models/${encodeURIComponent(model)}:generateContent`;
       const res = await this.fetchImpl(url, {
