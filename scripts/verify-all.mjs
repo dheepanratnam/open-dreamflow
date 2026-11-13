@@ -1072,44 +1072,133 @@ async function verifyLiveServerStages() {
         );
         return;
       }
-      if (reqUrl.pathname === '/mcp' && req.method === 'POST') {
-        if (req.headers.authorization !== `Bearer ${mockAccessToken}`) {
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'unauthorized' }));
+        if (reqUrl.pathname === '/mock-assets/result.png' && req.method === 'GET') {
+          const tinyPng = Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+            'base64'
+          );
+          res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': String(tinyPng.length) });
+          res.end(tinyPng);
           return;
         }
-        const rpc = JSON.parse(rawBody || '{}');
-        if (rpc.id === undefined || rpc.id === null || rpc.method === 'notifications/initialized') {
-          res.writeHead(202, { 'Mcp-Session-Id': mockSseSessionId });
-          res.end();
+        if (reqUrl.pathname === '/mock-assets/thumb_min.webp' && req.method === 'GET') {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('should not select minUrl over rawUrl/resource_link');
           return;
         }
-        let result = {};
-        if (rpc.method === 'initialize') {
-          result = {
-            protocolVersion: '2025-03-26',
-            capabilities: { tools: {} },
-            serverInfo: { name: 'mock-streamable-higgsfield-mcp', version: '1.0.0' },
-          };
-        } else if (rpc.method === 'tools/list') {
-          if (req.headers['mcp-session-id'] !== mockSseSessionId) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'missing Mcp-Session-Id' }));
+        if (reqUrl.pathname === '/mcp' && req.method === 'POST') {
+          if (req.headers.authorization !== `Bearer ${mockAccessToken}`) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'unauthorized' }));
             return;
           }
-          result = {
-            tools: [
-              { name: 'generate_image', description: 'Generate image', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } } } },
-              { name: 'generate_video', description: 'Generate video', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } } } },
-              { name: 'genjutsu', description: 'Style transfer', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } } } },
-              { name: 'gpu_status', description: 'Check GPU worker and credit status', inputSchema: { type: 'object', properties: {} } },
-            ],
-          };
-        } else if (rpc.method === 'tools/call' && rpc.params?.name === 'gpu_status') {
-          result = {
-            content: [{ type: 'text', text: JSON.stringify({ status: 'healthy', activeGpus: 8, queueDepth: 0 }) }],
-          };
-        }
+          const rpc = JSON.parse(rawBody || '{}');
+          if (rpc.id === undefined || rpc.id === null || rpc.method === 'notifications/initialized') {
+            res.writeHead(202, { 'Mcp-Session-Id': mockSseSessionId });
+            res.end();
+            return;
+          }
+          let result = {};
+          if (rpc.method === 'initialize') {
+            result = {
+              protocolVersion: '2025-03-26',
+              capabilities: { tools: {} },
+              serverInfo: { name: 'mock-streamable-higgsfield-mcp', version: '1.0.0' },
+            };
+          } else if (rpc.method === 'tools/list') {
+            if (req.headers['mcp-session-id'] !== mockSseSessionId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'missing Mcp-Session-Id' }));
+              return;
+            }
+            result = {
+              tools: [
+                {
+                  name: 'models_explore',
+                  description: 'Explore and generate image, video, and audio inspirations',
+                  inputSchema: { type: 'object', properties: { prompt: { type: 'string' } } },
+                },
+                {
+                  name: 'generate_image',
+                  description: 'Generate high-resolution image',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {
+                      params: {
+                        type: 'object',
+                        properties: {
+                          model: { type: 'string' },
+                          prompt: { type: 'string' },
+                          aspect_ratio: { type: 'string' },
+                          count: { type: 'number' },
+                        },
+                        required: ['model', 'prompt'],
+                      },
+                      context: { type: 'string' },
+                    },
+                    required: ['params'],
+                  },
+                },
+                { name: 'generate_video', description: 'Generate video', inputSchema: { type: 'object', properties: { params: { type: 'object', properties: { model: { type: 'string' }, prompt: { type: 'string' } } } } } },
+                { name: 'genjutsu', description: 'Style transfer', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } } } },
+                {
+                  name: 'job_status',
+                  description: 'Check async generation job status',
+                  inputSchema: {
+                    type: 'object',
+                    properties: { jobId: { type: 'string' }, sync: { type: 'boolean' } },
+                    required: ['jobId'],
+                  },
+                },
+                { name: 'balance', description: 'Check account credits and plan balance', inputSchema: { type: 'object', properties: {} } },
+                { name: 'gpu_status', description: 'Check GPU worker and credit status', inputSchema: { type: 'object', properties: {} } },
+              ],
+            };
+          } else if (rpc.method === 'tools/call' && rpc.params?.name === 'gpu_status') {
+            result = {
+              content: [{ type: 'text', text: JSON.stringify({ status: 'healthy', activeGpus: 8, queueDepth: 0 }) }],
+            };
+          } else if (rpc.method === 'tools/call' && rpc.params?.name === 'balance') {
+            result = {
+              content: [{ type: 'text', text: 'Credits: 999.5 | Plan: ultimate' }],
+            };
+          } else if (rpc.method === 'tools/call' && rpc.params?.name === 'generate_image') {
+            const nestedParams = rpc.params?.arguments?.params || {};
+            if (nestedParams.model !== 'gpt_image_2_6' || nestedParams.aspect_ratio !== '16:9') {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: `Unexpected params payload: ${JSON.stringify(rpc.params?.arguments)}` }));
+              return;
+            }
+            result = {
+              structuredContent: { results: [{ id: 'job_stage91_mock_01', status: 'queued' }] },
+              content: [{ type: 'text', text: 'Submitted job_stage91_mock_01' }],
+            };
+          } else if (rpc.method === 'tools/call' && rpc.params?.name === 'job_status') {
+            if (rpc.params?.arguments?.jobId !== 'job_stage91_mock_01' || rpc.params?.arguments?.sync !== true) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: `Unexpected job_status args: ${JSON.stringify(rpc.params?.arguments)}` }));
+              return;
+            }
+            result = {
+              content: [
+                {
+                  type: 'resource_link',
+                  uri: `${mockBaseUrl}/mock-assets/result.png`,
+                  mimeType: 'image/png',
+                },
+              ],
+              structuredContent: {
+                generation: {
+                  id: 'job_stage91_mock_01',
+                  status: 'completed',
+                  results: {
+                    minUrl: `${mockBaseUrl}/mock-assets/thumb_min.webp`,
+                    rawUrl: `${mockBaseUrl}/mock-assets/result.png`,
+                  },
+                },
+              },
+            };
+          }
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Mcp-Session-Id': mockSseSessionId,
@@ -1166,6 +1255,34 @@ async function verifyLiveServerStages() {
     });
     assert(gpuCall.ok === true && String(gpuCall.textContent || '').includes('healthy'), `gpu_status MCP call failed: ${JSON.stringify(gpuCall)}`);
 
+    // Stage 9.1 mock nested { params, context } + models_explore skip + results[0].id -> job_status({ jobId, sync: true }) + resource_link/rawUrl over minUrl
+    const mcpNodeGen = await postJson(baseUrl, '/api/generate-node', {
+      nodeId: 'e2e-stage91-mcp-node',
+      kind: 'image',
+      platformId: 'mock_oauth_e2e',
+      connectionMode: 'mcp',
+      mcpServerId: registeredOAuthServerId,
+      modelId: 'chatgpt-image-2.6',
+      prompt: 'Seagull field guide coastal cliff illustration',
+      settings: { aspectRatio: '16:9', resolution: '2K' },
+    });
+    assert(mcpNodeGen.ok === true && mcpNodeGen.transportUsed === 'mcp', `Mock nested MCP generate-node failed: ${JSON.stringify(mcpNodeGen)}`);
+    assert(mcpNodeGen.mcpToolName === 'generate_image', `Expected selectBestToolForModality to pick generate_image over models_explore, got ${mcpNodeGen.mcpToolName}`);
+    assert(mcpNodeGen.normalizedModelId === 'gpt_image_2_6', `Expected normalizedModelId=gpt_image_2_6, got ${mcpNodeGen.normalizedModelId}`);
+    assert(mcpNodeGen.jobId === 'job_stage91_mock_01', `Expected async jobId=job_stage91_mock_01, got ${mcpNodeGen.jobId}`);
+    assert(typeof mcpNodeGen.mediaUrl === 'string' && mcpNodeGen.mediaUrl.endsWith('.png'), `Expected lossless .png ahead of _min.webp, got ${mcpNodeGen.mediaUrl}`);
+    createdMediaPaths.push(mcpNodeGen.mediaUrl);
+    assert(findGeneratedMediaDiskPath(mcpNodeGen.mediaUrl), `Generated Stage 9.1 mock PNG missing on disk: ${mcpNodeGen.mediaUrl}`);
+
+    const balanceConnRes = await fetch(`${baseUrl}/api/connections/status?forceRefresh=1`);
+    assert(balanceConnRes.status === 200, `GET /api/connections/status?forceRefresh=1 failed (${balanceConnRes.status})`);
+    const balanceConnJson = await balanceConnRes.json();
+    const mockSrvSummary = (balanceConnJson.mcpServers || []).find((s) => s.id === registeredOAuthServerId);
+    assert(
+      mockSrvSummary?.balance?.credits === 999.5 && mockSrvSummary?.balance?.plan === 'ultimate',
+      `Expected Stage 9.1 live balance {999.5, ultimate} on ${registeredOAuthServerId}, got: ${JSON.stringify(mockSrvSummary?.balance)}`
+    );
+
     // Live Higgsfield https://mcp.higgsfield.ai/mcp DCR + PKCE probe
     const liveHiggsRes = await fetch(`${baseUrl}/api/mcp/oauth/start`, {
       method: 'POST',
@@ -1219,7 +1336,7 @@ async function verifyLiveServerStages() {
       `open-dreamflow doctor unexpected output: ${doctorOut}`
     );
 
-    const spaRootRes = await fetch(`${baseUrl}/`);
+    const spaRootRes = await fetch(`${baseUrl}/`, { headers: { Connection: 'close' } });
     assert(spaRootRes.status === 200, `Expected GET ${baseUrl}/ unified SPA to return 200 OK, got ${spaRootRes.status}`);
     const spaHtml = await spaRootRes.text();
     assert(spaHtml.includes('<div id="root"></div>'), 'Unified SPA GET / missing <div id="root"></div>');
@@ -1373,6 +1490,10 @@ function verifyStage13WebStudioBundle() {
     'PlatformBrandIcon',
     'Connect Higgsfield via MCP',
     'Connected Successfully',
+    'Check Credits & Plan Balance',
+    '✓ MCP Connected',
+    'Higgsfield MCP',
+    'gpt_image_2_6',
     '/api/mcp/oauth/start',
     '/api/connections/check-browser',
     'Launch Connected Creator Browser',
@@ -1417,6 +1538,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('\n[FAIL]', err instanceof Error ? err.message : err);
+  console.error('\n[FAIL]', err instanceof Error ? err.stack || err.message : err, err?.cause ? `\nCause: ${err.cause}` : '');
   process.exit(1);
 });
