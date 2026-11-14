@@ -95,6 +95,13 @@ const CUSTOM_MCP_PLATFORM: PlatformDefinition = {
   models: [],
 };
 
+function formatCompactRailCredits(credits: number): string {
+  if (!Number.isFinite(credits)) return '0';
+  if (credits >= 1000) return `${(credits / 1000).toFixed(1)}k`;
+  if (credits >= 100) return credits.toFixed(0);
+  return credits.toFixed(1);
+}
+
 function focusFieldToPlatformId(focus: string | null | undefined): PlatformId {
   if (!focus) return 'higgsfield';
   if (focus === 'gemini') return 'google-flow';
@@ -369,7 +376,24 @@ const ConnectionProgressCard: React.FC<ConnectionProgressCardProps> = ({
                 ) : isError ? (
                   session.error || 'Authorization did not complete.'
                 ) : step === 'awaiting_login' ? (
-                  `Sign in & click Allow in the ${platformName} popup window.`
+                  <span className="inline-flex flex-wrap items-center gap-2">
+                    <span>
+                      {session.userCode
+                        ? `Authorize in the ${platformName} popup with device code:`
+                        : `Sign in & click Allow in the ${platformName} popup window.`}
+                    </span>
+                    {session.userCode && (
+                      <button
+                        type="button"
+                        onClick={() => void navigator.clipboard?.writeText(session.userCode || '')}
+                        title="Copy device verification code"
+                        className="inline-flex items-center gap-1 rounded border border-[#20D5EC]/40 bg-[#20D5EC]/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-white hover:bg-[#20D5EC]/25"
+                      >
+                        <span>{session.userCode}</span>
+                        <Copy className="w-2.5 h-2.5 text-[#20D5EC]" />
+                      </button>
+                    )}
+                  </span>
                 ) : step === 'exchanging_token' || step === 'discovering_tools' ? (
                   'Exchanging PKCE token & loading MCP tool schemas…'
                 ) : (
@@ -489,6 +513,7 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
   onSpawnToolNode,
 }) => {
   const showToast = useStudioStore((s) => s.showToast);
+  const mcpBalances = useStudioStore((s) => s.mcpBalances);
   const [selectedToolName, setSelectedToolName] = useState<string>(
     server.tools[0]?.name || ''
   );
@@ -604,32 +629,44 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
             <CheckCircle2 className="w-4 h-4 text-[#10b981]" />
           </div>
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-semibold text-white">
-                ✓ {server.name} Connected
-              </span>
-              {server.balance?.credits !== undefined && (
-                <span className="rounded-full border border-[#10b981]/40 bg-[#10b981]/15 px-2.5 py-0.5 text-[10.5px] font-semibold text-white">
-                  {server.balance.credits.toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}{' '}
-                  Credits
-                  {server.balance.plan ? ` · ${server.balance.plan.toUpperCase()}` : ''}
-                </span>
-              )}
-              <span className="rounded-full bg-[#10b981]/20 px-2 py-0.5 text-[10px] font-medium text-[#6ee7b7]">
-                {server.tools.length} functions discovered
-              </span>
-            </div>
-            <div className="text-[11px] text-[#9ee6cc]/85 truncate mt-0.5">
-              {server.account?.email || server.account?.name || server.account?.username
-                ? `${server.account.email || server.account.name || server.account.username} · `
-                : ''}
-              <span className="font-mono text-[10.5px] opacity-80">
-                {server.url || `${server.command || 'stdio'} ${(server.args || []).join(' ')}`}
-              </span>
-            </div>
+            {(() => {
+              const resolvedBal =
+                server.balance ||
+                (server.platformId ? mcpBalances[String(server.platformId)] : undefined);
+              const resolvedAccount =
+                resolvedBal?.account ||
+                server.account?.email ||
+                server.account?.name ||
+                server.account?.username;
+              return (
+                <>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold text-white">
+                      ✓ {server.name} Connected
+                    </span>
+                    {resolvedBal?.credits !== undefined && (
+                      <span className="rounded-full border border-[#10b981]/40 bg-[#10b981]/15 px-2.5 py-0.5 text-[10.5px] font-semibold text-white">
+                        {resolvedBal.credits.toLocaleString(undefined, {
+                          minimumFractionDigits: resolvedBal.credits >= 1000 ? 0 : 2,
+                          maximumFractionDigits: 2,
+                        })}{' '}
+                        Credits
+                        {resolvedBal.plan ? ` · ${resolvedBal.plan.toUpperCase()}` : ''}
+                      </span>
+                    )}
+                    <span className="rounded-full bg-[#10b981]/20 px-2 py-0.5 text-[10px] font-medium text-[#6ee7b7]">
+                      {server.tools.length} functions discovered
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-[#9ee6cc]/85 truncate mt-0.5">
+                    {resolvedAccount ? `${resolvedAccount} · ` : ''}
+                    <span className="font-mono text-[10.5px] opacity-80">
+                      {server.url || `${server.command || 'stdio'} ${(server.args || []).join(' ')}`}
+                    </span>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
 
@@ -917,6 +954,7 @@ export const ProviderModal: React.FC = () => {
   const startDreaminaMcpConnect = useStudioStore((s) => s.startDreaminaMcpConnect);
   const disconnectDreaminaMcp = useStudioStore((s) => s.disconnectDreaminaMcp);
   const setMcpOAuthSession = useStudioStore((s) => s.setMcpOAuthSession);
+  const mcpBalances = useStudioStore((s) => s.mcpBalances);
 
   const mcpServers = useStudioStore((s) => s.mcpServers);
   const mcpHealth = useStudioStore((s) => s.mcpHealth);
@@ -946,7 +984,7 @@ export const ProviderModal: React.FC = () => {
 
   // Dreamina MCP accordions & cookie state
   const [dreaminaAccordion, setDreaminaAccordion] = useState<
-    'none' | 'session' | 'ark' | 'ext_mcp'
+    'none' | 'browser' | 'session' | 'ark' | 'ext_mcp'
   >('none');
   const [dreaminaSessionCookie, setDreaminaSessionCookie] = useState('');
   const [dreaminaBusy, setDreaminaBusy] = useState(false);
@@ -971,9 +1009,14 @@ export const ProviderModal: React.FC = () => {
   const [copiedSnippet, setCopiedSnippet] = useState<string | null>(null);
   const popupRef = useRef<Window | null>(null);
 
-  // Ordered rail matching #104
+  // Ordered rail matching #104 (deduplicated by platform id)
   const railPlatforms = useMemo(() => {
-    const all = [...PLATFORM_CATALOG, CUSTOM_MCP_PLATFORM];
+    const seen = new Set<string>();
+    const all = [...PLATFORM_CATALOG, CUSTOM_MCP_PLATFORM].filter((plat) => {
+      if (seen.has(plat.id)) return false;
+      seen.add(plat.id);
+      return true;
+    });
     return [...all].sort((a, b) => {
       const ia = RAIL_ORDER.indexOf(a.id);
       const ib = RAIL_ORDER.indexOf(b.id);
@@ -1140,7 +1183,38 @@ export const ProviderModal: React.FC = () => {
     }
   };
 
-  const handleConnectDreaminaMcpBrowser = async () => {
+  const handleConnectDreaminaMcp = async () => {
+    // Open blank popup synchronously inside click gesture to avoid popup blockers;
+    // close cleanly if cli_oauth reconnects immediately from OS Keyring.
+    const win = window.open(
+      'about:blank',
+      'dreamina_mcp_oauth',
+      'width=560,height=740,menubar=no,toolbar=no,status=no'
+    );
+    popupRef.current = win;
+    setDreaminaBusy(true);
+    try {
+      const sess = await startDreaminaMcpConnect({ mode: 'cli_oauth' });
+      if (sess?.step === 'awaiting_login' && sess.authorizeUrl) {
+        if (win && !win.closed) {
+          win.location.href = sess.authorizeUrl;
+          win.focus();
+        } else {
+          window.open(sess.authorizeUrl, 'dreamina_mcp_oauth', 'width=560,height=740');
+        }
+        await refreshConnectionsStatus();
+      } else {
+        if (win && !win.closed) {
+          win.close();
+        }
+        await refreshConnectionsStatus();
+      }
+    } finally {
+      setDreaminaBusy(false);
+    }
+  };
+
+  const handleConnectDreaminaBrowserFallback = async () => {
     setDreaminaBusy(true);
     try {
       const sess = await startDreaminaMcpConnect({ mode: 'browser', launchBrowser: true });
@@ -1368,11 +1442,15 @@ export const ProviderModal: React.FC = () => {
               const st = platformStatuses[plat.id];
               const isActive = selectedPlatform.id === plat.id;
               const isHiggsfield = plat.id === 'higgsfield';
+              const isDreamina = plat.id === 'dreamina';
               const isCustom = plat.id === 'custom-mcp';
+              const platBal =
+                mcpBalances[plat.id] ||
+                externalMcpServers.find((srv) => srv.platformId === plat.id && srv.balance)?.balance;
 
               return (
                 <React.Fragment key={plat.id}>
-                  {idx === 1 && (
+                  {idx === 2 && (
                     <div className="px-2 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-[#6e6e6e]">
                       All Creator Platforms
                     </div>
@@ -1388,6 +1466,8 @@ export const ProviderModal: React.FC = () => {
                         ? 'bg-[#1e1e1e] border-white/[0.18] text-white shadow-sm'
                         : isHiggsfield
                         ? 'bg-[#DFFF00]/[0.04] border-[#DFFF00]/20 hover:bg-[#DFFF00]/[0.08] text-[#e8e8e8]'
+                        : isDreamina
+                        ? 'bg-[#20D5EC]/[0.04] border-[#20D5EC]/20 hover:bg-[#20D5EC]/[0.08] text-[#e8e8e8]'
                         : 'bg-transparent border-transparent hover:bg-white/[0.04] text-[#c2c2c2]'
                     }`}
                   >
@@ -1401,6 +1481,11 @@ export const ProviderModal: React.FC = () => {
                               Official MCP
                             </span>
                           )}
+                          {isDreamina && !st?.connected && (
+                            <span className="rounded bg-[#20D5EC]/15 border border-[#20D5EC]/35 px-1.5 py-0.5 text-[9px] font-semibold text-[#7ceeff] shrink-0">
+                              Official CLI MCP
+                            </span>
+                          )}
                           {plat.id === 'elevenlabs' && (
                             <span className="rounded bg-white/[0.07] px-1.5 py-0.5 text-[9px] text-[#bdbdbd] shrink-0">
                               MCP
@@ -1410,6 +1495,8 @@ export const ProviderModal: React.FC = () => {
                         <div className="text-[10px] text-[#7c7c7c] truncate mt-0.5">
                           {isCustom
                             ? 'Any HTTP / Stdio MCP'
+                            : platBal?.credits !== undefined
+                            ? `${formatCompactRailCredits(platBal.credits)} credits${platBal.plan ? ` · ${platBal.plan.toUpperCase()}` : ''}`
                             : plat.modalities.join(' · ')}
                         </div>
                       </div>
@@ -1429,7 +1516,9 @@ export const ProviderModal: React.FC = () => {
                       />
                       <span>
                         {st?.connected
-                          ? st.hasMcp
+                          ? platBal?.credits !== undefined
+                            ? `${st.hasMcp ? 'MCP' : st.hasBrowser ? 'Br' : 'Key'} · ${formatCompactRailCredits(platBal.credits)}`
+                            : st.hasMcp
                             ? 'MCP'
                             : st.hasBrowser
                             ? 'Browser'
@@ -1495,8 +1584,10 @@ export const ProviderModal: React.FC = () => {
                   if (mcpOAuthSession.authorizeUrl) {
                     window.open(
                       mcpOAuthSession.authorizeUrl,
-                      'hf_mcp_oauth',
-                      'width=540,height=720'
+                      selectedPlatform.id === 'dreamina'
+                        ? 'dreamina_mcp_oauth'
+                        : 'hf_mcp_oauth',
+                      'width=560,height=740'
                     );
                   }
                 }}
@@ -1802,7 +1893,7 @@ export const ProviderModal: React.FC = () => {
                       <div className="flex flex-col gap-2 shrink-0">
                         <button
                           type="button"
-                          onClick={() => void handleConnectDreaminaMcpBrowser()}
+                          onClick={() => void handleConnectDreaminaMcp()}
                           disabled={dreaminaBusy}
                           className="inline-flex items-center justify-center gap-2 rounded-xl bg-white hover:bg-[#eaeaea] disabled:opacity-60 px-4 py-2.5 text-xs font-semibold text-[#0e0e0e] shadow-lg transition-all"
                         >
@@ -1825,7 +1916,7 @@ export const ProviderModal: React.FC = () => {
                                 className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#10b981]/45 bg-[#10b981]/15 hover:bg-[#10b981]/25 px-3 py-1.5 text-[11px] font-medium text-[#6ee7b7]"
                               >
                                 <CheckCircle2 className="w-3.5 h-3.5" />
-                                <span>✓ I&apos;ve Signed In — Verify &amp; Connect</span>
+                                <span>✓ I&apos;ve Authorized — Verify &amp; Connect</span>
                               </button>
                               <button
                                 type="button"
@@ -1833,7 +1924,8 @@ export const ProviderModal: React.FC = () => {
                                   window.open(
                                     mcpOAuthSession.authorizeUrl ||
                                       'https://dreamina.capcut.com/ai-tool/home',
-                                    '_blank'
+                                    'dreamina_mcp_oauth',
+                                    'width=560,height=740'
                                   )
                                 }
                                 className="inline-flex items-center gap-1 rounded-lg border border-white/[0.12] bg-white/[0.05] hover:bg-white/[0.1] px-2.5 py-1.5 text-[11px] text-white/85"
@@ -2040,6 +2132,111 @@ export const ProviderModal: React.FC = () => {
                           <Terminal className="w-3.5 h-3.5 text-[#20D5EC]" />
                           <span>npx -y jimeng-mcp-server</span>
                         </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Option D: Browser Window + Explicit Check & Sync Sign-In */}
+                  <div className="rounded-xl border border-white/[0.08] bg-[#151515] overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDreaminaAccordion(
+                          dreaminaAccordion === 'browser' ? 'none' : 'browser'
+                        )
+                      }
+                      className="w-full px-4 py-2.5 flex items-center justify-between text-xs font-medium text-[#d4d4d4] hover:text-white hover:bg-white/[0.03]"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Globe className="w-3.5 h-3.5 text-[#20D5EC]" />
+                        <span>Connect via Browser Window + Check Sign-In</span>
+                        {selectedStatus?.hasBrowser && (
+                          <span className="text-[10px] text-[#6ee7b7]">● Connected via Browser</span>
+                        )}
+                      </span>
+                      {dreaminaAccordion === 'browser' ? (
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      ) : (
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                    {dreaminaAccordion === 'browser' && (
+                      <div className="px-4 pb-3.5 pt-2 border-t border-white/[0.06] space-y-3">
+                        <p className="text-[11px] text-[#969696]">
+                          Launch a CDP-monitored Chrome window, sign into{' '}
+                          <span className="text-white font-mono">dreamina.capcut.com</span> once, then click{' '}
+                          <strong className="text-white">Check &amp; Sync Browser Sign-In</strong> or bind Browser MCP directly.
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void launchConnectedCreatorBrowser('dreamina')}
+                            disabled={launchingBrowserTarget !== null}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-white hover:bg-[#e8e8e8] disabled:opacity-60 px-3.5 py-2 text-xs font-semibold text-[#0e0e0e]"
+                          >
+                            {launchingBrowserTarget === 'dreamina' ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            )}
+                            <span>Launch Dreamina Browser</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleVerifyBrowserSignIn('dreamina')}
+                            disabled={checkingBrowserPlatform !== null}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-[#20D5EC]/40 bg-[#20D5EC]/10 hover:bg-[#20D5EC]/20 disabled:opacity-60 px-3.5 py-2 text-xs font-medium text-[#7ceeff]"
+                          >
+                            {checkingBrowserPlatform === 'dreamina' ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <RefreshCw className="w-3.5 h-3.5" />
+                            )}
+                            <span>↻ Check &amp; Sync Browser Sign-In</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleConnectDreaminaBrowserFallback()}
+                            disabled={dreaminaBusy}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.12] bg-white/[0.06] hover:bg-white/[0.12] disabled:opacity-60 px-3 py-2 text-xs text-white"
+                          >
+                            {dreaminaBusy ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <PlugZap className="w-3.5 h-3.5" />
+                            )}
+                            <span>Capture Session via MCP</span>
+                          </button>
+                        </div>
+
+                        {browserVerifyState?.platformId === 'dreamina' && (
+                          <div
+                            className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 text-xs ${
+                              browserVerifyState.phase === 'connected'
+                                ? 'border-[#10b981]/35 bg-[#10b981]/10 text-[#6ee7b7]'
+                                : browserVerifyState.phase === 'checking'
+                                ? 'border-[#20D5EC]/35 bg-[#20D5EC]/10 text-white'
+                                : 'border-[#f59e0b]/35 bg-[#f59e0b]/10 text-[#fcd34d]'
+                            }`}
+                          >
+                            {browserVerifyState.phase === 'checking' ? (
+                              <Loader2 className="w-4 h-4 animate-spin text-[#20D5EC]" />
+                            ) : browserVerifyState.phase === 'connected' ? (
+                              <CheckCircle2 className="w-4 h-4 text-[#10b981] animate-check-spring" />
+                            ) : (
+                              <AlertCircle className="w-4 h-4 text-[#f59e0b]" />
+                            )}
+                            <span>
+                              {browserVerifyState.phase === 'checking'
+                                ? 'Checking open browser tabs & CDP bridge…'
+                                : browserVerifyState.phase === 'connected'
+                                ? 'Connected Successfully — Dreamina browser tab verified!'
+                                : 'No active Dreamina tab found yet. Sign in above, then click Check & Sync again.'}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

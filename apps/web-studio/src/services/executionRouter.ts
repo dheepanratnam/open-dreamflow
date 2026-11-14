@@ -459,7 +459,8 @@ export async function generateNodeViaBackend(
 ): Promise<GenerateNodeBackendResult> {
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 240000);
+    const timeoutMs = params.kind === 'video' ? 390000 : 240000;
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     const cleanedRefs = (params.referenceImages || [])
       .filter(Boolean)
       .map((u) => toBackendRelativeMediaPath(u) || u);
@@ -624,16 +625,37 @@ export async function fetchConnectionsStatusViaBackend(): Promise<ConnectionsSta
       json.byId && typeof json.byId === 'object'
         ? (json.byId as Record<string, Record<string, unknown>>)
         : {};
+    const mcpBalances: Record<string, ConnectionsStatusSnapshot['mcpBalance'] & object> = {};
+    if (json.mcpBalances && typeof json.mcpBalances === 'object') {
+      for (const [k, v] of Object.entries(json.mcpBalances as Record<string, unknown>)) {
+        if (v && typeof v === 'object') {
+          mcpBalances[k] = v as NonNullable<ConnectionsStatusSnapshot['mcpBalance']>;
+        }
+      }
+    }
+    for (const [k, rec] of Object.entries(byId)) {
+      if (rec?.mcpBalance && typeof rec.mcpBalance === 'object' && !mcpBalances[k]) {
+        mcpBalances[k] = rec.mcpBalance as NonNullable<ConnectionsStatusSnapshot['mcpBalance']>;
+      }
+    }
     const rawMcpServers = Array.isArray(json.mcpServers)
       ? (json.mcpServers as ExternalMcpServerRecord[])
       : [];
     const enrichedMcpServers = rawMcpServers.map((srv) => {
-      const pidRec = byId[String(srv.platformId)];
-      const bal = srv.balance || (pidRec?.mcpBalance as ExternalMcpServerRecord['balance']);
+      const pid = String(srv.platformId);
+      const pidRec = byId[pid];
+      const bal =
+        srv.balance ||
+        mcpBalances[pid] ||
+        (pidRec?.mcpBalance as ExternalMcpServerRecord['balance']);
+      if (bal && !mcpBalances[pid]) {
+        mcpBalances[pid] = bal;
+      }
       return bal ? { ...srv, balance: bal } : srv;
     });
     const topBalance =
       (json.mcpBalance as ConnectionsStatusSnapshot['mcpBalance']) ||
+      mcpBalances.higgsfield ||
       (byId.higgsfield?.mcpBalance as ConnectionsStatusSnapshot['mcpBalance']) ||
       enrichedMcpServers.find((s) => s.balance)?.balance;
 
@@ -645,6 +667,7 @@ export async function fetchConnectionsStatusViaBackend(): Promise<ConnectionsSta
       configuredApiPlatforms: Array.from(configuredApiPlatforms),
       mcpServers: enrichedMcpServers,
       mcpBalance: topBalance,
+      mcpBalances,
       browserSessionOpen: Boolean(json.browserSessionOpen),
       activeBrowserProfileDir:
         typeof json.activeBrowserProfileDir === 'string'
@@ -855,7 +878,7 @@ export async function getMcpOAuthStatusViaBackend(sessionId: string): Promise<{
 }
 
 export async function startDreaminaMcpConnectViaBackend(payload: {
-  mode?: 'browser' | 'session' | 'ark_api_key';
+  mode?: 'cli_oauth' | 'browser' | 'session' | 'ark_api_key';
   sessionIdCookie?: string;
   arkApiKey?: string;
   arkEndpoint?: string;
@@ -867,7 +890,7 @@ export async function startDreaminaMcpConnectViaBackend(payload: {
 }> {
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 20000);
+    const timer = setTimeout(() => ctrl.abort(), 25000);
     const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/dreamina/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -894,15 +917,34 @@ export async function startDreaminaMcpConnectViaBackend(payload: {
       platformId: rawSess.platformId || 'dreamina',
       mcpUrl:
         rawSess.mcpUrl ||
-        (typeof json.mcpUrl === 'string' ? json.mcpUrl : 'dreamina://mcp/seedream-seedance'),
+        (typeof json.mcpUrl === 'string' ? json.mcpUrl : 'dreamina://mcp/dreamina-canvas'),
       authorizeUrl:
         rawSess.authorizeUrl ||
         (typeof json.authorizeUrl === 'string'
           ? json.authorizeUrl
-          : 'https://dreamina.capcut.com/ai-tool/home'),
+          : undefined),
+      userCode:
+        rawSess.userCode ||
+        (typeof json.userCode === 'string' ? json.userCode : undefined),
       step:
         rawSess.step ||
         (typeof json.step === 'string' ? (json.step as McpOAuthSession['step']) : 'awaiting_login'),
+      serverId:
+        rawSess.serverId ||
+        (typeof json.serverId === 'string' ? json.serverId : undefined),
+      account:
+        rawSess.account ||
+        (json.account && typeof json.account === 'object'
+          ? (json.account as McpOAuthSession['account'])
+          : undefined),
+      balance:
+        rawSess.balance ||
+        (json.balance && typeof json.balance === 'object'
+          ? (json.balance as McpOAuthSession['balance'])
+          : undefined),
+      tools:
+        rawSess.tools ||
+        (Array.isArray(json.tools) ? (json.tools as McpOAuthSession['tools']) : undefined),
       updatedAt: rawSess.updatedAt || Date.now(),
       error: rawSess.error,
     };

@@ -149,7 +149,9 @@ export interface McpAccountInfo {
 
 export interface McpBalanceInfo {
   credits?: number;
+  totalCredits?: number;
   plan?: string;
+  account?: string;
   rawText?: string;
   updatedAt?: number;
 }
@@ -187,9 +189,11 @@ export interface McpOAuthSession {
   platformId: PlatformId | string;
   mcpUrl: string;
   authorizeUrl?: string;
+  userCode?: string;
   step: McpOAuthStep;
   serverId?: string;
   account?: McpAccountInfo;
+  balance?: McpBalanceInfo;
   tools?: ExternalMcpToolItem[];
   error?: string;
   updatedAt?: number;
@@ -474,6 +478,7 @@ export interface ConnectionsStatusSnapshot {
   configuredApiPlatforms: PlatformId[];
   mcpServers?: ExternalMcpServerRecord[];
   mcpBalance?: McpBalanceInfo;
+  mcpBalances?: Record<string, McpBalanceInfo>;
   browserSessionOpen?: boolean;
   activeBrowserProfileDir?: string;
 }

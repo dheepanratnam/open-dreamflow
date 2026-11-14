@@ -18,6 +18,7 @@ import type {
   FrameLayer,
   FrameLayerType,
   KeyframeBridgeCurve,
+  McpBalanceInfo,
   MCPServerEntry,
   MCPToolDefinition,
   McpBackendHealth,
@@ -342,6 +343,7 @@ export interface StudioState {
   launchingBrowserTarget: string | null;
   checkingBrowserPlatform: string | null;
   mcpOAuthSession: McpOAuthSession | null;
+  mcpBalances: Record<string, McpBalanceInfo>;
   lastImagePlatformId: PlatformId;
   lastVideoPlatformId: PlatformId;
   lastAudioPlatformId: PlatformId;
@@ -546,7 +548,7 @@ export interface StudioState {
   startMcpOAuth: (platformId: string, mcpUrl?: string) => Promise<McpOAuthSession | null>;
   pollMcpOAuthStatus: (sessionId?: string) => Promise<McpOAuthSession | null>;
   startDreaminaMcpConnect: (payload?: {
-    mode?: 'browser' | 'session' | 'ark_api_key';
+    mode?: 'cli_oauth' | 'browser' | 'session' | 'ark_api_key';
     sessionIdCookie?: string;
     arkApiKey?: string;
     arkEndpoint?: string;
@@ -723,6 +725,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   launchingBrowserTarget: null,
   checkingBrowserPlatform: null,
   mcpOAuthSession: null,
+  mcpBalances: {},
   lastImagePlatformId: 'higgsfield',
   lastVideoPlatformId: 'higgsfield',
   lastAudioPlatformId: 'elevenlabs',
@@ -6488,12 +6491,28 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         nextPlatformMap[pid] = true;
       }
 
+      const nextBalances: Record<string, McpBalanceInfo> = {
+        ...(snap.mcpBalances || {}),
+      };
+      if (snap.mcpBalance && !nextBalances.higgsfield) {
+        nextBalances.higgsfield = snap.mcpBalance;
+      }
+
       // Merge snap.mcpServers while preserving richer tool schemas already loaded in externalMcpServers
       let mergedExternalMcp = s.externalMcpServers;
       if (snap.mcpServers && snap.mcpServers.length > 0) {
         const existingById = new Map(s.externalMcpServers.map((srv) => [srv.id, srv]));
         mergedExternalMcp = snap.mcpServers.map((incoming) => {
           const prev = existingById.get(incoming.id);
+          const pid = String(incoming.platformId);
+          const resolvedBal =
+            incoming.balance ||
+            nextBalances[pid] ||
+            prev?.balance ||
+            (pid === 'higgsfield' ? snap.mcpBalance : undefined);
+          if (resolvedBal && !nextBalances[pid]) {
+            nextBalances[pid] = resolvedBal;
+          }
           return {
             ...prev,
             ...incoming,
@@ -6501,7 +6520,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               incoming.tools && incoming.tools.length > 0
                 ? incoming.tools
                 : prev?.tools || [],
-            balance: incoming.balance || prev?.balance || snap.mcpBalance,
+            balance: resolvedBal,
           };
         });
       }
@@ -6541,6 +6560,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         connectedMcpPlatforms: snap.connectedMcpPlatforms,
         configuredApiPlatforms: snap.configuredApiPlatforms,
         externalMcpServers: mergedExternalMcp,
+        mcpBalances: nextBalances,
         lastImagePlatformId: pickForModality('image', s.lastImagePlatformId),
         lastVideoPlatformId: pickForModality('video', s.lastVideoPlatformId),
         lastAudioPlatformId: pickForModality('audio', s.lastAudioPlatformId),
@@ -6554,8 +6574,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             snap.connectedBrowserPlatforms.length > 0 ||
             s.chromeBridge.extensionDetected,
           dreaminaTabConnected:
-            snap.connectedBrowserPlatforms.includes('dreamina') ||
-            s.chromeBridge.dreaminaTabConnected,
+            snap.connectedBrowserPlatforms.includes('dreamina'),
           flowTabConnected:
             snap.connectedBrowserPlatforms.includes('google-flow') ||
             s.chromeBridge.flowTabConnected,
@@ -6678,12 +6697,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     return res.session;
   },
 
-  startDreaminaMcpConnect: async (payload = { mode: 'browser', launchBrowser: true }) => {
+  startDreaminaMcpConnect: async (payload = { mode: 'cli_oauth' }) => {
     set({
       mcpOAuthSession: {
         sessionId: 'starting',
         platformId: 'dreamina',
-        mcpUrl: 'dreamina://mcp/seedream-seedance',
+        mcpUrl: 'dreamina://mcp/dreamina-canvas',
         authorizeUrl: 'https://dreamina.capcut.com/ai-tool/home',
         step: 'registering',
         updatedAt: Date.now(),
@@ -6694,7 +6713,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const errSess: McpOAuthSession = {
         sessionId: 'error',
         platformId: 'dreamina',
-        mcpUrl: 'dreamina://mcp/seedream-seedance',
+        mcpUrl: 'dreamina://mcp/dreamina-canvas',
         authorizeUrl: 'https://dreamina.capcut.com/ai-tool/home',
         step: 'error',
         error: res.error || 'Could not start Dreamina MCP connection',

@@ -200,12 +200,33 @@ export const DreaminaFloatingChrome: React.FC = () => {
   if (byok.replicateApiKey?.trim()) connectedSet.add('replicate');
 
   const connectedCreditSourcesCount = connectedSet.size;
-  const activeMcpWithBalance = externalMcpServers.find(
+  const mcpBalances = useStudioStore((s) => s.mcpBalances);
+  const hfCredits =
+    mcpBalances.higgsfield?.credits ??
+    externalMcpServers.find(
+      (srv) => srv.status === 'connected' && srv.platformId === 'higgsfield'
+    )?.balance?.credits;
+  const drmCredits =
+    mcpBalances.dreamina?.credits ??
+    externalMcpServers.find(
+      (srv) => srv.status === 'connected' && srv.platformId === 'dreamina'
+    )?.balance?.credits;
+  const anyMcpWithBalance = externalMcpServers.find(
     (srv) => srv.status === 'connected' && srv.balance?.credits !== undefined
   );
+  const fmtCompactCredits = (v: number) =>
+    v >= 10000
+      ? `${(v / 1000).toFixed(1)}k cr`
+      : `${v.toLocaleString(undefined, { maximumFractionDigits: 1 })} cr`;
   const formattedBalancePill =
-    activeMcpWithBalance?.balance?.credits !== undefined
-      ? `${activeMcpWithBalance.platformId === 'higgsfield' ? 'Higgsfield MCP' : 'MCP'} · ${activeMcpWithBalance.balance.credits.toLocaleString(undefined, { maximumFractionDigits: 1 })} cr`
+    hfCredits !== undefined && drmCredits !== undefined
+      ? `HF ${Math.round(hfCredits).toLocaleString()} cr · Dreamina ${fmtCompactCredits(drmCredits)}`
+      : drmCredits !== undefined
+      ? `Dreamina · ${drmCredits.toLocaleString(undefined, { maximumFractionDigits: 0 })} cr`
+      : hfCredits !== undefined
+      ? `Higgsfield MCP · ${hfCredits.toLocaleString(undefined, { maximumFractionDigits: 1 })} cr`
+      : anyMcpWithBalance?.balance?.credits !== undefined
+      ? `MCP · ${fmtCompactCredits(anyMcpWithBalance.balance.credits)}`
       : null;
 
   const getViewportCenterWorld = () => {
