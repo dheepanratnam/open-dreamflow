@@ -151,7 +151,14 @@ export const DreaminaFloatingChrome: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const importBundleInputRef = useRef<HTMLInputElement | null>(null);
+  const hoverToolTimerRef = useRef<number | null>(null);
   const [hoveredTool, setHoveredTool] = useState<DreaminaToolId | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (hoverToolTimerRef.current !== null) window.clearTimeout(hoverToolTimerRef.current);
+    };
+  }, []);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [shareMenuOpen, setShareMenuOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -827,10 +834,22 @@ export const DreaminaFloatingChrome: React.FC = () => {
             <div
               key={tool.id}
               className="relative"
-              onMouseEnter={() => setHoveredTool(tool.id)}
-              onMouseLeave={() =>
-                setHoveredTool((cur) => (cur === tool.id ? null : cur))
-              }
+              onMouseEnter={() => {
+                if (hoverToolTimerRef.current !== null) {
+                  window.clearTimeout(hoverToolTimerRef.current);
+                  hoverToolTimerRef.current = null;
+                }
+                setHoveredTool(tool.id);
+              }}
+              onMouseLeave={() => {
+                if (hoverToolTimerRef.current !== null) {
+                  window.clearTimeout(hoverToolTimerRef.current);
+                }
+                hoverToolTimerRef.current = window.setTimeout(() => {
+                  setHoveredTool((cur) => (cur === tool.id ? null : cur));
+                  hoverToolTimerRef.current = null;
+                }, 140);
+              }}
             >
               <button
                 type="button"

@@ -69,10 +69,10 @@ interface PlatformKeyFieldConfig {
 
 const RAIL_ORDER: PlatformId[] = [
   'higgsfield',
+  'dreamina',
   'elevenlabs',
   'sume',
   'kling',
-  'dreamina',
   'google-flow',
   'openart',
   'imagineart',
@@ -914,6 +914,8 @@ export const ProviderModal: React.FC = () => {
   const checkBrowserConnections = useStudioStore((s) => s.checkBrowserConnections);
   const startMcpOAuth = useStudioStore((s) => s.startMcpOAuth);
   const pollMcpOAuthStatus = useStudioStore((s) => s.pollMcpOAuthStatus);
+  const startDreaminaMcpConnect = useStudioStore((s) => s.startDreaminaMcpConnect);
+  const disconnectDreaminaMcp = useStudioStore((s) => s.disconnectDreaminaMcp);
   const setMcpOAuthSession = useStudioStore((s) => s.setMcpOAuthSession);
 
   const mcpServers = useStudioStore((s) => s.mcpServers);
@@ -941,6 +943,13 @@ export const ProviderModal: React.FC = () => {
   // Higgsfield secondary compact accordions
   const [hfAccordion, setHfAccordion] = useState<'none' | 'cli' | 'api' | 'browser'>('none');
   const [hfCliAdding, setHfCliAdding] = useState(false);
+
+  // Dreamina MCP accordions & cookie state
+  const [dreaminaAccordion, setDreaminaAccordion] = useState<
+    'none' | 'session' | 'ark' | 'ext_mcp'
+  >('none');
+  const [dreaminaSessionCookie, setDreaminaSessionCookie] = useState('');
+  const [dreaminaBusy, setDreaminaBusy] = useState(false);
 
   // Generic MCP inline form state for other platforms & Custom MCP
   const [inlineMcpUrl, setInlineMcpUrl] = useState('http://localhost:3002/mcp');
@@ -1128,6 +1137,71 @@ export const ProviderModal: React.FC = () => {
       await refreshConnectionsStatus();
     } finally {
       setHfCliAdding(false);
+    }
+  };
+
+  const handleConnectDreaminaMcpBrowser = async () => {
+    setDreaminaBusy(true);
+    try {
+      const sess = await startDreaminaMcpConnect({ mode: 'browser', launchBrowser: true });
+      if (sess?.step === 'awaiting_login') {
+        await refreshConnectionsStatus();
+      }
+    } finally {
+      setDreaminaBusy(false);
+    }
+  };
+
+  const handleConnectDreaminaSessionCookie = async () => {
+    if (!dreaminaSessionCookie.trim()) {
+      showToast('Paste your Dreamina sessionid cookie value first', 'error');
+      return;
+    }
+    setDreaminaBusy(true);
+    try {
+      await startDreaminaMcpConnect({
+        mode: 'session',
+        sessionIdCookie: dreaminaSessionCookie.trim(),
+      });
+      await refreshConnectionsStatus();
+    } finally {
+      setDreaminaBusy(false);
+    }
+  };
+
+  const handleConnectDreaminaArkKey = async () => {
+    const key = byok.seedanceApiKey?.trim() || '';
+    if (!key) {
+      showToast('Enter your BytePlus ModelArk ARK_API_KEY first', 'error');
+      return;
+    }
+    setDreaminaBusy(true);
+    try {
+      await startDreaminaMcpConnect({
+        mode: 'ark_api_key',
+        arkApiKey: key,
+        arkEndpoint: byok.seedanceEndpoint?.trim() || undefined,
+      });
+      await refreshConnectionsStatus();
+    } finally {
+      setDreaminaBusy(false);
+    }
+  };
+
+  const handleConnectDreaminaExternalMcp = async (pkg: '@acedatacloud/mcp-seedream' | 'jimeng-mcp-server') => {
+    setDreaminaBusy(true);
+    try {
+      await addExternalMcpServer({
+        name: pkg === '@acedatacloud/mcp-seedream' ? 'Seedream MCP (AceDataCloud)' : 'Jimeng / Dreamina MCP Server',
+        platformId: 'dreamina',
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', pkg],
+        env: byok.seedanceApiKey?.trim() ? { ARK_API_KEY: byok.seedanceApiKey.trim() } : undefined,
+      });
+      await refreshConnectionsStatus();
+    } finally {
+      setDreaminaBusy(false);
     }
   };
 
@@ -1683,6 +1757,289 @@ export const ProviderModal: React.FC = () => {
                             </span>
                           </div>
                         )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : selectedPlatform.id === 'dreamina' ? (
+              /* DREAMINA #2 FEATURED MCP STUDIO EXPERIENCE */
+              <div className="space-y-4">
+                {connectedMcpServer ? (
+                  <McpFunctionsExplorer
+                    server={connectedMcpServer}
+                    onRefresh={() => void refreshExternalMcpById(connectedMcpServer.id)}
+                    onDisconnect={() => {
+                      if (connectedMcpServer.id === 'mcp_dreamina') {
+                        void disconnectDreaminaMcp();
+                      } else {
+                        void removeExternalMcpById(connectedMcpServer.id);
+                      }
+                    }}
+                    onSpawnToolNode={(tool) => handleSpawnToolNode(tool, connectedMcpServer)}
+                  />
+                ) : (
+                  <div className="rounded-2xl border border-[#20D5EC]/35 bg-gradient-to-b from-[#20D5EC]/[0.08] to-[#141414] p-5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="space-y-1.5">
+                        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#20D5EC]/15 text-[10.5px] font-semibold text-[#7ceeff]">
+                          <Sparkles className="w-3 h-3" />
+                          <span>#2 Featured · Dreamina Unified MCP Engine</span>
+                        </div>
+                        <h3 className="text-base font-semibold text-white">
+                          Connect Dreamina Account &amp; Credits (MCP)
+                        </h3>
+                        <p className="text-xs text-[#b0b0b0] leading-relaxed max-w-lg">
+                          Sign in once at{' '}
+                          <span className="font-mono text-white">dreamina.capcut.com</span> or attach a BytePlus ARK key to unlock{' '}
+                          <strong className="text-white">Seedream 5.5</strong>,{' '}
+                          <strong className="text-white">5.0 Pro</strong>,{' '}
+                          <strong className="text-white">Seedance 2.5</strong> &amp;{' '}
+                          <strong className="text-white">OmniHuman 1.5</strong> directly on canvas.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => void handleConnectDreaminaMcpBrowser()}
+                          disabled={dreaminaBusy}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-white hover:bg-[#eaeaea] disabled:opacity-60 px-4 py-2.5 text-xs font-semibold text-[#0e0e0e] shadow-lg transition-all"
+                        >
+                          {dreaminaBusy ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Server className="w-4 h-4" />
+                          )}
+                          <span>Connect Dreamina via MCP →</span>
+                        </button>
+
+                        {mcpOAuthSession?.platformId === 'dreamina' &&
+                          mcpOAuthSession.step !== 'connected' && (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void pollMcpOAuthStatus(mcpOAuthSession.sessionId)
+                                }
+                                className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#10b981]/45 bg-[#10b981]/15 hover:bg-[#10b981]/25 px-3 py-1.5 text-[11px] font-medium text-[#6ee7b7]"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>✓ I&apos;ve Signed In — Verify &amp; Connect</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  window.open(
+                                    mcpOAuthSession.authorizeUrl ||
+                                      'https://dreamina.capcut.com/ai-tool/home',
+                                    '_blank'
+                                  )
+                                }
+                                className="inline-flex items-center gap-1 rounded-lg border border-white/[0.12] bg-white/[0.05] hover:bg-white/[0.1] px-2.5 py-1.5 text-[11px] text-white/85"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                <span>Re-open Dreamina Sign-In</span>
+                              </button>
+                            </div>
+                          )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Secondary Dreamina Auth Accordions (Session Cookie · ARK API Key · External Stdio MCP) */}
+                <div className="space-y-2">
+                  {/* Option A: Paste Dreamina sessionid Cookie */}
+                  <div className="rounded-xl border border-white/[0.08] bg-[#151515] overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDreaminaAccordion(
+                          dreaminaAccordion === 'session' ? 'none' : 'session'
+                        )
+                      }
+                      className="w-full px-4 py-2.5 flex items-center justify-between text-xs font-medium text-[#d4d4d4] hover:text-white hover:bg-white/[0.03]"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Globe className="w-3.5 h-3.5 text-[#20D5EC]" />
+                        <span>Option A: Paste Dreamina sessionid Cookie (Zero Extension)</span>
+                      </span>
+                      {dreaminaAccordion === 'session' ? (
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      ) : (
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                    {dreaminaAccordion === 'session' && (
+                      <div className="px-4 pb-3.5 pt-2 border-t border-white/[0.06] space-y-2.5">
+                        <p className="text-[11px] text-[#969696]">
+                          Paste your{' '}
+                          <code className="text-white">sessionid</code> cookie from{' '}
+                          <code className="text-[#7ceeff]">dreamina.capcut.com</code> DevTools → Application → Cookies to bind MCP execution directly.
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="password"
+                            value={dreaminaSessionCookie}
+                            onChange={(e) => setDreaminaSessionCookie(e.target.value)}
+                            placeholder="sessionid=..."
+                            className="flex-1 rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs text-white placeholder-[#5e5e5e] focus:border-[#20D5EC] focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void handleConnectDreaminaSessionCookie()}
+                            disabled={dreaminaBusy}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-white hover:bg-[#e8e8e8] disabled:opacity-60 px-3.5 py-1.5 text-xs font-semibold text-[#0e0e0e]"
+                          >
+                            {dreaminaBusy ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <PlugZap className="w-3.5 h-3.5" />
+                            )}
+                            <span>Bind Session Cookie</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Option B: BytePlus ModelArk ARK_API_KEY */}
+                  <div className="rounded-xl border border-white/[0.08] bg-[#151515] overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDreaminaAccordion(dreaminaAccordion === 'ark' ? 'none' : 'ark')
+                      }
+                      className="w-full px-4 py-2.5 flex items-center justify-between text-xs font-medium text-[#d4d4d4] hover:text-white hover:bg-white/[0.03]"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <KeyRound className="w-3.5 h-3.5 text-[#20D5EC]" />
+                        <span>Option B: BytePlus ModelArk ARK_API_KEY (Zero-Markup API)</span>
+                        {selectedStatus?.hasApiKey && (
+                          <span className="text-[10px] text-[#6ee7b7]">● Saved</span>
+                        )}
+                      </span>
+                      {dreaminaAccordion === 'ark' ? (
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      ) : (
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                    {dreaminaAccordion === 'ark' && (
+                      <div className="px-4 pb-3.5 pt-2 border-t border-white/[0.06] space-y-2.5">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          <div>
+                            <label className="block text-[11px] text-[#a5a5a5] mb-1">
+                              ARK_API_KEY
+                            </label>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="password"
+                                value={String(byok.seedanceApiKey ?? '')}
+                                onChange={(e) =>
+                                  updateByok({ seedanceApiKey: e.target.value })
+                                }
+                                placeholder="ark-..."
+                                className="flex-1 min-w-0 rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs text-white placeholder-[#5e5e5e] focus:border-[#20D5EC] focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => void handlePasteIntoField('seedanceApiKey')}
+                                className="rounded-lg border border-white/[0.1] bg-white/[0.05] hover:bg-white/[0.1] px-2.5 py-1.5 text-[11px] text-[#d4d4d4]"
+                              >
+                                <ClipboardPaste className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-[11px] text-[#a5a5a5] mb-1">
+                              BytePlus Ark Endpoint
+                            </label>
+                            <input
+                              type="text"
+                              value={String(byok.seedanceEndpoint ?? '')}
+                              onChange={(e) =>
+                                updateByok({ seedanceEndpoint: e.target.value })
+                              }
+                              placeholder="https://ark.ap-southeast.bytepluses.com/api/v3/..."
+                              className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs text-white placeholder-[#5e5e5e] focus:border-[#20D5EC] focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                        <VerificationReadout result={selectedVerifyResult} />
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void verifyProviderConnection('seedance')}
+                            disabled={isVerifyingSelected}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.12] bg-white/[0.06] hover:bg-white/[0.12] px-3 py-1.5 text-xs text-white"
+                          >
+                            <span>Verify API Key</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleConnectDreaminaArkKey()}
+                            disabled={dreaminaBusy}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-white hover:bg-[#e8e8e8] disabled:opacity-60 px-3.5 py-1.5 text-xs font-semibold text-[#0e0e0e]"
+                          >
+                            {dreaminaBusy ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                            )}
+                            <span>Connect ARK via MCP</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Option C: External Stdio / HTTP MCP Packages */}
+                  <div className="rounded-xl border border-white/[0.08] bg-[#151515] overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDreaminaAccordion(
+                          dreaminaAccordion === 'ext_mcp' ? 'none' : 'ext_mcp'
+                        )
+                      }
+                      className="w-full px-4 py-2.5 flex items-center justify-between text-xs font-medium text-[#d4d4d4] hover:text-white hover:bg-white/[0.03]"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Terminal className="w-3.5 h-3.5 text-[#20D5EC]" />
+                        <span>Option C: External Stdio MCP (@acedatacloud/mcp-seedream · jimeng-mcp-server)</span>
+                      </span>
+                      {dreaminaAccordion === 'ext_mcp' ? (
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      ) : (
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                    {dreaminaAccordion === 'ext_mcp' && (
+                      <div className="px-4 pb-3.5 pt-2 border-t border-white/[0.06] flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void handleConnectDreaminaExternalMcp('@acedatacloud/mcp-seedream')
+                          }
+                          disabled={dreaminaBusy}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.12] px-3 py-1.5 text-xs text-white"
+                        >
+                          <Terminal className="w-3.5 h-3.5 text-[#20D5EC]" />
+                          <span>npx -y @acedatacloud/mcp-seedream</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void handleConnectDreaminaExternalMcp('jimeng-mcp-server')
+                          }
+                          disabled={dreaminaBusy}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.12] px-3 py-1.5 text-xs text-white"
+                        >
+                          <Terminal className="w-3.5 h-3.5 text-[#20D5EC]" />
+                          <span>npx -y jimeng-mcp-server</span>
+                        </button>
                       </div>
                     )}
                   </div>

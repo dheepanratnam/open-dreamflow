@@ -291,6 +291,9 @@ export interface CanvasNode {
   mcpServerId?: string;
   mcpToolName?: string;
   referenceUrls?: string[];
+  videoReferenceUrls?: string[];
+  referenceFrameMode?: 'multi-ref' | 'start-end';
+  batchViewMode?: 'grid' | 'single';
   generatedOutputs?: string[];
   videoTheme?:
     | 'coastal-daylight'

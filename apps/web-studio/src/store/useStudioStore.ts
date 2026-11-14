@@ -73,6 +73,7 @@ import {
   compileTimelineViaBackend,
   deleteDiskProject,
   deleteExternalMcpServer,
+  disconnectDreaminaMcpViaBackend,
   discoverMcpTools,
   enqueueLiveBridgeJobViaBackend,
   executeStudioGeneration,
@@ -85,6 +86,7 @@ import {
   getActiveApiKeyForProvider,
   getDefaultDiscoveredMcpTools,
   getDiskProject,
+  getDreaminaMcpStatusViaBackend,
   getMcpOAuthStatusViaBackend,
   getProviderDisplayLabel,
   importDiskProjectBundle,
@@ -105,6 +107,7 @@ import {
   renderVideoViaBackend,
   saveDiskProject,
   sliceGridViaBackend,
+  startDreaminaMcpConnectViaBackend,
   startMcpOAuthViaBackend,
   uploadMediaViaBackend,
   upscaleViaBackend,
@@ -450,6 +453,26 @@ export interface StudioState {
       asset?: MediaCatalogItem;
     }
   ) => string | null;
+  spawnConnectedNodeFromSelection: (
+    targetKind: 'image' | 'video' | 'audio',
+    opts?: {
+      nodeIds?: string[];
+      prompt?: string;
+      platformId?: PlatformId;
+      modelId?: string;
+      aspectRatio?: AspectRatio;
+      resolution?: ResolutionTier;
+      quality?: string;
+      batchCount?: 1 | 2 | 4;
+      durationSec?: number;
+      modelParams?: Record<string, string | number | boolean>;
+      referenceFrameMode?: 'multi-ref' | 'start-end';
+      autoGenerate?: boolean;
+      x?: number;
+      y?: number;
+    }
+  ) => Promise<string | null>;
+  splitBatchNodeToIndividualNodes: (nodeId: string, onlyIndex?: number) => string[];
   uploadLocalMediaNode: (file: File, worldX?: number, worldY?: number) => void;
 
   setPromptText: (text: string) => void;
@@ -522,6 +545,14 @@ export interface StudioState {
   }>;
   startMcpOAuth: (platformId: string, mcpUrl?: string) => Promise<McpOAuthSession | null>;
   pollMcpOAuthStatus: (sessionId?: string) => Promise<McpOAuthSession | null>;
+  startDreaminaMcpConnect: (payload?: {
+    mode?: 'browser' | 'session' | 'ark_api_key';
+    sessionIdCookie?: string;
+    arkApiKey?: string;
+    arkEndpoint?: string;
+    launchBrowser?: boolean;
+  }) => Promise<McpOAuthSession | null>;
+  disconnectDreaminaMcp: () => Promise<void>;
   setMcpOAuthSession: (session: McpOAuthSession | null) => void;
   runLiveBridgeTestGeneration: (
     target: BrowserPlatformTarget,
@@ -1770,6 +1801,317 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
 
     return id;
+  },
+
+  spawnConnectedNodeFromSelection: async (targetKind, opts) => {
+    const state = get();
+    const targetIds =
+      opts?.nodeIds && opts.nodeIds.length > 0
+        ? opts.nodeIds
+        : state.selectedNodeIds;
+    const sourceNodes = targetIds
+      .map((nid) => state.nodes.find((n) => n.id === nid))
+      .filter((n): n is CanvasNode => Boolean(n));
+
+    if (sourceNodes.length === 0) return null;
+
+    get().pushHistory();
+
+    // Compute group bounding box for smart right-hand placement
+    const minY = Math.min(...sourceNodes.map((n) => n.y));
+    const maxX = Math.max(...sourceNodes.map((n) => n.x + n.width));
+    const maxY = Math.max(...sourceNodes.map((n) => n.y + n.height));
+    const centerY = (minY + maxY) / 2;
+
+    const platformId: PlatformId =
+      opts?.platformId ||
+      (targetKind === 'video'
+        ? state.lastVideoPlatformId
+        : targetKind === 'audio'
+        ? state.lastAudioPlatformId
+        : state.lastImagePlatformId);
+
+    const models = getModelsForPlatformAndModality(
+      platformId,
+      targetKind,
+      state.platformsCatalog,
+      state.externalMcpServers
+    );
+    const chosenModel =
+      (opts?.modelId
+        ? models.find((m) => m.id === resolveCanonicalModelId(opts.modelId) || m.id === opts.modelId)
+        : undefined) || models[0];
+    const modelId = chosenModel?.id || opts?.modelId || '';
+
+    const defaultParams: Record<string, string | number | boolean> = {};
+    for (const p of chosenModel?.parameters || []) {
+      if (p.default !== undefined) defaultParams[p.name] = p.default;
+    }
+    const mergedModelParams = {
+      ...defaultParams,
+      ...(opts?.modelParams || {}),
+    };
+    const quality =
+      opts?.quality ||
+      (typeof mergedModelParams.quality === 'string' ? mergedModelParams.quality : undefined);
+
+    const aspectRatio: AspectRatio =
+      opts?.aspectRatio || chosenModel?.defaultAspect || '16:9';
+    const resolution: ResolutionTier =
+      opts?.resolution ||
+      chosenModel?.defaultResolution ||
+      (targetKind === 'video' ? '1080p' : '2K');
+
+    // Collect multimodal references & text prompts from selected nodes in selection order
+    const imageRefs: string[] = [];
+    const videoRefs: string[] = [];
+    const promptParts: string[] = [];
+    const handleSet = new Set<string>();
+    let inheritedStyleDnaId: string | undefined;
+    let inheritedStyleDna: StyleDNAPayload | undefined;
+
+    for (const src of sourceNodes) {
+      for (const h of src.elementHandles || []) {
+        if (h) handleSet.add(h);
+      }
+      if (
+        (src.kind === 'image' || src.kind === 'element' || src.kind === 'contact-sheet') &&
+        src.imageUrl
+      ) {
+        if (!imageRefs.includes(src.imageUrl)) imageRefs.push(src.imageUrl);
+      } else if (src.kind === 'video' && src.videoUrl) {
+        if (!videoRefs.includes(src.videoUrl)) videoRefs.push(src.videoUrl);
+        if (src.imageUrl && imageRefs.length === 0) {
+          // Keep poster only if no still references exist? Better not pollute imageRefs with posters when videoUrls exist.
+        }
+      } else if ((src.kind === 'text' || src.kind === 'sticky') && src.prompt.trim()) {
+        promptParts.push(src.prompt.trim());
+      } else if (src.kind === 'style-dna' && src.styleDna) {
+        inheritedStyleDnaId = src.id;
+        inheritedStyleDna = src.styleDna;
+      }
+    }
+
+    const explicitPrompt = (opts?.prompt ?? '').trim();
+    const combinedPrompt =
+      explicitPrompt || promptParts.join('\n').trim();
+    for (const h of extractHandles(combinedPrompt)) {
+      handleSet.add(h);
+    }
+
+    const dims =
+      targetKind === 'audio'
+        ? { width: 340, height: 128 }
+        : getDimensionsForAspect(aspectRatio, targetKind === 'video' ? 480 : 384);
+    const width = dims.width;
+    const height = dims.height;
+    const x = Math.round(((opts?.x ?? maxX + 160)) / 10) * 10;
+    const y = Math.round(((opts?.y ?? centerY - height / 2)) / 10) * 10;
+
+    const countOfKind =
+      state.nodes.filter((n) => n.kind === targetKind).length + 1;
+    const id = `node_${targetKind}_ref_${Date.now()}`;
+    const referenceFrameMode =
+      targetKind === 'video'
+        ? opts?.referenceFrameMode || 'multi-ref'
+        : undefined;
+    const startImageUrl =
+      targetKind === 'video' &&
+      referenceFrameMode === 'start-end' &&
+      imageRefs.length >= 1
+        ? imageRefs[0]
+        : undefined;
+    const endImageUrl =
+      targetKind === 'video' &&
+      referenceFrameMode === 'start-end' &&
+      imageRefs.length >= 2
+        ? imageRefs[1]
+        : undefined;
+
+    const badge =
+      getPlatformBadgeLabel(
+        platformId,
+        modelId,
+        state.platformsCatalog,
+        state.externalMcpServers
+      ) || platformId;
+
+    const newNode: CanvasNode = {
+      id,
+      kind: targetKind,
+      title:
+        targetKind === 'image'
+          ? `Images ${countOfKind}`
+          : targetKind === 'video'
+          ? `Videos ${countOfKind}`
+          : `Audio ${countOfKind}`,
+      prompt: combinedPrompt,
+      x,
+      y,
+      width,
+      height,
+      aspectRatio,
+      status: 'idle',
+      platformId,
+      connectionMode: 'auto',
+      modelId,
+      batchCount: targetKind === 'image' ? opts?.batchCount ?? 1 : 1,
+      durationSec:
+        targetKind === 'video'
+          ? opts?.durationSec ?? chosenModel?.defaultDurationSec ?? 5
+          : targetKind === 'audio'
+          ? opts?.durationSec ?? chosenModel?.defaultDurationSec ?? 8
+          : undefined,
+      audioEnabled: targetKind === 'video' ? true : undefined,
+      audioMode: targetKind === 'audio' ? 'tts' : undefined,
+      voiceId: targetKind === 'audio' ? 'JBFqnCBsd6RMkjVDRZzb' : undefined,
+      waveform: targetKind === 'audio' ? createDefaultWaveform(600 + countOfKind, 64) : undefined,
+      referenceUrls: imageRefs.length > 0 ? imageRefs : undefined,
+      videoReferenceUrls: videoRefs.length > 0 ? videoRefs : undefined,
+      referenceFrameMode,
+      startImageUrl,
+      endImageUrl,
+      seed: Math.floor(Math.random() * 9000) + 100,
+      resolution,
+      ...(quality ? { quality } : {}),
+      ...(Object.keys(mergedModelParams).length > 0
+        ? { modelParams: mergedModelParams }
+        : {}),
+      elementHandles: Array.from(handleSet),
+      ...(inheritedStyleDnaId ? { styleDnaId: inheritedStyleDnaId } : {}),
+      ...(inheritedStyleDna ? { styleDna: inheritedStyleDna } : {}),
+      layers: [],
+      providerUsed: badge,
+      createdAt: Date.now(),
+    };
+
+    const ts = Date.now();
+    const newEdges: CanvasEdge[] = sourceNodes.map((src, idx) => ({
+      id: `edge_multiref_${ts}_${idx}`,
+      sourceId: src.id,
+      targetId: id,
+      kind: 'lineage',
+      label:
+        src.elementHandles[0] ||
+        (src.kind === 'video'
+          ? `Video ${idx + 1}`
+          : src.kind === 'text' || src.kind === 'sticky'
+          ? 'Prompt'
+          : `Ref ${idx + 1}`),
+    }));
+
+    set((s) => ({
+      nodes: [...s.nodes, newNode],
+      edges: [...s.edges, ...newEdges],
+      selectedNodeIds: [id],
+      promptText: combinedPrompt || s.promptText,
+    }));
+
+    void get().persistActiveProjectToDisk();
+    get().showToast(
+      `Formed "${newNode.title}" from ${sourceNodes.length} reference node${sourceNodes.length === 1 ? '' : 's'}`
+    );
+
+    if (opts?.autoGenerate) {
+      await get().generateSingleNode(id);
+    }
+
+    return id;
+  },
+
+  splitBatchNodeToIndividualNodes: (nodeId, onlyIndex) => {
+    const state = get();
+    const node = state.nodes.find((n) => n.id === nodeId);
+    if (!node) return [];
+    const allOutputs =
+      node.generatedOutputs && node.generatedOutputs.length > 0
+        ? node.generatedOutputs
+        : node.imageUrl
+        ? [node.imageUrl]
+        : [];
+    if (allOutputs.length === 0) return [];
+    if (onlyIndex === undefined && allOutputs.length <= 1) return [];
+
+    const indices =
+      typeof onlyIndex === 'number'
+        ? onlyIndex >= 0 && onlyIndex < allOutputs.length
+          ? [onlyIndex]
+          : []
+        : allOutputs.map((_, i) => i);
+    if (indices.length === 0) return [];
+
+    get().pushHistory();
+
+    const childDims = getDimensionsForAspect(node.aspectRatio, 360);
+    const childW = Math.min(384, childDims.width);
+    const childH = Math.round((childW * childDims.height) / Math.max(1, childDims.width));
+    const baseX = Math.round((node.x + node.width + 120) / 10) * 10;
+    const baseY = Math.round(node.y / 10) * 10;
+    const ts = Date.now();
+
+    const createdNodes: CanvasNode[] = [];
+    const createdEdges: CanvasEdge[] = [];
+
+    indices.forEach((origIdx, posIdx) => {
+      const url = allOutputs[origIdx];
+      const col = indices.length === 1 ? 0 : posIdx % 2;
+      const row = indices.length === 1 ? 0 : Math.floor(posIdx / 2);
+      const childId = `node_split_${ts}_${origIdx}`;
+      createdNodes.push({
+        id: childId,
+        kind: 'image',
+        title: `${node.title} #${origIdx + 1}`,
+        prompt: node.prompt,
+        negativePrompt: node.negativePrompt,
+        x: Math.round((baseX + col * (childW + 40)) / 10) * 10,
+        y: Math.round((baseY + row * (childH + 40)) / 10) * 10,
+        width: childW,
+        height: childH,
+        aspectRatio: node.aspectRatio,
+        status: 'ready',
+        progress: 100,
+        imageUrl: url,
+        generatedOutputs: [url],
+        batchCount: 1,
+        batchViewMode: 'single',
+        platformId: node.platformId,
+        connectionMode: node.connectionMode,
+        modelId: node.modelId,
+        seed: (node.seed || 100) + origIdx,
+        resolution: node.resolution,
+        quality: node.quality,
+        modelParams: node.modelParams,
+        elementHandles: node.elementHandles,
+        styleDnaId: node.styleDnaId,
+        styleDna: node.styleDna,
+        editBadge: `Variation #${origIdx + 1}`,
+        layers: createDefaultLayers(url),
+        providerUsed: node.providerUsed,
+        createdAt: ts + posIdx,
+      });
+      createdEdges.push({
+        id: `edge_split_${ts}_${origIdx}`,
+        sourceId: node.id,
+        targetId: childId,
+        kind: 'lineage',
+        label: `#${origIdx + 1}`,
+      });
+    });
+
+    const createdIds = createdNodes.map((n) => n.id);
+    set((s) => ({
+      nodes: [...s.nodes, ...createdNodes],
+      edges: [...s.edges, ...createdEdges],
+      selectedNodeIds: createdIds,
+    }));
+
+    void get().persistActiveProjectToDisk();
+    get().showToast(
+      indices.length === 1
+        ? `Popped out variation #${indices[0] + 1} as a standalone node`
+        : `Split batch into ${createdNodes.length} standalone image nodes`
+    );
+    return createdIds;
   },
 
   uploadLocalMediaNode: (file, worldX = 520, worldY = 260) => {
@@ -5714,22 +6056,33 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const modelId =
       platformId === 'higgsfield' ? resolveCanonicalModelId(rawModelId) : rawModelId;
 
-    // Gather wired upstream nodes (both reference images AND upstream text prompt nodes)
+    // Gather wired upstream nodes (references, videos, text/sticky prompts, & Style DNA)
     const incomingEdges = state.edges.filter((e) => e.targetId === node.id);
     const upstreamNodes = incomingEdges
       .map((e) => state.nodes.find((nn) => nn.id === e.sourceId))
       .filter((nn): nn is CanvasNode => Boolean(nn));
 
     const upstreamTextPrompt = upstreamNodes
-      .filter((nn) => nn.kind === 'text' && nn.prompt.trim())
+      .filter((nn) => (nn.kind === 'text' || nn.kind === 'sticky') && nn.prompt.trim())
       .map((nn) => nn.prompt.trim())
       .join('\n');
 
-    const basePrompt = (node.prompt.trim() || upstreamTextPrompt).trim();
+    const upstreamStyleCues = upstreamNodes
+      .filter((nn) => nn.kind === 'style-dna' && nn.styleDna)
+      .map((nn) => `${nn.styleDna!.lens}, ${nn.styleDna!.lighting}, ${nn.styleDna!.filmStock}`)
+      .join('; ');
+
+    let basePrompt = (node.prompt.trim() || upstreamTextPrompt).trim();
+    if (!basePrompt && node.prompt.trim() === '' && upstreamTextPrompt) {
+      basePrompt = upstreamTextPrompt;
+    }
     if (!basePrompt) {
       get().selectNodes([node.id]);
       get().showToast(`Enter a prompt on "${node.title}" before generating`, 'error');
       return false;
+    }
+    if (upstreamStyleCues && !basePrompt.includes(upstreamStyleCues)) {
+      basePrompt = `${basePrompt}. Style DNA: ${upstreamStyleCues}`;
     }
 
     const effectivePrompt =
@@ -5740,21 +6093,27 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         ? `${basePrompt}, ${node.cameraMotion} camera motion`
         : basePrompt;
 
-    // Collect reference images in deterministic priority:
-    // 1. Wired upstream image / element / contact-sheet nodes
-    // 2. Node's explicit referenceUrls[]
-    // 3. @Element handles referenced in prompt
+    // Collect image + video references in deterministic priority:
+    // 1. Wired upstream image/element/contact-sheet & video nodes
+    // 2. Node's explicit referenceUrls[] & videoReferenceUrls[]
+    // 3. @Element handles referenced in prompt or attached to node
     const refSet = new Set<string>();
+    const videoRefSet = new Set<string>();
     for (const up of upstreamNodes) {
       if (
         (up.kind === 'image' || up.kind === 'element' || up.kind === 'contact-sheet') &&
         up.imageUrl
       ) {
         refSet.add(up.imageUrl);
+      } else if (up.kind === 'video' && up.videoUrl) {
+        videoRefSet.add(up.videoUrl);
       }
     }
     for (const url of node.referenceUrls || []) {
       if (url) refSet.add(url);
+    }
+    for (const vUrl of node.videoReferenceUrls || []) {
+      if (vUrl) videoRefSet.add(vUrl);
     }
     const promptHandles = [
       ...extractHandles(effectivePrompt),
@@ -5768,6 +6127,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         refSet.add(vault.references[0].dataUrl);
       }
     }
+    const imageRefsList = Array.from(refSet);
+    const videoRefsList = Array.from(videoRefSet);
+    const effectiveStartImg =
+      node.startImageUrl ||
+      (node.referenceFrameMode === 'start-end' && imageRefsList.length >= 1
+        ? imageRefsList[0]
+        : undefined);
+    const effectiveEndImg =
+      node.endImageUrl ||
+      (node.referenceFrameMode === 'start-end' && imageRefsList.length >= 2
+        ? imageRefsList[1]
+        : undefined);
 
     let mcpServerId = node.mcpServerId;
     let mcpToolName = node.mcpToolName;
@@ -5841,7 +6212,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         ...(mergedModelParams ? { modelParams: mergedModelParams } : {}),
       },
       ...(mergedModelParams ? { modelParams: mergedModelParams } : {}),
-      referenceImages: Array.from(refSet),
+      referenceImages: imageRefsList,
+      ...(videoRefsList.length > 0 ? { videoReferences: videoRefsList } : {}),
+      ...(node.referenceFrameMode ? { referenceFrameMode: node.referenceFrameMode } : {}),
+      ...(effectiveStartImg ? { startImageUrl: effectiveStartImg } : {}),
+      ...(effectiveEndImg ? { endImageUrl: effectiveEndImg } : {}),
       mcpServerId,
       mcpToolName,
       credentials,
@@ -5958,6 +6333,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               res.outputs && res.outputs.length > 0
                 ? res.outputs
                 : n.generatedOutputs,
+            batchViewMode:
+              res.outputs && res.outputs.length > 1
+                ? ('grid' as const)
+                : n.batchViewMode,
             interactionId: res.jobId || n.interactionId,
             layers: resolvedImageForCard
               ? createDefaultLayers(resolvedImageForCard)
@@ -6283,7 +6662,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   pollMcpOAuthStatus: async (sessionId) => {
     const targetId = sessionId || get().mcpOAuthSession?.sessionId;
     if (!targetId || targetId === 'starting' || targetId === 'error') return null;
-    const res = await getMcpOAuthStatusViaBackend(targetId);
+    const isDreamina =
+      targetId.startsWith('drm_mcp_') ||
+      get().mcpOAuthSession?.platformId === 'dreamina';
+    const res = isDreamina
+      ? await getDreaminaMcpStatusViaBackend(targetId)
+      : await getMcpOAuthStatusViaBackend(targetId);
     if (!res.ok || !res.session) return null;
     const prevStep = get().mcpOAuthSession?.step;
     set({ mcpOAuthSession: res.session });
@@ -6292,6 +6676,52 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       get().showToast(`${res.session.platformId} MCP Connected Successfully!`);
     }
     return res.session;
+  },
+
+  startDreaminaMcpConnect: async (payload = { mode: 'browser', launchBrowser: true }) => {
+    set({
+      mcpOAuthSession: {
+        sessionId: 'starting',
+        platformId: 'dreamina',
+        mcpUrl: 'dreamina://mcp/seedream-seedance',
+        authorizeUrl: 'https://dreamina.capcut.com/ai-tool/home',
+        step: 'registering',
+        updatedAt: Date.now(),
+      },
+    });
+    const res = await startDreaminaMcpConnectViaBackend(payload);
+    if (!res.ok || !res.session) {
+      const errSess: McpOAuthSession = {
+        sessionId: 'error',
+        platformId: 'dreamina',
+        mcpUrl: 'dreamina://mcp/seedream-seedance',
+        authorizeUrl: 'https://dreamina.capcut.com/ai-tool/home',
+        step: 'error',
+        error: res.error || 'Could not start Dreamina MCP connection',
+        updatedAt: Date.now(),
+      };
+      set({ mcpOAuthSession: errSess });
+      get().showToast(errSess.error || 'Dreamina MCP error', 'error');
+      return errSess;
+    }
+    set({ mcpOAuthSession: res.session });
+    if (res.session.step === 'connected') {
+      await get().refreshPlatformsAndExternalMcp();
+      get().showToast('Dreamina MCP Connected Successfully!');
+    }
+    return res.session;
+  },
+
+  disconnectDreaminaMcp: async () => {
+    const res = await disconnectDreaminaMcpViaBackend();
+    if (get().mcpOAuthSession?.platformId === 'dreamina') {
+      set({ mcpOAuthSession: null });
+    }
+    await get().refreshPlatformsAndExternalMcp();
+    get().showToast(
+      res.ok ? 'Disconnected Dreamina MCP' : res.error || 'Failed to disconnect Dreamina MCP',
+      res.ok ? 'ok' : 'error'
+    );
   },
 
   refreshPlatformsAndExternalMcp: async () => {

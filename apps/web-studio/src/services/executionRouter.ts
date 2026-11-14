@@ -423,6 +423,10 @@ export interface GenerateNodeBackendParams {
   };
   modelParams?: Record<string, string | number | boolean>;
   referenceImages?: string[];
+  videoReferences?: string[];
+  referenceFrameMode?: 'multi-ref' | 'start-end';
+  startImageUrl?: string;
+  endImageUrl?: string;
   mcpServerId?: string;
   mcpToolName?: string;
   credentials?: {
@@ -459,6 +463,15 @@ export async function generateNodeViaBackend(
     const cleanedRefs = (params.referenceImages || [])
       .filter(Boolean)
       .map((u) => toBackendRelativeMediaPath(u) || u);
+    const cleanedVideoRefs = (params.videoReferences || [])
+      .filter(Boolean)
+      .map((u) => toBackendRelativeMediaPath(u) || u);
+    const cleanedStartImg = params.startImageUrl
+      ? toBackendRelativeMediaPath(params.startImageUrl) || params.startImageUrl
+      : undefined;
+    const cleanedEndImg = params.endImageUrl
+      ? toBackendRelativeMediaPath(params.endImageUrl) || params.endImageUrl
+      : undefined;
 
     const res = await fetch(`${LOCAL_MCP_BASE}/api/generate-node`, {
       method: 'POST',
@@ -467,6 +480,10 @@ export async function generateNodeViaBackend(
       body: JSON.stringify({
         ...params,
         referenceImages: cleanedRefs,
+        ...(cleanedVideoRefs.length > 0 ? { videoReferences: cleanedVideoRefs } : {}),
+        ...(params.referenceFrameMode ? { referenceFrameMode: params.referenceFrameMode } : {}),
+        ...(cleanedStartImg ? { startImageUrl: cleanedStartImg } : {}),
+        ...(cleanedEndImg ? { endImageUrl: cleanedEndImg } : {}),
       }),
     });
     clearTimeout(timer);
@@ -833,6 +850,126 @@ export async function getMcpOAuthStatusViaBackend(sessionId: string): Promise<{
     return {
       ok: false,
       error: err instanceof Error ? err.message : 'Status check network error',
+    };
+  }
+}
+
+export async function startDreaminaMcpConnectViaBackend(payload: {
+  mode?: 'browser' | 'session' | 'ark_api_key';
+  sessionIdCookie?: string;
+  arkApiKey?: string;
+  arkEndpoint?: string;
+  launchBrowser?: boolean;
+}): Promise<{
+  ok: boolean;
+  session?: McpOAuthSession;
+  error?: string;
+}> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/dreamina/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify(payload),
+    });
+    clearTimeout(timer);
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        error:
+          (typeof json.error === 'string' && json.error) ||
+          `Dreamina MCP connect failed (HTTP ${res.status})`,
+      };
+    }
+    const rawSess = (json.session && typeof json.session === 'object'
+      ? (json.session as Partial<McpOAuthSession>)
+      : {}) as Partial<McpOAuthSession>;
+    const session: McpOAuthSession = {
+      sessionId:
+        rawSess.sessionId ||
+        (typeof json.sessionId === 'string' ? json.sessionId : `drm_mcp_${Date.now()}`),
+      platformId: rawSess.platformId || 'dreamina',
+      mcpUrl:
+        rawSess.mcpUrl ||
+        (typeof json.mcpUrl === 'string' ? json.mcpUrl : 'dreamina://mcp/seedream-seedance'),
+      authorizeUrl:
+        rawSess.authorizeUrl ||
+        (typeof json.authorizeUrl === 'string'
+          ? json.authorizeUrl
+          : 'https://dreamina.capcut.com/ai-tool/home'),
+      step:
+        rawSess.step ||
+        (typeof json.step === 'string' ? (json.step as McpOAuthSession['step']) : 'awaiting_login'),
+      updatedAt: rawSess.updatedAt || Date.now(),
+      error: rawSess.error,
+    };
+    return { ok: true, session };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error
+          ? `Could not reach :3001 Dreamina MCP connect (${err.message})`
+          : 'Could not reach :3001 Dreamina MCP connect',
+    };
+  }
+}
+
+export async function getDreaminaMcpStatusViaBackend(sessionId: string): Promise<{
+  ok: boolean;
+  session?: McpOAuthSession;
+  error?: string;
+}> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch(
+      `${LOCAL_MCP_BASE}/api/mcp/dreamina/status/${encodeURIComponent(sessionId)}`,
+      { signal: ctrl.signal }
+    );
+    clearTimeout(timer);
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      session?: McpOAuthSession;
+      error?: string;
+    };
+    if (!res.ok || json.ok === false || !json.session) {
+      return {
+        ok: false,
+        error: json.error || `Dreamina MCP status check failed (HTTP ${res.status})`,
+      };
+    }
+    return { ok: true, session: json.session };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Dreamina MCP status network error',
+    };
+  }
+}
+
+export async function disconnectDreaminaMcpViaBackend(): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/dreamina/disconnect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    return { ok: res.ok && json.ok !== false, error: json.error };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Dreamina disconnect network error',
     };
   }
 }

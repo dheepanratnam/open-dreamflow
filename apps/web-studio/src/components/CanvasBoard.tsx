@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ArrowUpRight,
   AudioLines,
   ChevronRight,
   Clapperboard,
@@ -9,6 +10,7 @@ import {
   Download,
   Film,
   GitBranch,
+  Grid2X2,
   Grid3X3,
   Image as ImageIcon,
   Layers,
@@ -50,6 +52,7 @@ export interface CanvasBoardProps {
 
 interface WireDraftState {
   sourceNodeId: string;
+  sourceNodeIds?: string[];
   direction: 'left' | 'right';
   startWorldX: number;
   startWorldY: number;
@@ -170,6 +173,12 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
   const pasteClipboardNode = useStudioStore((s) => s.pasteClipboardNode);
   const duplicateNodes = useStudioStore((s) => s.duplicateNodes);
   const spawnDreaminaNodeAt = useStudioStore((s) => s.spawnDreaminaNodeAt);
+  const spawnConnectedNodeFromSelection = useStudioStore(
+    (s) => s.spawnConnectedNodeFromSelection
+  );
+  const splitBatchNodeToIndividualNodes = useStudioStore(
+    (s) => s.splitBatchNodeToIndividualNodes
+  );
   const uploadLocalMediaNode = useStudioStore((s) => s.uploadLocalMediaNode);
   const uploadReferenceToNode = useStudioStore((s) => s.uploadReferenceToNode);
   const saveNodeAsElementReference = useStudioStore(
@@ -216,6 +225,75 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
   const [wireDraft, setWireDraft] = useState<WireDraftState | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [createSubmenuOpen, setCreateSubmenuOpen] = useState(false);
+  const [createSubmenuPinned, setCreateSubmenuPinned] = useState(false);
+
+  const nodeHoverTimerRef = useRef<number | null>(null);
+  const submenuCloseTimerRef = useRef<number | null>(null);
+
+  const cancelNodeHoverClear = () => {
+    if (nodeHoverTimerRef.current !== null) {
+      window.clearTimeout(nodeHoverTimerRef.current);
+      nodeHoverTimerRef.current = null;
+    }
+  };
+
+  const scheduleNodeHoverClear = (nodeId: string) => {
+    cancelNodeHoverClear();
+    nodeHoverTimerRef.current = window.setTimeout(() => {
+      setHoveredNodeId((cur) => (cur === nodeId ? null : cur));
+      nodeHoverTimerRef.current = null;
+    }, 240);
+  };
+
+  const openCreateSubmenu = () => {
+    if (submenuCloseTimerRef.current !== null) {
+      window.clearTimeout(submenuCloseTimerRef.current);
+      submenuCloseTimerRef.current = null;
+    }
+    setCreateSubmenuOpen(true);
+  };
+
+  const scheduleCreateSubmenuClose = () => {
+    if (createSubmenuPinned) return;
+    if (submenuCloseTimerRef.current !== null) {
+      window.clearTimeout(submenuCloseTimerRef.current);
+    }
+    submenuCloseTimerRef.current = window.setTimeout(() => {
+      setCreateSubmenuOpen(false);
+      submenuCloseTimerRef.current = null;
+    }, 320);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (nodeHoverTimerRef.current !== null) window.clearTimeout(nodeHoverTimerRef.current);
+      if (submenuCloseTimerRef.current !== null) window.clearTimeout(submenuCloseTimerRef.current);
+    };
+  }, []);
+
+  const selectionGroupBounds = useMemo(() => {
+    if (selectedNodeIds.length < 2) return null;
+    const selNodes = selectedNodeIds
+      .map((id) => nodes.find((n) => n.id === id))
+      .filter((n): n is CanvasNode => Boolean(n));
+    if (selNodes.length < 2) return null;
+    const minX = Math.min(...selNodes.map((n) => n.x));
+    const minY = Math.min(...selNodes.map((n) => n.y));
+    const maxX = Math.max(...selNodes.map((n) => n.x + n.width));
+    const maxY = Math.max(...selNodes.map((n) => n.y + n.height));
+    return {
+      nodes: selNodes,
+      nodeIds: selNodes.map((n) => n.id),
+      minX,
+      minY,
+      maxX,
+      maxY,
+      width: maxX - minX,
+      height: maxY - minY,
+      handleX: maxX + 22,
+      handleY: (minY + maxY) / 2,
+    };
+  }, [selectedNodeIds, nodes]);
 
   const screenToWorld = (clientX: number, clientY: number) => {
     const rect = boardRef.current?.getBoundingClientRect();
@@ -393,8 +471,12 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
       return;
     }
 
-    // Left click on empty canvas: clear selection & start marquee drag
-    if (!e.shiftKey) {
+    // Left click on empty canvas: clear selection (unless additive modifier held) & start marquee drag
+    const additiveMarquee = e.shiftKey || e.metaKey || e.ctrlKey;
+    const initialSelectedIds = additiveMarquee
+      ? [...useStudioStore.getState().selectedNodeIds]
+      : [];
+    if (!additiveMarquee) {
       selectNodes([]);
     }
 
@@ -424,7 +506,9 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
             n.y <= maxWY
         )
         .map((n) => n.id);
-      selectNodes(hits);
+      selectNodes(
+        additiveMarquee ? Array.from(new Set([...initialSelectedIds, ...hits])) : hits
+      );
     };
 
     const onUp = () => {
@@ -458,7 +542,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
     const alreadySelected = state.selectedNodeIds.includes(node.id);
     let movingIds = state.selectedNodeIds;
 
-    if (e.shiftKey) {
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
       selectNodes([node.id], true);
       movingIds = useStudioStore.getState().selectedNodeIds;
     } else if (!alreadySelected) {
@@ -494,21 +578,22 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
     window.addEventListener('pointerup', onUp);
   };
 
-  // Port (+) PointerDown: drag Bezier wire OR click to open Dreamina Wire-Drop Creation Menu
-  const handlePortPointerDown = (
+  // Unified wire-drag / click helper shared by node (+) ports & group right-edge (+) handle
+  const beginWireDraftFromSources = (
     e: React.PointerEvent<HTMLButtonElement>,
-    node: CanvasNode,
-    direction: 'left' | 'right'
+    direction: 'left' | 'right',
+    sourceIds: string[],
+    startWorldX: number,
+    startWorldY: number
   ) => {
     e.stopPropagation();
     e.preventDefault();
     setContextMenu(null);
 
-    const startWorldX = direction === 'right' ? node.x + node.width : node.x;
-    const startWorldY = node.y + node.height / 2;
-
+    const primarySourceId = sourceIds[0];
     const initialDraft: WireDraftState = {
-      sourceNodeId: node.id,
+      sourceNodeId: primarySourceId,
+      ...(sourceIds.length > 1 ? { sourceNodeIds: sourceIds } : {}),
       direction,
       startWorldX,
       startWorldY,
@@ -546,7 +631,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
       const st = useStudioStore.getState();
 
       if (!dragged) {
-        // Click on (+): project wire 150px outward and open Wire-Drop Creation Menu
+        // Click on (+): project wire outward and open Wire-Drop Creation Menu
         const targetWorldX =
           direction === 'right' ? startWorldX + 140 : startWorldX - 420;
         const targetWorldY = startWorldY - 40;
@@ -561,7 +646,8 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
           Math.max(60, st.panY + startWorldY * st.zoom - 90)
         );
         setWireDraft({
-          sourceNodeId: node.id,
+          sourceNodeId: primarySourceId,
+          ...(sourceIds.length > 1 ? { sourceNodeIds: sourceIds } : {}),
           direction,
           startWorldX,
           startWorldY,
@@ -577,7 +663,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
       const dropWorld = screenToWorld(ev.clientX, ev.clientY);
       const targetNode = st.nodes.find(
         (n) =>
-          n.id !== node.id &&
+          !sourceIds.includes(n.id) &&
           dropWorld.x >= n.x - 20 &&
           dropWorld.x <= n.x + n.width + 20 &&
           dropWorld.y >= n.y - 20 &&
@@ -585,10 +671,17 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
       );
 
       if (targetNode) {
-        if (direction === 'right') {
-          connectNodes(node.id, targetNode.id, 'lineage');
-        } else {
-          connectNodes(targetNode.id, node.id, 'lineage');
+        for (const sid of sourceIds) {
+          if (direction === 'right') {
+            connectNodes(sid, targetNode.id, 'lineage');
+          } else {
+            connectNodes(targetNode.id, sid, 'lineage');
+          }
+        }
+        if (sourceIds.length > 1) {
+          showToast(
+            `Connected ${sourceIds.length} reference nodes → "${targetNode.title}"`
+          );
         }
         setWireDraft(null);
         return;
@@ -598,7 +691,8 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
       const menuX = Math.min(window.innerWidth - 236, Math.max(76, ev.clientX));
       const menuY = Math.min(window.innerHeight - 310, Math.max(60, ev.clientY - 40));
       setWireDraft({
-        sourceNodeId: node.id,
+        sourceNodeId: primarySourceId,
+        ...(sourceIds.length > 1 ? { sourceNodeIds: sourceIds } : {}),
         direction,
         startWorldX,
         startWorldY,
@@ -612,6 +706,23 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
 
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+  };
+
+  // Port (+) PointerDown: drag Bezier wire OR click to open Dreamina Wire-Drop Creation Menu
+  const handlePortPointerDown = (
+    e: React.PointerEvent<HTMLButtonElement>,
+    node: CanvasNode,
+    direction: 'left' | 'right'
+  ) => {
+    const startWorldX = direction === 'right' ? node.x + node.width : node.x;
+    const startWorldY = node.y + node.height / 2;
+    const st = useStudioStore.getState();
+    const useMultiSelection =
+      direction === 'right' &&
+      st.selectedNodeIds.length >= 2 &&
+      st.selectedNodeIds.includes(node.id);
+    const sourceIds = useMultiSelection ? st.selectedNodeIds : [node.id];
+    beginWireDraftFromSources(e, direction, sourceIds, startWorldX, startWorldY);
   };
 
   const handleCanvasContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -797,31 +908,97 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
               );
             })}
 
-          {/* Live / Frozen Draft Wire from (+) Port */}
+          {/* Live / Frozen Draft Wire(s) from (+) Port or Group Handle */}
           {wireDraft && (
             <g>
-              <path
-                d={buildCubicBezierPath(
-                  wireDraft.startWorldX,
-                  wireDraft.startWorldY,
-                  wireDraft.curWorldX,
-                  wireDraft.curWorldY
-                )}
-                fill="none"
-                stroke="#20D5EC"
-                strokeWidth={2}
-                strokeDasharray="6 5"
-                className="animate-wire-active"
-              />
+              {wireDraft.sourceNodeIds && wireDraft.sourceNodeIds.length > 1 ? (
+                wireDraft.sourceNodeIds.map((sid) => {
+                  const src = nodeMap.get(sid);
+                  if (!src) return null;
+                  const sx =
+                    wireDraft.direction === 'right' ? src.x + src.width : src.x;
+                  const sy = src.y + src.height / 2;
+                  return (
+                    <path
+                      key={sid}
+                      d={buildCubicBezierPath(
+                        sx,
+                        sy,
+                        wireDraft.curWorldX,
+                        wireDraft.curWorldY
+                      )}
+                      fill="none"
+                      stroke="#20D5EC"
+                      strokeWidth={2}
+                      strokeDasharray="6 5"
+                      className="animate-wire-active"
+                    />
+                  );
+                })
+              ) : (
+                <path
+                  d={buildCubicBezierPath(
+                    wireDraft.startWorldX,
+                    wireDraft.startWorldY,
+                    wireDraft.curWorldX,
+                    wireDraft.curWorldY
+                  )}
+                  fill="none"
+                  stroke="#20D5EC"
+                  strokeWidth={2}
+                  strokeDasharray="6 5"
+                  className="animate-wire-active"
+                />
+              )}
               <circle
                 cx={wireDraft.curWorldX}
                 cy={wireDraft.curWorldY}
-                r={4.5}
+                r={5}
                 fill="#20D5EC"
               />
             </g>
           )}
         </svg>
+
+        {/* Multi-Reference Group Bounding Halo + Right-Edge (+) Formation Handle */}
+        {selectionGroupBounds && (
+          <div
+            style={{
+              left: `${selectionGroupBounds.minX - 16}px`,
+              top: `${selectionGroupBounds.minY - 16}px`,
+              width: `${selectionGroupBounds.width + 32}px`,
+              height: `${selectionGroupBounds.height + 32}px`,
+            }}
+            className="absolute rounded-[18px] border border-[#20D5EC]/45 bg-[#20D5EC]/[0.025] pointer-events-none z-[5]"
+          >
+            <div className="absolute -top-7 left-1 px-2.5 py-0.5 rounded-full bg-[#132227]/95 border border-[#20D5EC]/40 text-[11px] font-medium text-[#7ceeff] flex items-center gap-1.5 shadow-lg">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC] animate-pulse" />
+              <span>
+                {selectionGroupBounds.nodes.length} References Selected · Ready to Connect
+              </span>
+            </div>
+            <button
+              type="button"
+              onPointerDown={(e) =>
+                beginWireDraftFromSources(
+                  e,
+                  'right',
+                  selectionGroupBounds.nodeIds,
+                  selectionGroupBounds.handleX,
+                  selectionGroupBounds.handleY
+                )
+              }
+              title={`Connect all ${selectionGroupBounds.nodes.length} selected references into a new node`}
+              style={{
+                left: `${selectionGroupBounds.width + 32 - 4}px`,
+                top: '50%',
+              }}
+              className="pointer-events-auto absolute -translate-y-1/2 w-[30px] h-[30px] rounded-full bg-[#102026] border border-[#20D5EC] text-[#20D5EC] hover:bg-[#20D5EC] hover:text-[#0b0d10] shadow-[0_0_0_5px_rgba(32,213,236,0.16)] flex items-center justify-center transition-all"
+            >
+              <Plus className="w-4 h-4" strokeWidth={2} />
+            </button>
+          </div>
+        )}
 
         {/* Spatial Canvas Nodes */}
         {nodes.map((node) => {
@@ -846,11 +1023,35 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
               (nn.kind === 'image' || nn.kind === 'element' || nn.kind === 'contact-sheet') &&
               Boolean(nn.imageUrl)
           );
+          const readyUpstreamVideos = incomingUpstreamNodes.filter(
+            (nn) => nn.kind === 'video' && Boolean(nn.videoUrl)
+          );
+          const readyUpstreamTexts = incomingUpstreamNodes.filter(
+            (nn) => (nn.kind === 'text' || nn.kind === 'sticky') && Boolean(nn.prompt.trim())
+          );
           const pendingUpstreamImages = incomingUpstreamNodes.filter(
             (nn) =>
               (nn.kind === 'image' || nn.kind === 'element' || nn.kind === 'contact-sheet') &&
               !nn.imageUrl
           );
+          const totalImgRefs = Math.max(
+            readyUpstreamImages.length,
+            node.referenceUrls?.length || 0
+          );
+          const totalVidRefs = Math.max(
+            readyUpstreamVideos.length,
+            node.videoReferenceUrls?.length || 0
+          );
+          const totalTxtRefs = readyUpstreamTexts.length;
+          const refSummaryParts = [
+            totalImgRefs > 0 ? `${totalImgRefs} Image${totalImgRefs > 1 ? 's' : ''}` : '',
+            totalVidRefs > 0 ? `${totalVidRefs} Video` : '',
+            totalTxtRefs > 0 ? `${totalTxtRefs} Text` : '',
+          ].filter(Boolean);
+          const refsReadyLabel =
+            refSummaryParts.length > 0
+              ? `References Ready · ${refSummaryParts.join(' · ')}`
+              : '';
 
           return (
             <div
@@ -861,10 +1062,11 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                 width: `${node.width}px`,
                 height: `${node.height}px`,
               }}
-              onMouseEnter={() => setHoveredNodeId(node.id)}
-              onMouseLeave={() =>
-                setHoveredNodeId((cur) => (cur === node.id ? null : cur))
-              }
+              onMouseEnter={() => {
+                cancelNodeHoverClear();
+                setHoveredNodeId(node.id);
+              }}
+              onMouseLeave={() => scheduleNodeHoverClear(node.id)}
               onPointerDown={(e) => handleNodePointerDown(e, node)}
               onContextMenu={(e) => handleNodeContextMenu(e, node)}
               className="absolute group"
@@ -938,33 +1140,51 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                 </div>
               </div>
 
-              {/* Left (+) Circular Port Handle */}
-              <button
-                type="button"
-                onPointerDown={(e) => handlePortPointerDown(e, node, 'left')}
-                title="Drag wire or click to place upstream reference node"
-                className={`absolute -left-[34px] top-1/2 -translate-y-1/2 w-[26px] h-[26px] rounded-full bg-[#191919] border border-white/25 hover:border-[#20D5EC] text-white/75 hover:text-[#20D5EC] hover:shadow-[0_0_0_4px_rgba(32,213,236,0.18)] flex items-center justify-center transition-all z-20 ${
-                  showPorts
-                    ? 'opacity-100 scale-100'
-                    : 'opacity-0 scale-90 pointer-events-none'
+              {/* Left (+) Circular Port Handle with Continuous Hover Bridge */}
+              <div
+                onMouseEnter={() => {
+                  cancelNodeHoverClear();
+                  setHoveredNodeId(node.id);
+                }}
+                onMouseLeave={() => scheduleNodeHoverClear(node.id)}
+                className={`absolute -left-[44px] top-1/2 -translate-y-1/2 w-[46px] h-[56px] flex items-center justify-start pl-[10px] z-20 ${
+                  showPorts ? 'pointer-events-auto' : 'pointer-events-none'
                 }`}
               >
-                <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
-              </button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => handlePortPointerDown(e, node, 'left')}
+                  title="Drag wire or click to place upstream reference node"
+                  className={`w-[26px] h-[26px] rounded-full bg-[#191919] border border-white/25 hover:border-[#20D5EC] text-white/75 hover:text-[#20D5EC] hover:shadow-[0_0_0_4px_rgba(32,213,236,0.18)] flex items-center justify-center transition-all ${
+                    showPorts ? 'opacity-100 scale-100' : 'opacity-0 scale-90'
+                  }`}
+                >
+                  <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
+                </button>
+              </div>
 
-              {/* Right (+) Circular Port Handle */}
-              <button
-                type="button"
-                onPointerDown={(e) => handlePortPointerDown(e, node, 'right')}
-                title="Drag wire or click to spawn connected downstream node"
-                className={`absolute -right-[34px] top-1/2 -translate-y-1/2 w-[26px] h-[26px] rounded-full bg-[#191919] border border-white/25 hover:border-[#20D5EC] text-white/75 hover:text-[#20D5EC] hover:shadow-[0_0_0_4px_rgba(32,213,236,0.18)] flex items-center justify-center transition-all z-20 ${
-                  showPorts
-                    ? 'opacity-100 scale-100'
-                    : 'opacity-0 scale-90 pointer-events-none'
+              {/* Right (+) Circular Port Handle with Continuous Hover Bridge */}
+              <div
+                onMouseEnter={() => {
+                  cancelNodeHoverClear();
+                  setHoveredNodeId(node.id);
+                }}
+                onMouseLeave={() => scheduleNodeHoverClear(node.id)}
+                className={`absolute -right-[44px] top-1/2 -translate-y-1/2 w-[46px] h-[56px] flex items-center justify-end pr-[10px] z-20 ${
+                  showPorts ? 'pointer-events-auto' : 'pointer-events-none'
                 }`}
               >
-                <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
-              </button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => handlePortPointerDown(e, node, 'right')}
+                  title="Drag wire or click to spawn connected downstream node"
+                  className={`w-[26px] h-[26px] rounded-full bg-[#191919] border border-white/25 hover:border-[#20D5EC] text-white/75 hover:text-[#20D5EC] hover:shadow-[0_0_0_4px_rgba(32,213,236,0.18)] flex items-center justify-center transition-all ${
+                    showPorts ? 'opacity-100 scale-100' : 'opacity-0 scale-90'
+                  }`}
+                >
+                  <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
+                </button>
+              </div>
 
               {/* Full-Bleed Matte Card Container */}
               <div
@@ -1087,13 +1307,20 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                               : 'Choose platform, video model & prompt in the bar below'}
                           </p>
                         </div>
-                        {pendingUpstreamImages.length > 0 && (
-                          <div className="mt-1 px-2.5 py-1 rounded-[6px] bg-[#252525] border border-[#20D5EC]/30 text-[11px] text-[#20D5EC] flex items-center gap-1.5">
+                        {refsReadyLabel ? (
+                          <div className="mt-1 px-2.5 py-1 rounded-[6px] bg-[#132227] border border-[#20D5EC]/35 text-[10.5px] font-medium text-[#7ceeff] flex items-center gap-1.5">
                             <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
-                            <span>
-                              Linked to {pendingUpstreamImages[0].title} · Waiting for image
-                            </span>
+                            <span>{refsReadyLabel}</span>
                           </div>
+                        ) : (
+                          pendingUpstreamImages.length > 0 && (
+                            <div className="mt-1 px-2.5 py-1 rounded-[6px] bg-[#252525] border border-[#20D5EC]/30 text-[11px] text-[#20D5EC] flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
+                              <span>
+                                Linked to {pendingUpstreamImages[0].title} · Waiting for image
+                              </span>
+                            </div>
+                          )
                         )}
                       </div>
                     )}
@@ -1118,44 +1345,135 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   >
                     {node.imageUrl ? (
                       <>
-                        <SmartMediaImage
-                          src={node.imageUrl}
-                          alt={node.title}
-                          aspectRatio={node.aspectRatio}
-                          fallbackPrompt={node.prompt}
-                          fallbackSeed={node.seed}
-                          isContactSheet={node.kind === 'contact-sheet'}
-                          className={`w-full h-full ${
-                            node.isTransparentCutout ? 'object-contain' : 'object-cover'
-                          }`}
-                        />
+                        {node.generatedOutputs &&
+                        node.generatedOutputs.length > 1 &&
+                        (node.batchViewMode ?? 'grid') === 'grid' ? (
+                          <div
+                            onPointerDown={(e) => e.stopPropagation()}
+                            className={`w-full h-full bg-[#111] grid grid-cols-2 ${
+                              node.generatedOutputs.length > 2 ? 'grid-rows-2' : ''
+                            } gap-1.5 p-1.5`}
+                          >
+                            {node.generatedOutputs.map((outUrl, idx) => {
+                              const isPrimary = node.imageUrl === outUrl;
+                              return (
+                                <div
+                                  key={`${outUrl}_${idx}`}
+                                  onClick={() => updateNodeFields(node.id, { imageUrl: outUrl })}
+                                  onDoubleClick={() =>
+                                    updateNodeFields(node.id, {
+                                      imageUrl: outUrl,
+                                      batchViewMode: 'single',
+                                    })
+                                  }
+                                  title={`Variation #${idx + 1} — Click to select, double-click to solo`}
+                                  className={`group/tile relative rounded-[7px] overflow-hidden cursor-pointer border transition-all ${
+                                    isPrimary
+                                      ? 'border-[#20D5EC] ring-1 ring-[#20D5EC]/60'
+                                      : 'border-white/[0.08] hover:border-white/30'
+                                  }`}
+                                >
+                                  <SmartMediaImage
+                                    src={outUrl}
+                                    alt={`${node.title} #${idx + 1}`}
+                                    aspectRatio={node.aspectRatio}
+                                    fallbackPrompt={node.prompt}
+                                    fallbackSeed={(node.seed || 100) + idx}
+                                    className="w-full h-full object-cover"
+                                  />
+                                  <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/75 border border-white/15 font-mono text-[10px] font-semibold text-white">
+                                    #{idx + 1}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      splitBatchNodeToIndividualNodes(node.id, idx);
+                                    }}
+                                    title={`Pop out variation #${idx + 1} as Node`}
+                                    className="opacity-0 group-hover/tile:opacity-100 transition-opacity absolute top-1.5 right-1.5 w-6 h-6 rounded-[6px] bg-black/80 hover:bg-[#20D5EC] text-white hover:text-[#0b0d10] border border-white/15 flex items-center justify-center"
+                                  >
+                                    <ArrowUpRight className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <SmartMediaImage
+                            src={node.imageUrl}
+                            alt={node.title}
+                            aspectRatio={node.aspectRatio}
+                            fallbackPrompt={node.prompt}
+                            fallbackSeed={node.seed}
+                            isContactSheet={node.kind === 'contact-sheet'}
+                            className={`w-full h-full ${
+                              node.isTransparentCutout ? 'object-contain' : 'object-cover'
+                            }`}
+                          />
+                        )}
 
                         {node.generatedOutputs && node.generatedOutputs.length > 1 && (
                           <div
                             onPointerDown={(e) => e.stopPropagation()}
-                            className="absolute bottom-2.5 left-2.5 flex items-center gap-1 p-1 rounded-[8px] bg-black/75 backdrop-blur-md border border-white/[0.14]"
+                            className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-1.5 pointer-events-none"
                           >
-                            {node.generatedOutputs.map((outUrl, idx) => (
+                            {(node.batchViewMode ?? 'grid') === 'single' ? (
+                              <div className="pointer-events-auto flex items-center gap-1 p-1 rounded-[8px] bg-black/75 backdrop-blur-md border border-white/[0.14]">
+                                {node.generatedOutputs.map((outUrl, idx) => (
+                                  <button
+                                    key={idx}
+                                    type="button"
+                                    onClick={() =>
+                                      updateNodeFields(node.id, { imageUrl: outUrl })
+                                    }
+                                    title={`Select batch output #${idx + 1}`}
+                                    className={`w-7 h-7 rounded-[5px] overflow-hidden border transition-all ${
+                                      node.imageUrl === outUrl
+                                        ? 'border-[#20D5EC] scale-105'
+                                        : 'border-white/20 opacity-70 hover:opacity-100'
+                                    }`}
+                                  >
+                                    <SmartMediaImage
+                                      src={outUrl}
+                                      alt={`Variant ${idx + 1}`}
+                                      className="w-full h-full object-cover"
+                                    />
+                                  </button>
+                                ))}
+                              </div>
+                            ) : (
+                              <div />
+                            )}
+
+                            <div className="pointer-events-auto flex items-center gap-1 p-1 rounded-[8px] bg-black/80 backdrop-blur-md border border-white/[0.14]">
                               <button
-                                key={idx}
                                 type="button"
                                 onClick={() =>
-                                  updateNodeFields(node.id, { imageUrl: outUrl })
+                                  updateNodeFields(node.id, {
+                                    batchViewMode:
+                                      (node.batchViewMode ?? 'grid') === 'grid'
+                                        ? 'single'
+                                        : 'grid',
+                                  })
                                 }
-                                title={`Select batch output #${idx + 1}`}
-                                className={`w-8 h-8 rounded-[5px] overflow-hidden border transition-all ${
-                                  node.imageUrl === outUrl
-                                    ? 'border-[#20D5EC] scale-105'
-                                    : 'border-white/20 opacity-70 hover:opacity-100'
-                                }`}
+                                className="h-6 px-2 rounded-[5px] bg-white/[0.06] hover:bg-white/[0.14] text-[10.5px] font-medium text-white/90 flex items-center gap-1"
                               >
-                                <SmartMediaImage
-                                  src={outUrl}
-                                  alt={`Variant ${idx + 1}`}
-                                  className="w-full h-full object-cover"
-                                />
+                                <Grid2X2 className="w-3 h-3 text-[#20D5EC]" />
+                                <span>
+                                  {(node.batchViewMode ?? 'grid') === 'grid'
+                                    ? '2×2 Grid'
+                                    : 'Solo'}
+                                </span>
                               </button>
-                            ))}
+                              <button
+                                type="button"
+                                onClick={() => splitBatchNodeToIndividualNodes(node.id)}
+                                className="h-6 px-2 rounded-[5px] bg-[#20D5EC]/15 hover:bg-[#20D5EC] text-[#7ceeff] hover:text-[#0b0d10] border border-[#20D5EC]/35 text-[10.5px] font-semibold transition-colors"
+                              >
+                                Split into {node.generatedOutputs.length} Nodes
+                              </button>
+                            </div>
                           </div>
                         )}
                       </>
@@ -1194,18 +1512,12 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                           </button>
                         </div>
 
-                        {(readyUpstreamImages.length > 0 ||
-                          pendingUpstreamImages.length > 0) && (
-                          <div className="mt-0.5 px-2.5 py-1 rounded-[6px] bg-[#252525] border border-[#20D5EC]/30 text-[10.5px] text-[#20D5EC] flex items-center gap-1.5">
+                        {(refsReadyLabel || pendingUpstreamImages.length > 0) && (
+                          <div className="mt-0.5 px-2.5 py-1 rounded-[6px] bg-[#132227] border border-[#20D5EC]/35 text-[10.5px] font-medium text-[#7ceeff] flex items-center gap-1.5">
                             <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
                             <span>
-                              {readyUpstreamImages.length > 0
-                                ? `Ref: ${readyUpstreamImages[0].title}${
-                                    readyUpstreamImages.length > 1
-                                      ? ` +${readyUpstreamImages.length - 1}`
-                                      : ''
-                                  }`
-                                : `Linked to ${pendingUpstreamImages[0].title} · Waiting`}
+                              {refsReadyLabel ||
+                                `Linked to ${pendingUpstreamImages[0].title} · Waiting`}
                             </span>
                           </div>
                         )}
@@ -1449,7 +1761,11 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
             className="fixed w-[216px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5"
           >
             <div className="px-2.5 py-1 text-[11px] font-medium text-white/45 flex items-center justify-between">
-              <span>Connect to new</span>
+              <span>
+                {wireDraft.sourceNodeIds && wireDraft.sourceNodeIds.length > 1
+                  ? `Reference ${wireDraft.sourceNodeIds.length} items →`
+                  : 'Connect to new'}
+              </span>
               <button
                 type="button"
                 onClick={() => setWireDraft(null)}
@@ -1465,11 +1781,22 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => {
-                    if (item.id === 'camera-3d') {
-                      selectNodes([wireDraft.sourceNodeId]);
+                    if (
+                      wireDraft.sourceNodeIds &&
+                      wireDraft.sourceNodeIds.length > 1 &&
+                      (item.id === 'image' || item.id === 'video' || item.id === 'audio')
+                    ) {
+                      void spawnConnectedNodeFromSelection(item.id, {
+                        nodeIds: wireDraft.sourceNodeIds,
+                        x: wireDraft.curWorldX,
+                        y: wireDraft.curWorldY,
+                        autoGenerate: false,
+                      });
+                    } else if (item.id === 'camera-3d') {
+                      selectNodes(wireDraft.sourceNodeIds || [wireDraft.sourceNodeId]);
                       setCameraDirectorOpen(true);
                     } else {
-                      spawnDreaminaNodeAt(
+                      const createdId = spawnDreaminaNodeAt(
                         item.id,
                         wireDraft.curWorldX,
                         wireDraft.curWorldY,
@@ -1478,6 +1805,19 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                           wireDirection: wireDraft.direction,
                         }
                       );
+                      if (
+                        createdId &&
+                        wireDraft.sourceNodeIds &&
+                        wireDraft.sourceNodeIds.length > 1
+                      ) {
+                        for (const extraId of wireDraft.sourceNodeIds.slice(1)) {
+                          if (wireDraft.direction === 'right') {
+                            connectNodes(extraId, createdId, 'lineage');
+                          } else {
+                            connectNodes(createdId, extraId, 'lineage');
+                          }
+                        }
+                      }
                     }
                     setWireDraft(null);
                   }}
@@ -1506,12 +1846,19 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
               {/* Create new ▸ with 11-item Dreamina side flyout */}
               <div
                 className="relative"
-                onMouseEnter={() => setCreateSubmenuOpen(true)}
-                onMouseLeave={() => setCreateSubmenuOpen(false)}
+                onMouseEnter={openCreateSubmenu}
+                onMouseLeave={scheduleCreateSubmenuClose}
               >
                 <button
                   type="button"
-                  onClick={() => setCreateSubmenuOpen(!createSubmenuOpen)}
+                  onClick={() =>
+                    setCreateSubmenuPinned((pinned) => {
+                      const next = !pinned;
+                      if (next) openCreateSubmenu();
+                      else setCreateSubmenuOpen(false);
+                      return next;
+                    })
+                  }
                   className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center justify-between"
                 >
                   <span className="flex items-center gap-2">
@@ -1528,10 +1875,11 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   <div
                     className={`absolute top-0 ${
                       contextMenu.screenX + 448 > window.innerWidth
-                        ? 'right-full mr-1.5'
-                        : 'left-full ml-1.5'
-                    } w-[220px] p-1.5 rounded-[12px] dreamina-menu space-y-0.5`}
+                        ? 'right-full pr-2 -mr-0.5'
+                        : 'left-full pl-2 -ml-0.5'
+                    } -my-3 py-3 z-50`}
                   >
+                    <div className="w-[220px] p-1.5 rounded-[12px] dreamina-menu space-y-0.5">
                     {CREATE_FLYOUT_ITEMS.map((item) => {
                       const Icon = item.icon;
                       return (
@@ -1554,6 +1902,8 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                                 contextMenu.worldY
                               );
                             }
+                            setCreateSubmenuPinned(false);
+                            setCreateSubmenuOpen(false);
                             setContextMenu(null);
                           }}
                           className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-left text-white/90 flex items-center justify-between"
@@ -1573,6 +1923,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                         </button>
                       );
                     })}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1653,6 +2004,47 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
           ) : (
             contextNode && (
               <>
+                {selectedNodeIds.length >= 2 && selectedNodeIds.includes(contextNode.id) && (
+                  <>
+                    <div className="px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wide text-[#7ceeff]">
+                      Reference {selectedNodeIds.length} Items →
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void spawnConnectedNodeFromSelection('image', { autoGenerate: false });
+                        setContextMenu(null);
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] bg-[#20D5EC]/10 hover:bg-[#20D5EC]/20 text-white flex items-center gap-2"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                      <span>Create Image</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void spawnConnectedNodeFromSelection('video', { autoGenerate: false });
+                        setContextMenu(null);
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] bg-[#20D5EC]/10 hover:bg-[#20D5EC]/20 text-white flex items-center gap-2 mt-0.5"
+                    >
+                      <Clapperboard className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                      <span>Create Video</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void spawnConnectedNodeFromSelection('audio', { autoGenerate: false });
+                        setContextMenu(null);
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2 mt-0.5"
+                    >
+                      <AudioLines className="w-3.5 h-3.5 text-white/60" strokeWidth={1.6} />
+                      <span>Create Audio</span>
+                    </button>
+                    <div className="my-1 h-px bg-white/[0.07]" />
+                  </>
+                )}
                 <button
                   type="button"
                   onClick={() => {

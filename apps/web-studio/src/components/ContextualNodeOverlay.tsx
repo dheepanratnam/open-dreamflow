@@ -11,6 +11,7 @@ import {
   Eraser,
   Film,
   GitBranch,
+  Grid2X2,
   Image as ImageIcon,
   Link2,
   Loader2,
@@ -24,6 +25,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Trash2,
+  Type,
   Upload,
   UserSquare2,
   Volume2,
@@ -155,6 +157,12 @@ export const ContextualNodeOverlay: React.FC = () => {
   const generateSingleNode = useStudioStore((s) => s.generateSingleNode);
   const runWorkflowPipeline = useStudioStore((s) => s.runWorkflowPipeline);
   const spawnDreaminaNodeAt = useStudioStore((s) => s.spawnDreaminaNodeAt);
+  const spawnConnectedNodeFromSelection = useStudioStore(
+    (s) => s.spawnConnectedNodeFromSelection
+  );
+  const splitBatchNodeToIndividualNodes = useStudioStore(
+    (s) => s.splitBatchNodeToIndividualNodes
+  );
   const connectNodes = useStudioStore((s) => s.connectNodes);
   const duplicateNodes = useStudioStore((s) => s.duplicateNodes);
   const deleteSelectedNodes = useStudioStore((s) => s.deleteSelectedNodes);
@@ -198,6 +206,10 @@ export const ContextualNodeOverlay: React.FC = () => {
     setModelFamilyFilter('All');
     setAtAutocompleteOpen(false);
   }, [selectedNode?.id]);
+
+  if (selectedNodeIds.length >= 2) {
+    return <MultiReferenceSelectionBar />;
+  }
 
   if (!selectedNode) return null;
 
@@ -548,6 +560,19 @@ export const ContextualNodeOverlay: React.FC = () => {
                   <Sparkles className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
                   <span>4K</span>
                 </button>
+
+                {selectedNode.generatedOutputs &&
+                  selectedNode.generatedOutputs.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => splitBatchNodeToIndividualNodes(selectedNode.id)}
+                      className="h-7 px-2.5 rounded-[7px] bg-[#20D5EC]/15 hover:bg-[#20D5EC]/25 border border-[#20D5EC]/35 text-[#7ceeff] font-medium flex items-center gap-1.5"
+                      title="Split all batch outputs into standalone canvas nodes"
+                    >
+                      <Grid2X2 className="w-3.5 h-3.5" strokeWidth={1.6} />
+                      <span>Split into {selectedNode.generatedOutputs.length} Nodes</span>
+                    </button>
+                  )}
 
                 <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
               </>
@@ -2002,6 +2027,708 @@ export const ContextualNodeOverlay: React.FC = () => {
           </div>
         </div>
       )}
+    </>
+  );
+};
+
+const MultiReferenceSelectionBar: React.FC = () => {
+  const nodes = useStudioStore((s) => s.nodes);
+  const selectedNodeIds = useStudioStore((s) => s.selectedNodeIds);
+  const panX = useStudioStore((s) => s.panX);
+  const panY = useStudioStore((s) => s.panY);
+  const zoom = useStudioStore((s) => s.zoom);
+  const byok = useStudioStore((s) => s.byok);
+  const chromeBridge = useStudioStore((s) => s.chromeBridge);
+  const platformsCatalog = useStudioStore((s) => s.platformsCatalog);
+  const externalMcpServers = useStudioStore((s) => s.externalMcpServers);
+  const connectedBrowserPlatforms = useStudioStore((s) => s.connectedBrowserPlatforms);
+  const connectedMcpPlatforms = useStudioStore((s) => s.connectedMcpPlatforms);
+  const configuredApiPlatforms = useStudioStore((s) => s.configuredApiPlatforms);
+  const lastImagePlatformId = useStudioStore((s) => s.lastImagePlatformId);
+  const lastVideoPlatformId = useStudioStore((s) => s.lastVideoPlatformId);
+  const lastAudioPlatformId = useStudioStore((s) => s.lastAudioPlatformId);
+
+  const spawnConnectedNodeFromSelection = useStudioStore(
+    (s) => s.spawnConnectedNodeFromSelection
+  );
+  const duplicateNodes = useStudioStore((s) => s.duplicateNodes);
+  const deleteSelectedNodes = useStudioStore((s) => s.deleteSelectedNodes);
+
+  const selNodes = useMemo(
+    () =>
+      selectedNodeIds
+        .map((id) => nodes.find((n) => n.id === id))
+        .filter((n): n is NonNullable<typeof n> => Boolean(n)),
+    [nodes, selectedNodeIds]
+  );
+
+  const refChips = useMemo(() => {
+    let imgIdx = 0;
+    let vidIdx = 0;
+    let txtIdx = 0;
+    return selNodes.map((n) => {
+      if (n.kind === 'image' || n.kind === 'element' || n.kind === 'contact-sheet') {
+        imgIdx += 1;
+        const tag = n.elementHandles[0] || `@Image${imgIdx}`;
+        return {
+          id: n.id,
+          type: 'image' as const,
+          tag,
+          label: n.title,
+          thumbUrl: n.imageUrl,
+          imgOrder: imgIdx - 1,
+        };
+      }
+      if (n.kind === 'video') {
+        vidIdx += 1;
+        return {
+          id: n.id,
+          type: 'video' as const,
+          tag: `@Video${vidIdx}`,
+          label: n.title,
+          thumbUrl: n.imageUrl,
+        };
+      }
+      if (n.kind === 'text' || n.kind === 'sticky') {
+        txtIdx += 1;
+        return {
+          id: n.id,
+          type: 'text' as const,
+          tag: `@Text${txtIdx}`,
+          label: n.prompt.trim().slice(0, 40) || n.title,
+        };
+      }
+      return {
+        id: n.id,
+        type: 'style' as const,
+        tag: n.kind === 'style-dna' ? '@StyleDNA' : `@${n.title.replace(/\s+/g, '_')}`,
+        label: n.title,
+      };
+    });
+  }, [selNodes]);
+
+  const imageChipCount = refChips.filter((c) => c.type === 'image').length;
+  const videoChipCount = refChips.filter((c) => c.type === 'video').length;
+
+  const [targetKind, setTargetKind] = useState<'image' | 'video' | 'audio'>(() =>
+    videoChipCount > 0 ? 'video' : 'video'
+  );
+  const [referenceFrameMode, setReferenceFrameMode] = useState<'multi-ref' | 'start-end'>(
+    'multi-ref'
+  );
+  const [composerPrompt, setComposerPrompt] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [openDropdown, setOpenDropdown] = useState<
+    null | 'platform' | 'model' | 'aspect' | 'resolution' | 'duration' | 'batch'
+  >(null);
+
+  const selectionSignature = selectedNodeIds.join('|');
+  useEffect(() => {
+    const initialText = selNodes
+      .filter((n) => (n.kind === 'text' || n.kind === 'sticky') && n.prompt.trim())
+      .map((n) => n.prompt.trim())
+      .join('\n');
+    setComposerPrompt(initialText);
+    setTargetKind(videoChipCount > 0 ? 'video' : imageChipCount >= 2 ? 'video' : 'image');
+    setReferenceFrameMode('multi-ref');
+    setOpenDropdown(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionSignature]);
+
+  const [platformId, setPlatformId] = useState<PlatformId>(lastVideoPlatformId);
+  useEffect(() => {
+    setPlatformId(
+      targetKind === 'video'
+        ? lastVideoPlatformId
+        : targetKind === 'audio'
+        ? lastAudioPlatformId
+        : lastImagePlatformId
+    );
+  }, [targetKind, lastImagePlatformId, lastVideoPlatformId, lastAudioPlatformId]);
+
+  const availablePlatforms = useMemo(
+    () => getPlatformsForModality(targetKind, platformsCatalog),
+    [platformsCatalog, targetKind]
+  );
+
+  const effectivePlatformId: PlatformId = availablePlatforms.some((p) => p.id === platformId)
+    ? platformId
+    : availablePlatforms[0]?.id || platformId;
+
+  const availableModels = useMemo(
+    () =>
+      getModelsForPlatformAndModality(
+        effectivePlatformId,
+        targetKind,
+        platformsCatalog,
+        externalMcpServers
+      ),
+    [effectivePlatformId, targetKind, platformsCatalog, externalMcpServers]
+  );
+
+  const [modelId, setModelId] = useState<string>(availableModels[0]?.id || '');
+  const activeModel =
+    availableModels.find((m) => m.id === modelId) || availableModels[0] || null;
+
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(
+    activeModel?.defaultAspect || '16:9'
+  );
+  const [resolution, setResolution] = useState<ResolutionTier>(
+    activeModel?.defaultResolution || (targetKind === 'video' ? '1080p' : '2K')
+  );
+  const [durationSec, setDurationSec] = useState<number>(
+    activeModel?.defaultDurationSec || 5
+  );
+  const [batchCount, setBatchCount] = useState<1 | 2 | 4>(1);
+  const [modelParams, setModelParams] = useState<Record<string, string | number | boolean>>(
+    {}
+  );
+
+  useEffect(() => {
+    const nextModel = availableModels[0];
+    if (!nextModel) return;
+    setModelId(nextModel.id);
+    if (nextModel.defaultAspect) setAspectRatio(nextModel.defaultAspect);
+    if (nextModel.defaultResolution) setResolution(nextModel.defaultResolution);
+    if (nextModel.defaultDurationSec) setDurationSec(nextModel.defaultDurationSec);
+    const defaults: Record<string, string | number | boolean> = {};
+    for (const p of nextModel.parameters || []) {
+      if (p.default !== undefined) defaults[p.name] = p.default;
+    }
+    setModelParams(defaults);
+  }, [effectivePlatformId, targetKind, availableModels]);
+
+  if (selNodes.length < 2) return null;
+
+  const minX = Math.min(...selNodes.map((n) => n.x));
+  const minY = Math.min(...selNodes.map((n) => n.y));
+  const maxX = Math.max(...selNodes.map((n) => n.x + n.width));
+  const maxY = Math.max(...selNodes.map((n) => n.y + n.height));
+
+  const centerScreenX = ((minX + maxX) / 2) * zoom + panX;
+  const quickTop = Math.max(58, minY * zoom + panY - 50);
+  const quickLeft = Math.min(window.innerWidth - 260, Math.max(260, centerScreenX));
+
+  const composerW = Math.min(820, Math.max(600, window.innerWidth - 150));
+  const composerLeft = Math.min(
+    window.innerWidth - composerW - 16,
+    Math.max(76, centerScreenX - composerW / 2)
+  );
+  const composerTop = Math.min(
+    window.innerHeight - 235,
+    Math.max(116, maxY * zoom + panY + 18)
+  );
+
+  const liveStatusObj = {
+    connectedBrowserPlatforms,
+    connectedMcpPlatforms,
+    configuredApiPlatforms,
+  };
+  const activePlatformDef =
+    availablePlatforms.find((p) => p.id === effectivePlatformId) || availablePlatforms[0];
+
+  const handleInsertChipTag = (tag: string) => {
+    setComposerPrompt((prev) => {
+      const trimmed = prev.trimEnd();
+      if (!trimmed) return `${tag} `;
+      return trimmed.includes(tag) ? prev : `${trimmed} ${tag} `;
+    });
+  };
+
+  const handleFormAndGenerate = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const fallbackPrompt =
+        composerPrompt.trim() ||
+        `Combine ${refChips.map((c) => c.tag).join(', ')} into a cohesive ${targetKind}`;
+      await spawnConnectedNodeFromSelection(targetKind, {
+        nodeIds: selNodes.map((n) => n.id),
+        prompt: fallbackPrompt,
+        platformId: effectivePlatformId,
+        modelId: activeModel?.id || modelId,
+        aspectRatio,
+        resolution,
+        batchCount: targetKind === 'image' ? batchCount : 1,
+        durationSec: targetKind === 'video' ? durationSec : undefined,
+        modelParams,
+        referenceFrameMode: targetKind === 'video' ? referenceFrameMode : undefined,
+        autoGenerate: true,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      {/* 1. Floating Top Multi-Reference Formation Pill Bar */}
+      <div
+        style={{
+          left: `${quickLeft}px`,
+          top: `${quickTop}px`,
+          transform: 'translateX(-50%)',
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="fixed z-40 h-9 px-2 rounded-[10px] dreamina-levitation flex items-center gap-1 text-[11.5px] select-none whitespace-nowrap"
+      >
+        <span className="px-2 py-0.5 rounded-[6px] bg-[#20D5EC]/15 border border-[#20D5EC]/35 font-semibold text-[#7ceeff]">
+          {selNodes.length} Selected
+        </span>
+        <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
+        <button
+          type="button"
+          onClick={() =>
+            void spawnConnectedNodeFromSelection('image', {
+              prompt: composerPrompt,
+              autoGenerate: false,
+            })
+          }
+          className="h-7 px-2.5 rounded-[7px] hover:bg-white/[0.1] text-white/90 font-medium flex items-center gap-1.5"
+        >
+          <ImageIcon className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+          <span>→ Reference to Image</span>
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            void spawnConnectedNodeFromSelection('video', {
+              prompt: composerPrompt,
+              referenceFrameMode,
+              autoGenerate: false,
+            })
+          }
+          className="h-7 px-2.5 rounded-[7px] bg-white/[0.08] hover:bg-white/[0.15] text-white font-medium flex items-center gap-1.5"
+        >
+          <Clapperboard className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+          <span>→ Reference to Video</span>
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            void spawnConnectedNodeFromSelection('audio', {
+              prompt: composerPrompt,
+              autoGenerate: false,
+            })
+          }
+          className="h-7 px-2.5 rounded-[7px] hover:bg-white/[0.1] text-white/85 flex items-center gap-1.5"
+        >
+          <AudioLines className="w-3.5 h-3.5 text-white/65" strokeWidth={1.6} />
+          <span>→ Reference to Audio</span>
+        </button>
+        <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
+        <button
+          type="button"
+          onClick={() => duplicateNodes()}
+          className="h-7 px-2 rounded-[7px] hover:bg-white/[0.08] text-white/75"
+          title="Duplicate selected"
+        >
+          <Copy className="w-3.5 h-3.5" strokeWidth={1.5} />
+        </button>
+        <button
+          type="button"
+          onClick={() => deleteSelectedNodes()}
+          className="h-7 px-2 rounded-[7px] hover:bg-red-500/15 text-red-400"
+          title="Delete selected"
+        >
+          <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} />
+        </button>
+      </div>
+
+      {/* 2. Dreamina Multi-Reference Composer Bar */}
+      <div
+        style={{
+          left: `${composerLeft}px`,
+          top: `${composerTop}px`,
+          width: `${composerW}px`,
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="fixed z-40 rounded-[16px] dreamina-levitation p-3 space-y-2.5 select-none"
+      >
+        {/* Header: Modality Tabs + Start/End Toggle + Clickable @Reference Chips */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-1 p-0.5 rounded-[8px] bg-[#141414] border border-white/[0.07]">
+            {(['image', 'video', 'audio'] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => {
+                  setTargetKind(k);
+                  setOpenDropdown(null);
+                }}
+                className={`h-6 px-2.5 rounded-[6px] text-[11px] font-medium transition-colors flex items-center gap-1 ${
+                  targetKind === k
+                    ? 'bg-[#2a2a2a] text-white'
+                    : 'text-white/55 hover:text-white'
+                }`}
+              >
+                {k === 'image' ? 'Create Image' : k === 'video' ? 'Create Video' : 'Create Audio'}
+              </button>
+            ))}
+          </div>
+
+          {targetKind === 'video' && imageChipCount >= 2 && (
+            <div className="flex items-center gap-1 p-0.5 rounded-[8px] bg-[#141414] border border-white/[0.07] text-[10.5px]">
+              <button
+                type="button"
+                onClick={() => setReferenceFrameMode('multi-ref')}
+                className={`h-5 px-2 rounded-[5px] ${
+                  referenceFrameMode === 'multi-ref'
+                    ? 'bg-[#20D5EC]/20 text-[#7ceeff] font-medium'
+                    : 'text-white/55 hover:text-white'
+                }`}
+              >
+                Multi-Ref
+              </button>
+              <button
+                type="button"
+                onClick={() => setReferenceFrameMode('start-end')}
+                className={`h-5 px-2 rounded-[5px] ${
+                  referenceFrameMode === 'start-end'
+                    ? 'bg-[#20D5EC]/20 text-[#7ceeff] font-medium'
+                    : 'text-white/55 hover:text-white'
+                }`}
+              >
+                Start → End Frame
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Selected Node Reference Chips (click to insert @handle) */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {refChips.map((chip) => (
+            <button
+              key={chip.id}
+              type="button"
+              onClick={() => handleInsertChipTag(chip.tag)}
+              title={`Click to insert ${chip.tag} into prompt (${chip.label})`}
+              className="h-6 pl-1.5 pr-2 rounded-[6px] bg-[#1f292c] hover:bg-[#25363b] border border-[#20D5EC]/35 text-[11px] text-[#bdf5ff] flex items-center gap-1.5 transition-colors"
+            >
+              {chip.type === 'image' && chip.thumbUrl ? (
+                <SmartMediaImage
+                  src={chip.thumbUrl}
+                  alt={chip.tag}
+                  className="w-4 h-4 rounded-[3px] object-cover"
+                />
+              ) : chip.type === 'video' ? (
+                <Clapperboard className="w-3 h-3 text-[#20D5EC]" />
+              ) : (
+                <Type className="w-3 h-3 text-[#20D5EC]" />
+              )}
+              <span className="font-mono">{chip.tag}</span>
+              {targetKind === 'video' &&
+                referenceFrameMode === 'start-end' &&
+                chip.type === 'image' &&
+                chip.imgOrder !== undefined &&
+                chip.imgOrder < 2 && (
+                  <span className="px-1 rounded bg-[#20D5EC]/25 text-[9.5px] font-semibold">
+                    {chip.imgOrder === 0 ? 'Start' : 'End'}
+                  </span>
+                )}
+            </button>
+          ))}
+        </div>
+
+        {/* Multi-Reference Prompt Input */}
+        <textarea
+          value={composerPrompt}
+          onChange={(e) => setComposerPrompt(e.target.value)}
+          rows={2}
+          placeholder={`Describe how to fuse ${refChips
+            .map((c) => c.tag)
+            .slice(0, 4)
+            .join(', ')} into your new ${targetKind}…`}
+          className="w-full rounded-[10px] bg-[#141414] border border-white/[0.08] focus:border-[#20D5EC]/50 px-3 py-2 text-[12.5px] text-white placeholder:text-white/35 outline-none resize-none select-text"
+        />
+
+        {/* Controls Footer: [Where · Model · Aspect · Res · Duration · Batch] + Form & Generate */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap relative">
+            {/* Platform Pill */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() =>
+                  setOpenDropdown(openDropdown === 'platform' ? null : 'platform')
+                }
+                className="h-7 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/90 flex items-center gap-1.5"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
+                <span>{activePlatformDef?.shortLabel || effectivePlatformId}</span>
+                <ChevronDown className="w-3 h-3 text-white/45" />
+              </button>
+              {openDropdown === 'platform' && (
+                <div className="absolute bottom-full left-0 mb-1.5 w-[210px] max-h-[240px] overflow-y-auto p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5 text-[11.5px]">
+                  {availablePlatforms.map((plat) => {
+                    const st = getPlatformConnectionStatus(
+                      plat.id,
+                      byok,
+                      chromeBridge,
+                      externalMcpServers,
+                      plat,
+                      liveStatusObj
+                    );
+                    return (
+                      <button
+                        key={plat.id}
+                        type="button"
+                        onClick={() => {
+                          setPlatformId(plat.id);
+                          setOpenDropdown(null);
+                        }}
+                        className={`w-full h-7 px-2 rounded-[6px] flex items-center justify-between text-left ${
+                          plat.id === effectivePlatformId
+                            ? 'bg-white/[0.12] text-white font-medium'
+                            : 'hover:bg-white/[0.07] text-white/80'
+                        }`}
+                      >
+                        <span className="truncate">{plat.shortLabel}</span>
+                        {st.connected && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Model Pill */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setOpenDropdown(openDropdown === 'model' ? null : 'model')}
+                className="h-7 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/90 flex items-center gap-1.5 max-w-[190px]"
+              >
+                <span className="truncate">{activeModel?.label || 'Model'}</span>
+                <ChevronDown className="w-3 h-3 text-white/45 shrink-0" />
+              </button>
+              {openDropdown === 'model' && (
+                <div className="absolute bottom-full left-0 mb-1.5 w-[240px] max-h-[240px] overflow-y-auto p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5 text-[11.5px]">
+                  {availableModels.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => {
+                        setModelId(m.id);
+                        if (m.defaultAspect) setAspectRatio(m.defaultAspect);
+                        if (m.defaultResolution) setResolution(m.defaultResolution);
+                        if (m.defaultDurationSec) setDurationSec(m.defaultDurationSec);
+                        setOpenDropdown(null);
+                      }}
+                      className={`w-full px-2 py-1.5 rounded-[6px] text-left flex items-center justify-between ${
+                        m.id === activeModel?.id
+                          ? 'bg-white/[0.12] text-white font-medium'
+                          : 'hover:bg-white/[0.07] text-white/80'
+                      }`}
+                    >
+                      <span className="truncate">{m.label}</span>
+                      {m.providerFamily && (
+                        <span className="text-[10px] text-white/40 ml-2">
+                          {m.providerFamily}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Aspect Ratio Pill */}
+            {activeModel?.aspectRatios && activeModel.aspectRatios.length > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOpenDropdown(openDropdown === 'aspect' ? null : 'aspect')
+                  }
+                  className="h-7 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/85 flex items-center gap-1"
+                >
+                  <span>{aspectRatio}</span>
+                  <ChevronDown className="w-3 h-3 text-white/45" />
+                </button>
+                {openDropdown === 'aspect' && (
+                  <div className="absolute bottom-full left-0 mb-1.5 p-1 rounded-[10px] dreamina-menu z-50 flex flex-wrap gap-1 w-[170px]">
+                    {activeModel.aspectRatios.map((ar) => (
+                      <button
+                        key={ar}
+                        type="button"
+                        onClick={() => {
+                          setAspectRatio(ar);
+                          setOpenDropdown(null);
+                        }}
+                        className={`h-6 px-2 rounded-[6px] text-[11px] ${
+                          ar === aspectRatio
+                            ? 'bg-white text-[#0e0e0e] font-semibold'
+                            : 'bg-white/[0.05] text-white/80 hover:bg-white/[0.12]'
+                        }`}
+                      >
+                        {ar}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Resolution Pill */}
+            {activeModel?.resolutions && activeModel.resolutions.length > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOpenDropdown(openDropdown === 'resolution' ? null : 'resolution')
+                  }
+                  className="h-7 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/85 flex items-center gap-1"
+                >
+                  <span>{resolution}</span>
+                  <ChevronDown className="w-3 h-3 text-white/45" />
+                </button>
+                {openDropdown === 'resolution' && (
+                  <div className="absolute bottom-full left-0 mb-1.5 p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5 w-[100px]">
+                    {activeModel.resolutions.map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        onClick={() => {
+                          setResolution(r);
+                          setOpenDropdown(null);
+                        }}
+                        className={`w-full h-6 px-2 rounded-[6px] text-[11px] text-left ${
+                          r === resolution
+                            ? 'bg-white/[0.14] text-white font-semibold'
+                            : 'text-white/80 hover:bg-white/[0.07]'
+                        }`}
+                      >
+                        {r}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Inline Enum Parameter Pills (e.g. Quality / Mode) */}
+            {(activeModel?.parameters || [])
+              .filter((p) => p.type === 'enum' && (p.options?.length || 0) > 1 && p.inlinePill !== false)
+              .slice(0, 2)
+              .map((param) => {
+                const opts = param.options || [];
+                const curVal = String(modelParams[param.name] ?? param.default ?? opts[0] ?? '');
+                const nextIdx = (opts.map(String).indexOf(curVal) + 1) % opts.length;
+                return (
+                  <button
+                    key={param.name}
+                    type="button"
+                    onClick={() =>
+                      setModelParams((prev) => ({
+                        ...prev,
+                        [param.name]: opts[nextIdx],
+                      }))
+                    }
+                    title={`Cycle ${param.label}`}
+                    className="h-7 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/85 flex items-center gap-1"
+                  >
+                    <span className="text-white/45">{param.label}:</span>
+                    <span className="font-medium text-white">{curVal}</span>
+                  </button>
+                );
+              })}
+
+            {/* Duration (Video) */}
+            {targetKind === 'video' && (activeModel?.durationsSec?.length || 0) > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOpenDropdown(openDropdown === 'duration' ? null : 'duration')
+                  }
+                  className="h-7 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/85 flex items-center gap-1"
+                >
+                  <span>{durationSec}s</span>
+                  <ChevronDown className="w-3 h-3 text-white/45" />
+                </button>
+                {openDropdown === 'duration' && (
+                  <div className="absolute bottom-full left-0 mb-1.5 p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5 w-[90px]">
+                    {activeModel!.durationsSec!.map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => {
+                          setDurationSec(d);
+                          setOpenDropdown(null);
+                        }}
+                        className={`w-full h-6 px-2 rounded-[6px] text-[11px] text-left ${
+                          d === durationSec
+                            ? 'bg-white/[0.14] text-white font-semibold'
+                            : 'text-white/80 hover:bg-white/[0.07]'
+                        }`}
+                      >
+                        {d}s
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Batch Count (Image) */}
+            {targetKind === 'image' && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setOpenDropdown(openDropdown === 'batch' ? null : 'batch')}
+                  className="h-7 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/85 flex items-center gap-1"
+                >
+                  <span>{batchCount}×</span>
+                  <ChevronDown className="w-3 h-3 text-white/45" />
+                </button>
+                {openDropdown === 'batch' && (
+                  <div className="absolute bottom-full left-0 mb-1.5 p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5 w-[80px]">
+                    {([1, 2, 4] as const).map((cnt) => (
+                      <button
+                        key={cnt}
+                        type="button"
+                        onClick={() => {
+                          setBatchCount(cnt);
+                          setOpenDropdown(null);
+                        }}
+                        className={`w-full h-6 px-2 rounded-[6px] text-[11px] text-left ${
+                          cnt === batchCount
+                            ? 'bg-white/[0.14] text-white font-semibold'
+                            : 'text-white/80 hover:bg-white/[0.07]'
+                        }`}
+                      >
+                        {cnt}× Grid
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => void handleFormAndGenerate()}
+            className="h-8 px-3.5 rounded-full bg-white hover:bg-[#e5e5e5] disabled:opacity-50 text-[#0e0e0e] text-[12px] font-semibold flex items-center gap-1.5 transition-colors shrink-0"
+          >
+            {submitting ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+                <span>Forming…</span>
+              </>
+            ) : (
+              <>
+                <span>Form &amp; Generate</span>
+                <ArrowUp className="w-3.5 h-3.5" strokeWidth={2.2} />
+              </>
+            )}
+          </button>
+        </div>
+      </div>
     </>
   );
 };
