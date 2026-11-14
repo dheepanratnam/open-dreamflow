@@ -76,12 +76,12 @@ function runDoctor() {
   const sdkDistPath = path.join(REPO_ROOT, 'packages/provider-sdk/dist/index.js');
   const mcpDistPath = path.join(REPO_ROOT, 'packages/mcp-client/dist/server-bridge.js');
   const studioIndexPath = path.join(REPO_ROOT, 'apps/web-studio/dist/index.html');
-  const publicMediaPath = path.join(REPO_ROOT, 'apps/web-studio/public/media/real_courtyard_sun.jpg');
+  const brandAssetPath = path.join(REPO_ROOT, 'apps/web-studio/public/brands/higgsfield.png');
 
   const sdkOk = fs.existsSync(sdkDistPath);
   const mcpOk = fs.existsSync(mcpDistPath);
   const studioOk = fs.existsSync(studioIndexPath);
-  const mediaOk = fs.existsSync(publicMediaPath);
+  const brandsOk = fs.existsSync(brandAssetPath);
 
   console.log('Open-DreamFlow Environment Doctor');
   console.log('────────────────────────────────────────────────────────');
@@ -91,7 +91,7 @@ function runDoctor() {
   console.log(`  [${sdkOk ? '✓' : '✗'}] Provider SDK Build    ${sdkOk ? 'packages/provider-sdk/dist/index.js' : 'MISSING (run npm run build:sdk)'}`);
   console.log(`  [${mcpOk ? '✓' : '✗'}] 12-Tool MCP Engine    ${mcpOk ? 'packages/mcp-client/dist/server-bridge.js' : 'MISSING (run npm run build:mcp)'}`);
   console.log(`  [${studioOk ? '✓' : '!'}] Web Studio SPA Build  ${studioOk ? 'apps/web-studio/dist/index.html' : 'not built yet (run npm run build)'}`);
-  console.log(`  [${mediaOk ? '✓' : '!'}] Camera Photography    ${mediaOk ? 'apps/web-studio/public/media/real_*.jpg' : 'missing sample media'}`);
+  console.log(`  [${brandsOk ? '✓' : '!'}] Official Brand Assets ${brandsOk ? 'apps/web-studio/public/brands/*' : 'missing brand logos'}`);
   console.log('────────────────────────────────────────────────────────');
 
   if (!nodeOk || !ffmpegInfo.available || !mcpOk) {
@@ -104,6 +104,9 @@ function runDoctor() {
 }
 
 async function runStart(flagArgs) {
+  if (!process.env.DREAMFLOW_DATA_DIR && process.env.OPEN_DREAMFLOW_DATA_DIR) {
+    process.env.DREAMFLOW_DATA_DIR = process.env.OPEN_DREAMFLOW_DATA_DIR;
+  }
   const mcpDistPath = path.join(REPO_ROOT, 'packages/mcp-client/dist/server-bridge.js');
   if (!fs.existsSync(mcpDistPath)) {
     console.error('Error: packages/mcp-client/dist/server-bridge.js not found. Run `npm run build:mcp` first.');
