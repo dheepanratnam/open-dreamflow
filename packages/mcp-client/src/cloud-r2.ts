@@ -163,7 +163,13 @@ export function buildR2PublicUrl(key: string, publicBaseUrl?: string | null): st
   if (base) {
     return `${base}/${encodedKeyPath}`;
   }
-  return `/media/${encodedKeyPath}`;
+  const mediaRelativeKey = cleanKey.replace(/^(?:media\/+)+/i, '');
+  const encodedMediaRelative = mediaRelativeKey
+    .split('/')
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  return `/media/${encodedMediaRelative}`;
 }
 
 function sha256Hex(data: Buffer | string): string {
@@ -437,6 +443,31 @@ export async function listR2Objects(prefix = '', maxKeys = 200): Promise<R2Asset
     return items;
   } catch {
     return [];
+  }
+}
+
+export async function downloadObjectFromR2(
+  key: string
+): Promise<{ ok: boolean; body?: Buffer; contentType?: string; error?: string }> {
+  const cleanKey = normalizeObjectKey(key);
+  if (!cleanKey) return { ok: false, error: 'Object key is required.' };
+  const cfg = readR2Config();
+  if (!cfg) return { ok: false, error: 'Object storage is not configured.' };
+
+  try {
+    const res = await executeSignedR2Request(cfg, {
+      method: 'GET',
+      key: cleanKey,
+      timeoutMs: 60_000,
+    });
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      const ctRaw = res.headers['content-type'];
+      const contentType = Array.isArray(ctRaw) ? ctRaw[0] : ctRaw;
+      return { ok: true, body: res.body, contentType };
+    }
+    return { ok: false, error: `HTTP ${res.statusCode}` };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

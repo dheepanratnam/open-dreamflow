@@ -185,11 +185,18 @@ export const DreaminaFloatingChrome: React.FC = () => {
     '35mm natural daylight architectural portrait sequence in a warm travertine courtyard.'
   );
 
+  const lastAutoFetchedAssetSourceRef = useRef<string | null>(null);
+
   useEffect(() => {
-    if (assetDrawerOpen && assetsCatalog.length === 0 && !assetsLoading) {
+    if (!assetDrawerOpen) {
+      lastAutoFetchedAssetSourceRef.current = null;
+      return;
+    }
+    if (lastAutoFetchedAssetSourceRef.current !== assetsSourceFilter) {
+      lastAutoFetchedAssetSourceRef.current = assetsSourceFilter;
       void refreshAssetsCatalog(assetsSourceFilter, false);
     }
-  }, [assetDrawerOpen, assetsCatalog.length, assetsLoading, assetsSourceFilter, refreshAssetsCatalog]);
+  }, [assetDrawerOpen, assetsSourceFilter, refreshAssetsCatalog]);
 
   const connectedSet = new Set<string>(connectedBrowserPlatforms);
   for (const [k, v] of Object.entries(chromeBridge.connectedPlatforms || {})) {

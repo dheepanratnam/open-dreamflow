@@ -72,6 +72,7 @@ import {
   getR2ConfigSummary,
   uploadBufferToR2,
   listR2Objects,
+  downloadObjectFromR2,
 } from './cloud-r2.js';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -1131,6 +1132,24 @@ export class McpStdioBridgeServer {
     {
       fetchedAt: number;
       balance: { credits?: number; plan?: string; account?: string; rawText: string };
+    }
+  >();
+  private readonly mcpBalanceErrors = new Map<string, string>();
+  private readonly generationJobs = new Map<
+    string,
+    {
+      jobId: string;
+      userId: string;
+      nodeId?: string;
+      platformId: string;
+      modelId: string;
+      kind: string;
+      status: 'running' | 'completed' | 'failed';
+      createdAt: number;
+      updatedAt: number;
+      result?: Record<string, unknown>;
+      error?: string;
+      statusCode?: number;
     }
   >();
   private readonly mcpRefUploadCache = new Map<string, string>();
@@ -2675,7 +2694,9 @@ export class McpStdioBridgeServer {
 
     // 1. Already a local `/media/<file>` path on disk
     if (trimmed.startsWith('/media/')) {
-      const existingName = path.basename(decodeURIComponent(trimmed.replace(/^\/media\/+/, '')));
+      const existingName = path.basename(
+        decodeURIComponent(trimmed.replace(/^(?:\/media\/+)+/, ''))
+      );
       const existingPath = path.join(this.mediaDir, existingName);
       if (existingName && fs.existsSync(existingPath) && fs.statSync(existingPath).isFile()) {
         const resident = this.preferResidentMediaPath(existingPath);
@@ -2683,6 +2704,19 @@ export class McpStdioBridgeServer {
         const isVideo = /\.(mp4|webm|mov)$/i.test(existingName);
         const isAudio = /\.(mp3|wav|m4a|aiff)$/i.test(existingName);
         const mediaUrl = `/media/${existingName}`;
+        const inferredPlat = safePrefix.replace(/_(?:mcp|live|import)$/i, '') || undefined;
+        const curUser = this.getCurrentRequestUser();
+        this.recordMediaOwnership(existingName, curUser.id, inferredPlat);
+        if (isR2Configured() && !this.loadMediaIndex()[existingName]?.r2Key) {
+          const contentType =
+            MIME_BY_EXT[path.extname(existingName).toLowerCase()] || 'application/octet-stream';
+          void fs.promises
+            .readFile(resident)
+            .then((fileBuf) =>
+              this.mirrorBufferToR2AndIndex(existingName, fileBuf, contentType, inferredPlat)
+            )
+            .catch(() => {});
+        }
         return {
           mediaUrl,
           imageUrl: !isVideo && !isAudio ? mediaUrl : undefined,
@@ -4559,12 +4593,17 @@ export class McpStdioBridgeServer {
           if (Number.isFinite(parsed)) credits = parsed;
         }
         const rawPlan =
-          structured.plan ?? structured.vipLevel ?? structured.tier ?? structured.subscription;
+          structured.plan ??
+          structured.subscription_plan_type ??
+          structured.vipLevel ??
+          structured.tier ??
+          structured.subscription;
         if (typeof rawPlan === 'string' && rawPlan.trim()) {
           plan = rawPlan.trim().toLowerCase();
         }
-        if (typeof structured.account === 'string' && structured.account.trim()) {
-          account = structured.account.trim();
+        const rawAccount = structured.account ?? structured.email;
+        if (typeof rawAccount === 'string' && rawAccount.trim()) {
+          account = rawAccount.trim();
         }
       }
 
@@ -4597,10 +4636,15 @@ export class McpStdioBridgeServer {
         ...(account ? { account } : {}),
         rawText: fallbackText,
       };
+      this.mcpBalanceErrors.delete(serverId);
       this.mcpBalanceCache.set(serverId, { fetchedAt: now, balance });
       return balance;
-    } catch {
-      return cached ? cached.balance : null;
+    } catch (err) {
+      this.mcpBalanceErrors.set(
+        serverId,
+        err instanceof Error ? err.message : String(err)
+      );
+      return forceRefresh ? null : cached ? cached.balance : null;
     }
   }
 
@@ -4911,6 +4955,7 @@ export class McpStdioBridgeServer {
       };
       const acctName =
         balObj.account ||
+        (typeof srv.account?.email === 'string' ? srv.account.email : undefined) ||
         (typeof srv.account?.name === 'string' ? srv.account.name : undefined) ||
         (typeof srv.account?.username === 'string' ? srv.account.username : undefined);
       mcpBalances[srv.platformId] = {
@@ -5200,10 +5245,69 @@ export class McpStdioBridgeServer {
     let unlimitedEligible = false;
     if (platformId === 'higgsfield') {
       const hfServer = this.findMcpServerForUser(user, 'higgsfield', undefined, 'auto');
-      const cachedBal = hfServer ? this.mcpBalanceCache.get(hfServer.id)?.balance : null;
+      const cachedBal = hfServer
+        ? (await this.getMcpBalanceWithCache(hfServer.id, false).catch(() => null)) ||
+          this.mcpBalanceCache.get(hfServer.id)?.balance ||
+          null
+        : null;
       const planStr = String(cachedBal?.plan || '').toLowerCase();
       supportsUnlimited = /ultimate|unlimited|pro/i.test(planStr);
       unlimitedEligible = supportsUnlimited && batchCount === 1 && !/kling-o|sora-2-pro/i.test(modelId);
+
+      if (
+        live &&
+        hfServer &&
+        (modality === 'image' || modality === 'video') &&
+        hfServer.tools.some((t) => t.name === (modality === 'video' ? 'generate_video' : 'generate_image'))
+      ) {
+        try {
+          const toolName = modality === 'video' ? 'generate_video' : 'generate_image';
+          const normalizedHfModel = normalizeHiggsfieldMcpModelId(modelId, modality);
+          const modelDef = await this.findHiggsfieldModelSchema(hfServer.id, normalizedHfModel);
+          const hfParams = this.buildHiggsfieldModelParams({
+            normalizedModel: normalizedHfModel,
+            kind: modality,
+            modelDef,
+            prompt: prompt || 'cost preflight quote',
+            aspectRatio,
+            resolution,
+            quality: String(settings.quality ?? params.quality ?? '').trim(),
+            durationSec,
+            batchCount,
+            audioEnabled: settings.audioEnabled !== false && params.audioEnabled !== false,
+            mergedModelParams:
+              typeof settings.modelParams === 'object' && settings.modelParams !== null
+                ? (settings.modelParams as Record<string, unknown>)
+                : {},
+            medias: [],
+            explicitParams: { get_cost: true },
+          });
+          const preflightRes = await this.externalMcpHost.callTool({
+            serverId: hfServer.id,
+            toolName,
+            arguments: { params: hfParams },
+            timeoutMs: 12_000,
+          });
+          const st =
+            typeof preflightRes.rawResult?.structuredContent === 'object' &&
+            preflightRes.rawResult.structuredContent !== null
+              ? (preflightRes.rawResult.structuredContent as Record<string, unknown>)
+              : {};
+          const rawExact = st.credits ?? st.cost ?? st.total_credits ?? st.exact_cost;
+          let parsedCost =
+            typeof rawExact === 'number' && Number.isFinite(rawExact) ? rawExact : NaN;
+          if (!Number.isFinite(parsedCost) && preflightRes.textSummary) {
+            const m = /:\s*([0-9]+(?:\.[0-9]+)?)\s*credits/i.exec(preflightRes.textSummary);
+            if (m) parsedCost = Number(m[1]);
+          }
+          if (Number.isFinite(parsedCost) && parsedCost >= 0) {
+            finalCredits = parsedCost;
+            source = 'live_cli';
+          }
+        } catch {
+          // Non-fatal fallback to calibrated/rate_table estimate
+        }
+      }
     }
 
     const payload: Record<string, unknown> = {
@@ -5369,13 +5473,20 @@ export class McpStdioBridgeServer {
           manualExpiresAt: meta.manualExpiresAt ?? null,
         };
       } else if (pid === 'higgsfield') {
+        const hfBalErr = hfServer ? this.mcpBalanceErrors.get(hfServer.id) : undefined;
         platforms[pid] = {
           platformId: pid,
           connected: Boolean(hfServer),
           credits: hfBal?.credits ?? null,
           plan: hfPlan || null,
           supportsUnlimited: hfSupportsUnlimited,
-          account: hfBal?.account || hfServer?.account?.name || hfServer?.account?.username || null,
+          account:
+            hfBal?.account ||
+            hfServer?.account?.email ||
+            hfServer?.account?.name ||
+            hfServer?.account?.username ||
+            null,
+          ...(hfBal === null && hfBalErr ? { authError: hfBalErr } : {}),
           source: hfServer ? (this.isServerOwnedByUser(hfServer.id, user.id) ? 'own' : 'shared') : null,
           resetDay: meta.resetDay ?? null,
           manualBudgetCredits: meta.manualBudgetCredits ?? null,
@@ -6754,10 +6865,33 @@ export class McpStdioBridgeServer {
       },
     };
 
-    const result = await this.executeGenerateNodeCore(enrichedParams, {
-      user,
-      resolvedMcpServerId: effectiveMcpServer?.id,
-    });
+    let result: Record<string, unknown>;
+    try {
+      result = await this.executeGenerateNodeCore(enrichedParams, {
+        user,
+        resolvedMcpServerId: effectiveMcpServer?.id,
+      });
+    } catch (coreErr) {
+      if (coreErr instanceof BridgeHttpError) {
+        throw coreErr;
+      }
+      const msg = coreErr instanceof Error ? coreErr.message : String(coreErr);
+      if (/\b403\b|FNF API.*403|workspace.*403/i.test(msg)) {
+        throw new BridgeHttpError(
+          403,
+          `${platformId} workspace token was denied (403). Click Reconnect in Connections · Credits to refresh OAuth permissions. (${msg})`,
+          platformId
+        );
+      }
+      if (
+        /sensitive|moderation|safety|content.?policy|violat|nsfw|prohibited|invalid.*param|unsupported.*ratio|unsupported.*duration|rejected/i.test(
+          msg
+        )
+      ) {
+        throw new BridgeHttpError(422, msg, platformId);
+      }
+      throw new BridgeHttpError(502, msg, platformId);
+    }
 
     let creditsUsed = est.credits;
     if (
@@ -6794,6 +6928,110 @@ export class McpStdioBridgeServer {
       ...result,
       creditSourceUsed: effectiveCreditSource,
       creditsUsed,
+    };
+  }
+
+  public startAsyncNodeGenerationJob(params: Record<string, unknown>): {
+    ok: true;
+    jobId: string;
+    status: 'running';
+    createdAt: number;
+  } {
+    const user = this.getCurrentRequestUser();
+    const prompt = String(params.prompt || '').trim();
+    const platformId = String(params.platformId || params.provider || 'higgsfield')
+      .trim()
+      .toLowerCase();
+    if (!prompt) {
+      throw new BridgeHttpError(400, 'Prompt is required to generate this node.', platformId);
+    }
+
+    // Prune completed/failed jobs older than 2 hours
+    const cutoff = Date.now() - 2 * 3600_000;
+    for (const [jid, rec] of this.generationJobs.entries()) {
+      if (rec.status !== 'running' && rec.updatedAt < cutoff) {
+        this.generationJobs.delete(jid);
+      }
+    }
+
+    const now = Date.now();
+    const jobId = `genjob_${now}_${crypto.randomBytes(5).toString('hex')}`;
+    const nodeId = typeof params.nodeId === 'string' ? params.nodeId : undefined;
+    const modelId = String(params.modelId || params.model || '').trim();
+    const kind = String(params.kind || params.modality || 'image').trim().toLowerCase();
+
+    const jobRecord: {
+      jobId: string;
+      userId: string;
+      nodeId?: string;
+      platformId: string;
+      modelId: string;
+      kind: string;
+      status: 'running' | 'completed' | 'failed';
+      createdAt: number;
+      updatedAt: number;
+      result?: Record<string, unknown>;
+      error?: string;
+      statusCode?: number;
+    } = {
+      jobId,
+      userId: user.id,
+      nodeId,
+      platformId,
+      modelId,
+      kind,
+      status: 'running',
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.generationJobs.set(jobId, jobRecord);
+
+    void this.requestUserStorage
+      .run(user, () => this.generateNode(params))
+      .then((resObj) => {
+        jobRecord.status = 'completed';
+        jobRecord.result = resObj;
+        jobRecord.updatedAt = Date.now();
+      })
+      .catch((err) => {
+        jobRecord.status = 'failed';
+        jobRecord.error = err instanceof Error ? err.message : String(err);
+        jobRecord.statusCode = err instanceof BridgeHttpError ? err.statusCode : 500;
+        jobRecord.updatedAt = Date.now();
+      });
+
+    return {
+      ok: true,
+      jobId,
+      status: 'running',
+      createdAt: now,
+    };
+  }
+
+  public getAsyncNodeGenerationJob(jobId: string): Record<string, unknown> {
+    const user = this.getCurrentRequestUser();
+    const job = this.generationJobs.get(jobId);
+    if (!job) {
+      throw new BridgeHttpError(404, `Generation job "${jobId}" not found or expired.`);
+    }
+    if (job.userId !== user.id && user.role !== 'owner') {
+      throw new BridgeHttpError(403, 'You do not have permission to read this generation job.');
+    }
+    return {
+      ok: true,
+      jobId: job.jobId,
+      nodeId: job.nodeId,
+      platformId: job.platformId,
+      modelId: job.modelId,
+      kind: job.kind,
+      status: job.status,
+      elapsedMs: Date.now() - job.createdAt,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      ...(job.status === 'completed' ? { result: job.result } : {}),
+      ...(job.status === 'failed'
+        ? { error: job.error || 'Generation failed.', statusCode: job.statusCode || 500 }
+        : {}),
     };
   }
 
@@ -7220,7 +7458,7 @@ export class McpStdioBridgeServer {
       const targetOutputCount = kind === 'image' ? batchCount : 1;
       const effectiveMcpTimeoutMs =
         candidateMcpServer.platformId === 'dreamina'
-          ? Math.max(Number(params.timeoutMs) || 0, kind === 'video' ? 360_000 : 180_000)
+          ? Math.max(Number(params.timeoutMs) || 0, kind === 'video' ? 720_000 : 240_000)
           : Number(params.timeoutMs) || undefined;
 
       const readStructuredObj = (out: Record<string, unknown>): Record<string, unknown> =>
@@ -7257,7 +7495,7 @@ export class McpStdioBridgeServer {
       ): Promise<{ out: Record<string, unknown>; urls: string[] }> => {
         if (!statusTool) return { out: {}, urls: [] };
         const pollStart = Date.now();
-        const pollMaxMs = Number(params.timeoutMs) || 120_000;
+        const pollMaxMs = Number(params.timeoutMs) || (kind === 'video' ? 600_000 : 240_000);
         const statusProps = ((statusTool.inputSchema?.properties as Record<string, unknown>) || {}) as Record<
           string,
           unknown
@@ -10794,12 +11032,12 @@ export class McpStdioBridgeServer {
     fs.createReadStream(foundPath).pipe(res);
   }
 
-  private serveStaticMedia(
+  private async serveStaticMedia(
     req: http.IncomingMessage,
     res: http.ServerResponse,
     pathname: string
-  ): void {
-    const relRequested = decodeURIComponent(pathname.replace(/^\/media\/+/, ''));
+  ): Promise<void> {
+    const relRequested = decodeURIComponent(pathname.replace(/^(?:\/media\/+)+/, ''));
     const safeBase = path.basename(relRequested);
     const primaryTargetPath = path.resolve(this.mediaDir, safeBase);
 
@@ -10809,7 +11047,7 @@ export class McpStdioBridgeServer {
       !fs.existsSync(primaryTargetPath) ||
       !fs.statSync(primaryTargetPath).isFile()
     ) {
-      if (safeBase && isR2Configured()) {
+      if (safeBase && primaryTargetPath.startsWith(path.resolve(this.mediaDir)) && isR2Configured()) {
         const r2Info = getR2ConfigSummary();
         if (r2Info.publicBaseUrl) {
           res.writeHead(302, {
@@ -10819,10 +11057,32 @@ export class McpStdioBridgeServer {
           res.end();
           return;
         }
+        const dl = await downloadObjectFromR2(`media/${safeBase}`);
+        if (dl.ok && dl.body && dl.body.byteLength > 0) {
+          try {
+            fs.mkdirSync(this.mediaDir, { recursive: true });
+            fs.writeFileSync(primaryTargetPath, dl.body);
+          } catch {
+            // If read-only filesystem, serve directly from memory buffer
+            res.writeHead(200, {
+              'Content-Length': dl.body.byteLength,
+              'Content-Type': dl.contentType || MIME_BY_EXT[path.extname(safeBase).toLowerCase()] || 'application/octet-stream',
+              'Cache-Control': 'public, max-age=31536000, immutable',
+            });
+            if (req.method !== 'HEAD') res.write(dl.body);
+            res.end();
+            return;
+          }
+        } else {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: `Media file not found: ${safeBase}` }));
+          return;
+        }
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: `Media file not found: ${safeBase}` }));
+        return;
       }
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: `Media file not found: ${safeBase}` }));
-      return;
     }
 
     const targetPath = this.preferResidentMediaPath(primaryTargetPath);
@@ -10976,7 +11236,7 @@ export class McpStdioBridgeServer {
 
     // 1. Public Static Assets & Health / OAuth Callback / Auth Bootstrap
     if ((req.method === 'GET' || req.method === 'HEAD') && pathname.startsWith('/media/')) {
-      this.serveStaticMedia(req, res, pathname);
+      await this.serveStaticMedia(req, res, pathname);
       return;
     }
 
@@ -11364,9 +11624,24 @@ export class McpStdioBridgeServer {
           this.sendJson(res, 200, { ok: true, ...dl });
           return;
         }
-        this.serveStaticMedia(req, res, `/media/${dl.filename}`);
+        await this.serveStaticMedia(req, res, `/media/${dl.filename}`);
       } catch (err) {
         this.sendJson(res, 502, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    const asyncJobGetMatch = /^\/api\/jobs\/([^/]+)$/.exec(pathname);
+    if (asyncJobGetMatch && req.method === 'GET') {
+      try {
+        const jobId = decodeURIComponent(asyncJobGetMatch[1]);
+        this.sendJson(res, 200, this.getAsyncNodeGenerationJob(jobId));
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+        this.sendJson(res, status, {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
         });
@@ -11954,6 +12229,10 @@ export class McpStdioBridgeServer {
     if (req.method === 'POST' && pathname.startsWith('/api/')) {
       const bodyObj = (await this.readJsonBody(req)) || {};
       try {
+        if (pathname === '/api/jobs/generate-node') {
+          this.sendJson(res, 202, this.startAsyncNodeGenerationJob(bodyObj));
+          return;
+        }
         if (pathname === '/api/generate-node') {
           this.sendJson(res, 200, await this.generateNode(bodyObj));
           return;

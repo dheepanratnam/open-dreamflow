@@ -240,7 +240,10 @@ export class McpOAuthManager {
     }
   }
 
-  public async discoverOAuthMetadata(mcpUrl: string): Promise<OAuthMetadataDiscovery> {
+  public async discoverOAuthMetadata(
+    mcpUrl: string,
+    redirectUri?: string
+  ): Promise<OAuthMetadataDiscovery> {
     const parsedMcpUrl = new URL(mcpUrl);
     const origin = parsedMcpUrl.origin;
 
@@ -268,10 +271,33 @@ export class McpOAuthManager {
       }
     }
 
-    // 2. RFC 8414 Authorization Server Metadata (with OIDC fallback)
-    const authMeta =
-      (await this.fetchJsonOrNull(`${authServerOrigin}/.well-known/oauth-authorization-server`)) ||
-      (await this.fetchJsonOrNull(`${authServerOrigin}/.well-known/openid-configuration`));
+    // 2. Check if the MCP origin itself hosts an OAuth 2.0 proxy with dynamic registration
+    // (e.g. `https://mcp.higgsfield.ai/.well-known/oauth-authorization-server` -> `/oauth2/*`
+    // which registers custom web MCP clients with `surface=custom_mcp` so workspace APIs do not 403).
+    const isNonLoopbackRedirect =
+      typeof redirectUri === 'string' &&
+      /^https:\/\//i.test(redirectUri) &&
+      !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\b/i.test(redirectUri);
+
+    let authMeta: Record<string, unknown> | null = null;
+    if (authServerOrigin !== origin) {
+      const originMeta = await this.fetchJsonOrNull(`${origin}/.well-known/oauth-authorization-server`);
+      const hasCompleteOriginOAuth =
+        typeof originMeta?.authorization_endpoint === 'string' &&
+        typeof originMeta?.token_endpoint === 'string' &&
+        typeof originMeta?.registration_endpoint === 'string';
+      if (hasCompleteOriginOAuth && (isNonLoopbackRedirect || /higgsfield\.ai$/i.test(parsedMcpUrl.hostname))) {
+        authMeta = originMeta;
+        authServerOrigin = origin;
+      }
+    }
+
+    // 3. RFC 8414 Authorization Server Metadata (with OIDC fallback)
+    if (!authMeta) {
+      authMeta =
+        (await this.fetchJsonOrNull(`${authServerOrigin}/.well-known/oauth-authorization-server`)) ||
+        (await this.fetchJsonOrNull(`${authServerOrigin}/.well-known/openid-configuration`));
+    }
 
     if (!authMeta) {
       throw new Error(
@@ -317,7 +343,7 @@ export class McpOAuthManager {
     redirectUri: string,
     discovery: OAuthMetadataDiscovery
   ): Promise<string> {
-    const cacheKey = `${mcpUrl}|${redirectUri}`;
+    const cacheKey = `${mcpUrl}|${redirectUri}|${discovery.tokenEndpoint}`;
     const cached = this.clientCache[cacheKey];
     if (
       cached &&
@@ -334,13 +360,16 @@ export class McpOAuthManager {
       );
     }
 
-    const redirectUris = Array.from(
-      new Set([
-        redirectUri,
-        'http://localhost:3001/api/mcp/oauth/callback',
-        'http://127.0.0.1:3001/api/mcp/oauth/callback',
-      ])
-    );
+    const isLoopback = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\b/i.test(redirectUri);
+    const redirectUris = isLoopback
+      ? Array.from(
+          new Set([
+            redirectUri,
+            'http://localhost:3001/api/mcp/oauth/callback',
+            'http://127.0.0.1:3001/api/mcp/oauth/callback',
+          ])
+        )
+      : [redirectUri];
 
     const regRes = await fetch(discovery.registrationEndpoint, {
       method: 'POST',
@@ -431,7 +460,7 @@ export class McpOAuthManager {
     this.emitUpdate(session);
 
     try {
-      const discovery = await this.discoverOAuthMetadata(mcpUrl);
+      const discovery = await this.discoverOAuthMetadata(mcpUrl, redirectUri);
       const clientId = await this.ensureClientRegistered(mcpUrl, redirectUri, discovery);
       const preferredScopes = ['openid', 'email', 'offline_access'].filter(
         (s) => discovery.scopesSupported.length === 0 || discovery.scopesSupported.includes(s)

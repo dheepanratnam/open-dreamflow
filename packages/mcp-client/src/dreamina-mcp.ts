@@ -1112,6 +1112,27 @@ export class DreaminaMcpEngine {
     itemsByModality: Record<'image' | 'video' | 'audio', CliModelSpec[]>;
   } | null = null;
   private readonly refUploadCache = new Map<string, string>();
+  private readonly cliSubmitChains = new Map<string, Promise<void>>();
+
+  private async withProfileSubmitLock<T>(fn: () => Promise<T>): Promise<T> {
+    const profile = this.getActiveProfile();
+    const prev = this.cliSubmitChains.get(profile) || Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = prev.catch(() => {}).then(() => gate);
+    this.cliSubmitChains.set(profile, chained);
+    await prev.catch(() => {});
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.cliSubmitChains.get(profile) === chained) {
+        this.cliSubmitChains.delete(profile);
+      }
+    }
+  }
 
   constructor(deps: DreaminaMcpEngineDeps) {
     this.deps = deps;
@@ -1542,13 +1563,17 @@ export class DreaminaMcpEngine {
         try {
           const parsedErr = parseCliJsonOutput(stdout);
           const errObj = (parsedErr.error || {}) as Record<string, unknown>;
-          const msg =
+          const dataObj = (parsedErr.data || {}) as Record<string, unknown>;
+          const codeStr = typeof errObj.code === 'string' && errObj.code ? `[${errObj.code}] ` : '';
+          const detailMsg =
             (typeof errObj.message === 'string' && errObj.message) ||
+            (typeof dataObj.failReason === 'string' && dataObj.failReason) ||
+            (typeof dataObj.errorMessage === 'string' && dataObj.errorMessage) ||
             (typeof parsedErr.message === 'string' && parsedErr.message) ||
             stderr.trim() ||
             e.message ||
             'dreamina-canvas CLI command failed.';
-          throw new Error(msg);
+          throw new Error(`${codeStr}${detailMsg}`);
         } catch (parseFail) {
           if (parseFail instanceof Error && parseFail !== err) {
             throw parseFail;
@@ -1561,12 +1586,16 @@ export class DreaminaMcpEngine {
     const parsed = parseCliJsonOutput(stdout);
     if (parsed.ok === false) {
       const errObj = (parsed.error || {}) as Record<string, unknown>;
+      const dataObj = (parsed.data || {}) as Record<string, unknown>;
+      const codeStr = typeof errObj.code === 'string' && errObj.code ? `[${errObj.code}] ` : '';
       const msg =
         (typeof errObj.message === 'string' && errObj.message) ||
+        (typeof dataObj.failReason === 'string' && dataObj.failReason) ||
+        (typeof dataObj.errorMessage === 'string' && dataObj.errorMessage) ||
         (typeof parsed.message === 'string' && parsed.message) ||
         stderr.trim() ||
         'dreamina-canvas CLI reported an error.';
-      throw new Error(msg);
+      throw new Error(`${codeStr}${msg}`);
     }
     return parsed;
   }
@@ -2903,113 +2932,149 @@ export class DreaminaMcpEngine {
     estimatedCredits?: number;
     outputs: string[];
   }> {
-    const projectId = await this.ensureWorkspaceProjectId();
+    // Serialize fast workspace submission steps (create -> quote -> confirm -> run) per profile
+    // so simultaneous image + video requests never contend on Dreamina canvas state, while
+    // `operation wait` and `resource download` execute concurrently outside the lock.
+    const { projectId, nodeId, submitId, estimatedCredits } = await this.withProfileSubmitLock(
+      async () => {
+        const pid = await this.ensureWorkspaceProjectId();
 
-    // 1. node create
-    const createRes = await this.runCliJson(
-      ['node', 'create', params.modality, '--project-id', projectId, ...params.createArgs],
-      { timeoutMs: 45_000 }
+        // 1. node create
+        const createRes = await this.runCliJson(
+          ['node', 'create', params.modality, '--project-id', pid, ...params.createArgs],
+          { timeoutMs: 45_000 }
+        );
+        const createData = (createRes.data || {}) as Record<string, unknown>;
+        const nid = String(
+          createData.nodeId ||
+            (createData.node as Record<string, unknown> | undefined)?.nodeId ||
+            (createData.node as Record<string, unknown> | undefined)?.id ||
+            ''
+        ).trim();
+        if (!nid) {
+          throw new Error(`dreamina-canvas node create ${params.modality} returned no nodeId.`);
+        }
+
+        // 2. node quote
+        const quoteRes = await this.runCliJson(
+          ['node', 'quote', '--project-id', pid, '--node-id', nid],
+          { timeoutMs: 30_000 }
+        );
+        const quoteData = (quoteRes.data || {}) as Record<string, unknown>;
+        const quoteItems = Array.isArray(quoteData.items)
+          ? (quoteData.items as Array<Record<string, unknown>>)
+          : [];
+        const firstQuote = quoteItems[0] || {};
+        const rawEst =
+          quoteData.totalCredit ??
+          quoteData.estimatedCredits ??
+          quoteData.creditCost ??
+          quoteData.credits ??
+          firstQuote.totalCredit ??
+          firstQuote.estimatedCredits ??
+          firstQuote.creditCost ??
+          firstQuote.credits;
+        const parsedEst = Number(rawEst);
+        const estCredits = Number.isFinite(parsedEst) ? Math.max(0, Math.ceil(parsedEst)) : 500;
+        const creditCeiling = Math.max(estCredits, 1);
+
+        // 3. node confirm
+        const confirmRes = await this.runCliJson(
+          [
+            'node',
+            'confirm',
+            '--project-id',
+            pid,
+            '--node-id',
+            nid,
+            '--credit-ceiling',
+            String(creditCeiling),
+          ],
+          { timeoutMs: 30_000 }
+        );
+        const confirmData = (confirmRes.data || {}) as Record<string, unknown>;
+        const confirmItems = Array.isArray(confirmData.items)
+          ? (confirmData.items as Array<Record<string, unknown>>)
+          : [];
+        const creditToken = String(
+          confirmData.creditConfirmationToken ||
+            confirmData.creditToken ||
+            confirmData.token ||
+            confirmItems[0]?.creditConfirmationToken ||
+            confirmItems[0]?.creditToken ||
+            quoteData.creditConfirmationToken ||
+            ''
+        ).trim();
+
+        // 4. node run
+        const clientSubmitId = crypto.randomUUID();
+        const runArgs = [
+          'node',
+          'run',
+          '--project-id',
+          pid,
+          '--node-id',
+          nid,
+          '--submit-id',
+          clientSubmitId,
+          ...(creditToken ? ['--credit-token', creditToken] : []),
+        ];
+        const runRes = await this.runCliJson(runArgs, { timeoutMs: 30_000 });
+        const runData = (runRes.data || {}) as Record<string, unknown>;
+        const runItems = Array.isArray(runData.items)
+          ? (runData.items as Array<Record<string, unknown>>)
+          : [];
+        const sid = String(
+          runData.submitId || runItems[0]?.submitId || clientSubmitId
+        ).trim();
+
+        return { projectId: pid, nodeId: nid, submitId: sid, estimatedCredits: estCredits };
+      }
     );
-    const createData = (createRes.data || {}) as Record<string, unknown>;
-    const nodeId = String(
-      createData.nodeId ||
-        (createData.node as Record<string, unknown> | undefined)?.nodeId ||
-        (createData.node as Record<string, unknown> | undefined)?.id ||
-        ''
-    ).trim();
-    if (!nodeId) {
-      throw new Error(`dreamina-canvas node create ${params.modality} returned no nodeId.`);
-    }
 
-    // 2. node quote
-    const quoteRes = await this.runCliJson(
-      ['node', 'quote', '--project-id', projectId, '--node-id', nodeId],
-      { timeoutMs: 30_000 }
-    );
-    const quoteData = (quoteRes.data || {}) as Record<string, unknown>;
-    const quoteItems = Array.isArray(quoteData.items)
-      ? (quoteData.items as Array<Record<string, unknown>>)
-      : [];
-    const firstQuote = quoteItems[0] || {};
-    const rawEst =
-      quoteData.totalCredit ??
-      quoteData.estimatedCredits ??
-      quoteData.creditCost ??
-      quoteData.credits ??
-      firstQuote.totalCredit ??
-      firstQuote.estimatedCredits ??
-      firstQuote.creditCost ??
-      firstQuote.credits;
-    const parsedEst = Number(rawEst);
-    const estimatedCredits = Number.isFinite(parsedEst) ? Math.max(0, Math.ceil(parsedEst)) : 500;
-    const creditCeiling = Math.max(estimatedCredits, 1);
-
-    // 3. node confirm
-    const confirmRes = await this.runCliJson(
-      [
-        'node',
-        'confirm',
-        '--project-id',
-        projectId,
-        '--node-id',
-        nodeId,
-        '--credit-ceiling',
-        String(creditCeiling),
-      ],
-      { timeoutMs: 30_000 }
-    );
-    const confirmData = (confirmRes.data || {}) as Record<string, unknown>;
-    const confirmItems = Array.isArray(confirmData.items)
-      ? (confirmData.items as Array<Record<string, unknown>>)
-      : [];
-    const creditToken = String(
-      confirmData.creditConfirmationToken ||
-        confirmData.creditToken ||
-        confirmData.token ||
-        confirmItems[0]?.creditConfirmationToken ||
-        confirmItems[0]?.creditToken ||
-        quoteData.creditConfirmationToken ||
-        ''
-    ).trim();
-
-    // 4. node run
-    const clientSubmitId = crypto.randomUUID();
-    const runArgs = [
-      'node',
-      'run',
-      '--project-id',
-      projectId,
-      '--node-id',
-      nodeId,
-      '--submit-id',
-      clientSubmitId,
-      ...(creditToken ? ['--credit-token', creditToken] : []),
-    ];
-    const runRes = await this.runCliJson(runArgs, { timeoutMs: 30_000 });
-    const runData = (runRes.data || {}) as Record<string, unknown>;
-    const runItems = Array.isArray(runData.items)
-      ? (runData.items as Array<Record<string, unknown>>)
-      : [];
-    const submitId = String(
-      runData.submitId || runItems[0]?.submitId || clientSubmitId
-    ).trim();
-
-    // 5. operation wait
+    // 5. operation wait (runs concurrently across jobs)
     const waitSec = Math.max(60, Math.ceil(params.waitTimeoutMs / 1000));
-    await this.runCliJson(
-      [
-        'operation',
-        'wait',
-        submitId,
-        '--project-id',
-        projectId,
-        '--interval',
-        '3s',
-        '--timeout',
-        `${waitSec}s`,
-      ],
-      { timeoutMs: params.waitTimeoutMs + 15_000 }
-    );
+    try {
+      await this.runCliJson(
+        [
+          'operation',
+          'wait',
+          submitId,
+          '--project-id',
+          projectId,
+          '--interval',
+          '3s',
+          '--timeout',
+          `${waitSec}s`,
+        ],
+        { timeoutMs: params.waitTimeoutMs + 20_000 }
+      );
+    } catch (waitErr) {
+      // Inspect `node show` for specific moderation/failure reason if available
+      let specificReason = '';
+      try {
+        const inspectRes = await this.runCliJson(
+          ['node', 'show', '--project-id', projectId, '--node-id', nodeId],
+          { timeoutMs: 15_000 }
+        );
+        const inspectStr = JSON.stringify(inspectRes.data || inspectRes);
+        const failMatch =
+          /"(?:failReason|failMessage|errorMessage|statusMessage)"\s*:\s*"([^"]+)"/i.exec(
+            inspectStr
+          );
+        if (failMatch?.[1]) {
+          specificReason = failMatch[1];
+        }
+      } catch {
+        // Ignore secondary inspect failure
+      }
+      const baseMsg = waitErr instanceof Error ? waitErr.message : String(waitErr);
+      throw new Error(
+        specificReason && !baseMsg.includes(specificReason)
+          ? `Dreamina generation failed: ${specificReason} (${baseMsg})`
+          : `Dreamina generation failed: ${baseMsg}`
+      );
+    }
 
     // 6. node show + resource download
     const showRes = await this.runCliJson(
@@ -4482,7 +4547,7 @@ export class DreaminaMcpEngine {
         const pipeOut = await this.executeCliNodePipeline({
           modality: 'video',
           createArgs,
-          waitTimeoutMs: Math.max(Number(timeoutMs) || 0, 360_000),
+          waitTimeoutMs: Math.max(Number(timeoutMs) || 0, 720_000),
           maxOutputs: 1,
         });
 

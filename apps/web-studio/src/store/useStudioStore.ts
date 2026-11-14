@@ -6487,7 +6487,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             ...n,
             status: hadMedia ? ('ready' as const) : ('idle' as const),
             progress: undefined,
-            editBadge: undefined,
+            editBadge: hadMedia ? undefined : 'Failed · Retry',
           };
         }),
       }));
@@ -6726,9 +6726,6 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const nextBalances: Record<string, McpBalanceInfo> = {
         ...(snap.mcpBalances || {}),
       };
-      if (snap.mcpBalance && !nextBalances.higgsfield) {
-        nextBalances.higgsfield = snap.mcpBalance;
-      }
 
       // Merge snap.mcpServers while preserving richer tool schemas already loaded in externalMcpServers
       let mergedExternalMcp = s.externalMcpServers;
@@ -6737,11 +6734,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         mergedExternalMcp = snap.mcpServers.map((incoming) => {
           const prev = existingById.get(incoming.id);
           const pid = String(incoming.platformId);
-          const resolvedBal =
-            incoming.balance ||
-            nextBalances[pid] ||
-            prev?.balance ||
-            (pid === 'higgsfield' ? snap.mcpBalance : undefined);
+          const resolvedBal = incoming.balance || nextBalances[pid] || undefined;
           if (resolvedBal && !nextBalances[pid]) {
             nextBalances[pid] = resolvedBal;
           }
@@ -7269,6 +7262,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       await Promise.all([
         get().bootDiskPersistence(),
         get().autoConnectLocalMcpBackend(),
+        get().refreshPlatformsAndExternalMcp(),
         get().refreshConnectionsStatus(),
         get().refreshCreditsSummary(true),
       ]);
@@ -7457,7 +7451,27 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   refreshCreditsSummary: async (refresh = false) => {
     const summary = await fetchCreditsSummaryViaBackend(refresh);
     if (summary.ok) {
-      set({ creditsSummary: summary });
+      set((s) => {
+        const syncedBalances: Record<string, McpBalanceInfo> = { ...s.mcpBalances };
+        for (const plat of summary.platforms) {
+          if (plat.platformId === 'dreamina' || plat.platformId === 'higgsfield') {
+            if (typeof plat.credits === 'number' && Number.isFinite(plat.credits)) {
+              syncedBalances[plat.platformId] = {
+                credits: plat.credits,
+                ...(plat.plan ? { plan: plat.plan } : {}),
+                ...(plat.account ? { account: plat.account } : {}),
+                rawText: `Credits: ${plat.credits}${plat.plan ? ` | Plan: ${plat.plan}` : ''}`,
+              };
+            } else if (plat.credits === null) {
+              delete syncedBalances[plat.platformId];
+            }
+          }
+        }
+        return {
+          creditsSummary: summary,
+          mcpBalances: syncedBalances,
+        };
+      });
     }
   },
 

@@ -46,11 +46,16 @@ export const App: React.FC = () => {
       new URLSearchParams(window.location.search).has('recipe');
 
     hydrateFromUrlRecipe();
-    void refreshPlatformsAndExternalMcp();
-    if (!hasUrlRecipe) {
-      void initAuthAndBoot();
-    }
-    pingBridge();
+    void (async () => {
+      if (!hasUrlRecipe) {
+        await initAuthAndBoot();
+      }
+      const st = useStudioStore.getState();
+      if (!st.authBootstrapInfo?.authEnabled || Boolean(st.authUser)) {
+        void refreshPlatformsAndExternalMcp();
+        pingBridge();
+      }
+    })();
 
     const onMessage = (ev: MessageEvent) => {
       if (ev.data && typeof ev.data === 'object' && 'type' in ev.data) {
@@ -95,6 +100,7 @@ export const App: React.FC = () => {
       prevTitle = state.projectTitle;
 
       if (!changed || !bootReady) return;
+      if (state.authBootstrapInfo?.authEnabled && !state.authUser) return;
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         void useStudioStore.getState().persistActiveProjectToDisk();
@@ -111,6 +117,9 @@ export const App: React.FC = () => {
   // Live WebSocket subscription to ws://localhost:3001/bridge for instant Chrome Extension captures
   useEffect(() => {
     if (typeof window === 'undefined' || typeof WebSocket === 'undefined') {
+      return;
+    }
+    if (!authBootChecked || (authBootstrapInfo?.authEnabled && !authUser)) {
       return;
     }
 
@@ -175,6 +184,8 @@ export const App: React.FC = () => {
       }
     };
   }, [
+    authBootChecked,
+    authBootstrapInfo?.authEnabled,
     authUser?.id,
     setBridgeWsConnected,
     ingestBridgeWsEvent,

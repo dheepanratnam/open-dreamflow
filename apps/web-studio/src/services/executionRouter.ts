@@ -240,6 +240,17 @@ export interface GenerationResult {
   costEstimateUsd: number;
 }
 
+export function appendAuthTokenToProtectedMediaUrl(url: string): string {
+  if (!url) return url;
+  if (!url.includes('/api/assets/dreamina-resource') || /[?&]token=/.test(url)) {
+    return url;
+  }
+  const tok = getStoredAuthToken();
+  if (!tok) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(tok)}`;
+}
+
 export function normalizeBackendMediaUrl(
   rawUrl?: string,
   preferBackendOrigin = false
@@ -251,26 +262,32 @@ export function normalizeBackendMediaUrl(
     rawUrl.startsWith('data:') ||
     rawUrl.startsWith('blob:')
   ) {
-    return rawUrl;
+    return appendAuthTokenToProtectedMediaUrl(
+      rawUrl.replace(/\/media\/media\//g, '/media/')
+    );
   }
-  const clean = rawUrl.startsWith('/') ? rawUrl : `/media/${rawUrl}`;
-  return preferBackendOrigin && clean.startsWith('/media/')
-    ? `${LOCAL_MCP_BASE}${clean}`
-    : clean;
+  const collapsed = rawUrl.replace(/^\/media\/media\//, '/media/');
+  const clean = collapsed.startsWith('/') ? collapsed : `/media/${collapsed}`;
+  const resolved =
+    clean.startsWith('/api/')
+      ? `${LOCAL_MCP_BASE}${clean}`
+      : preferBackendOrigin && clean.startsWith('/media/')
+      ? `${LOCAL_MCP_BASE}${clean}`
+      : clean;
+  return appendAuthTokenToProtectedMediaUrl(resolved);
 }
 
 export function toBackendRelativeMediaPath(urlOrPath?: string): string | undefined {
   if (!urlOrPath) return undefined;
-  if (urlOrPath.startsWith(`${LOCAL_MCP_BASE}/`)) {
-    return urlOrPath.slice(LOCAL_MCP_BASE.length);
+  let rel = urlOrPath;
+  if (rel.startsWith(`${LOCAL_MCP_BASE}/`)) {
+    rel = rel.slice(LOCAL_MCP_BASE.length);
+  } else if (rel.startsWith('http://localhost:3001/')) {
+    rel = rel.slice('http://localhost:3001'.length);
+  } else if (rel.startsWith('http://127.0.0.1:3001/')) {
+    rel = rel.slice('http://127.0.0.1:3001'.length);
   }
-  if (urlOrPath.startsWith('http://localhost:3001/')) {
-    return urlOrPath.slice('http://localhost:3001'.length);
-  }
-  if (urlOrPath.startsWith('http://127.0.0.1:3001/')) {
-    return urlOrPath.slice('http://127.0.0.1:3001'.length);
-  }
-  return urlOrPath;
+  return rel.replace(/^\/media\/media\//, '/media/');
 }
 
 export function stripDataUrlPrefix(dataUrl: string): { mimeType: string; base64: string } {
@@ -527,13 +544,78 @@ export interface GenerateNodeBackendResult {
   error?: string;
 }
 
+function parseCompletedNodePayload(
+  json: Record<string, unknown>,
+  params: GenerateNodeBackendParams
+): GenerateNodeBackendResult {
+  const rawMedia =
+    (typeof json.mediaUrl === 'string' && json.mediaUrl) ||
+    (typeof json.url === 'string' && json.url) ||
+    undefined;
+  const rawImg =
+    (typeof json.imageUrl === 'string' && json.imageUrl) ||
+    (typeof json.localImageUrl === 'string' && json.localImageUrl) ||
+    (params.kind === 'image' ? rawMedia : undefined);
+  const rawVid =
+    (typeof json.videoUrl === 'string' && json.videoUrl) ||
+    (typeof json.localVideoUrl === 'string' && json.localVideoUrl) ||
+    (params.kind === 'video' ? rawMedia : undefined);
+  const rawAud =
+    (typeof json.audioUrl === 'string' && json.audioUrl) ||
+    (typeof json.localAudioUrl === 'string' && json.localAudioUrl) ||
+    (params.kind === 'audio' ? rawMedia : undefined);
+
+  const normImg = rawImg ? toBackendRelativeMediaPath(rawImg) || rawImg : undefined;
+  const normVid = rawVid ? toBackendRelativeMediaPath(rawVid) || rawVid : undefined;
+  const normAud = rawAud ? toBackendRelativeMediaPath(rawAud) || rawAud : undefined;
+  const normMedia =
+    normVid ||
+    normImg ||
+    normAud ||
+    (rawMedia ? toBackendRelativeMediaPath(rawMedia) || rawMedia : undefined);
+
+  const rawOutputs = Array.isArray(json.outputs)
+    ? (json.outputs as unknown[]).filter((x): x is string => typeof x === 'string')
+    : [];
+  const outputs = rawOutputs.map((u) => toBackendRelativeMediaPath(u) || u);
+
+  if (!normMedia && outputs.length === 0) {
+    return {
+      ok: false,
+      error:
+        (typeof json.error === 'string' && json.error) ||
+        `No media output returned from ${params.platformId} (${params.modelId}).`,
+    };
+  }
+
+  const primaryMedia = normMedia || outputs[0];
+  return {
+    ok: true,
+    platformId: (json.platformId as string) || params.platformId,
+    modelId: (json.modelId as string) || params.modelId,
+    transportUsed: json.transportUsed as string | undefined,
+    providerUsed:
+      (typeof json.providerUsed === 'string' && json.providerUsed) ||
+      `${params.platformId} · ${params.modelId}`,
+    mediaUrl: primaryMedia,
+    fullUrl:
+      (typeof json.fullUrl === 'string' && json.fullUrl) ||
+      normalizeBackendMediaUrl(primaryMedia, true),
+    imageUrl: normImg || (params.kind === 'image' ? primaryMedia : undefined),
+    videoUrl: normVid || (params.kind === 'video' ? primaryMedia : undefined),
+    audioUrl: normAud || (params.kind === 'audio' ? primaryMedia : undefined),
+    waveform: Array.isArray(json.waveform)
+      ? (json.waveform as number[])
+      : undefined,
+    outputs: outputs.length > 0 ? outputs : primaryMedia ? [primaryMedia] : [],
+    jobId: json.jobId as string | undefined,
+  };
+}
+
 export async function generateNodeViaBackend(
   params: GenerateNodeBackendParams
 ): Promise<GenerateNodeBackendResult> {
   try {
-    const ctrl = new AbortController();
-    const timeoutMs = params.kind === 'video' ? 390000 : 240000;
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     const cleanedRefs = (params.referenceImages || [])
       .filter(Boolean)
       .map((u) => toBackendRelativeMediaPath(u) || u);
@@ -547,19 +629,106 @@ export async function generateNodeViaBackend(
       ? toBackendRelativeMediaPath(params.endImageUrl) || params.endImageUrl
       : undefined;
 
+    const requestBody = JSON.stringify({
+      ...params,
+      referenceImages: cleanedRefs,
+      ...(cleanedVideoRefs.length > 0 ? { videoReferences: cleanedVideoRefs } : {}),
+      ...(params.referenceFrameMode ? { referenceFrameMode: params.referenceFrameMode } : {}),
+      ...(cleanedStartImg ? { startImageUrl: cleanedStartImg } : {}),
+      ...(cleanedEndImg ? { endImageUrl: cleanedEndImg } : {}),
+      ...(params.creditSource ? { creditSource: params.creditSource } : {}),
+    });
+
+    // Primary path: non-blocking async job queue (`POST /api/jobs/generate-node` + `GET /api/jobs/:jobId`)
+    // Avoids 300s edge/proxy HTTP timeouts on 5–12 minute video renders (Seedance 2.0, Kling, Veo).
+    const startCtrl = new AbortController();
+    const startTimer = setTimeout(() => startCtrl.abort(), 20_000);
+    const startRes = await authFetch(`${LOCAL_MCP_BASE}/api/jobs/generate-node`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: startCtrl.signal,
+      body: requestBody,
+    });
+    clearTimeout(startTimer);
+
+    if (startRes.status !== 404) {
+      const startJson = (await startRes.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!startRes.ok || startJson.ok === false || typeof startJson.jobId !== 'string') {
+        return {
+          ok: false,
+          error:
+            (typeof startJson.error === 'string' && startJson.error) ||
+            (typeof startJson.message === 'string' && startJson.message) ||
+            `Generation failed on ${params.platformId} (HTTP ${startRes.status})`,
+        };
+      }
+
+      const jobId = startJson.jobId;
+      const maxPollMs = params.kind === 'video' ? 900_000 : 360_000;
+      const startedAt = Date.now();
+      let consecutiveNetworkErrors = 0;
+
+      while (Date.now() - startedAt < maxPollMs) {
+        await new Promise((r) => setTimeout(r, 2500));
+        try {
+          const pollCtrl = new AbortController();
+          const pollTimer = setTimeout(() => pollCtrl.abort(), 15_000);
+          const pollRes = await authFetch(
+            `${LOCAL_MCP_BASE}/api/jobs/${encodeURIComponent(jobId)}`,
+            { signal: pollCtrl.signal }
+          );
+          clearTimeout(pollTimer);
+          consecutiveNetworkErrors = 0;
+
+          const pollJson = (await pollRes.json().catch(() => ({}))) as Record<string, unknown>;
+          if (!pollRes.ok || pollJson.ok === false) {
+            return {
+              ok: false,
+              error:
+                (typeof pollJson.error === 'string' && pollJson.error) ||
+                `Generation job ${jobId} failed (HTTP ${pollRes.status})`,
+            };
+          }
+
+          const status = String(pollJson.status || '').toLowerCase();
+          if (status === 'completed') {
+            const innerResult =
+              typeof pollJson.result === 'object' && pollJson.result !== null
+                ? (pollJson.result as Record<string, unknown>)
+                : pollJson;
+            return parseCompletedNodePayload(innerResult, params);
+          }
+          if (status === 'failed') {
+            return {
+              ok: false,
+              error:
+                (typeof pollJson.error === 'string' && pollJson.error) ||
+                `Generation failed on ${params.platformId}.`,
+            };
+          }
+        } catch (pollErr) {
+          consecutiveNetworkErrors += 1;
+          if (consecutiveNetworkErrors >= 5) {
+            throw pollErr;
+          }
+        }
+      }
+
+      return {
+        ok: false,
+        error: `Timed out waiting for ${params.platformId} (${params.modelId}) to finish generating.`,
+      };
+    }
+
+    // Fallback for legacy daemons without `/api/jobs/generate-node`
+    const ctrl = new AbortController();
+    const timeoutMs = params.kind === 'video' ? 390000 : 240000;
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     const res = await authFetch(`${LOCAL_MCP_BASE}/api/generate-node`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
-      body: JSON.stringify({
-        ...params,
-        referenceImages: cleanedRefs,
-        ...(cleanedVideoRefs.length > 0 ? { videoReferences: cleanedVideoRefs } : {}),
-        ...(params.referenceFrameMode ? { referenceFrameMode: params.referenceFrameMode } : {}),
-        ...(cleanedStartImg ? { startImageUrl: cleanedStartImg } : {}),
-        ...(cleanedEndImg ? { endImageUrl: cleanedEndImg } : {}),
-        ...(params.creditSource ? { creditSource: params.creditSource } : {}),
-      }),
+      body: requestBody,
     });
     clearTimeout(timer);
 
@@ -574,68 +743,7 @@ export async function generateNodeViaBackend(
       };
     }
 
-    const rawMedia =
-      (typeof json.mediaUrl === 'string' && json.mediaUrl) ||
-      (typeof json.url === 'string' && json.url) ||
-      undefined;
-    const rawImg =
-      (typeof json.imageUrl === 'string' && json.imageUrl) ||
-      (typeof json.localImageUrl === 'string' && json.localImageUrl) ||
-      (params.kind === 'image' ? rawMedia : undefined);
-    const rawVid =
-      (typeof json.videoUrl === 'string' && json.videoUrl) ||
-      (typeof json.localVideoUrl === 'string' && json.localVideoUrl) ||
-      (params.kind === 'video' ? rawMedia : undefined);
-    const rawAud =
-      (typeof json.audioUrl === 'string' && json.audioUrl) ||
-      (typeof json.localAudioUrl === 'string' && json.localAudioUrl) ||
-      (params.kind === 'audio' ? rawMedia : undefined);
-
-    const normImg = rawImg ? toBackendRelativeMediaPath(rawImg) || rawImg : undefined;
-    const normVid = rawVid ? toBackendRelativeMediaPath(rawVid) || rawVid : undefined;
-    const normAud = rawAud ? toBackendRelativeMediaPath(rawAud) || rawAud : undefined;
-    const normMedia =
-      normVid ||
-      normImg ||
-      normAud ||
-      (rawMedia ? toBackendRelativeMediaPath(rawMedia) || rawMedia : undefined);
-
-    const rawOutputs = Array.isArray(json.outputs)
-      ? (json.outputs as unknown[]).filter((x): x is string => typeof x === 'string')
-      : [];
-    const outputs = rawOutputs.map((u) => toBackendRelativeMediaPath(u) || u);
-
-    if (!normMedia && outputs.length === 0) {
-      return {
-        ok: false,
-        error:
-          (typeof json.error === 'string' && json.error) ||
-          `No media output returned from ${params.platformId} (${params.modelId}).`,
-      };
-    }
-
-    const primaryMedia = normMedia || outputs[0];
-    return {
-      ok: true,
-      platformId: (json.platformId as string) || params.platformId,
-      modelId: (json.modelId as string) || params.modelId,
-      transportUsed: json.transportUsed as string | undefined,
-      providerUsed:
-        (typeof json.providerUsed === 'string' && json.providerUsed) ||
-        `${params.platformId} · ${params.modelId}`,
-      mediaUrl: primaryMedia,
-      fullUrl:
-        (typeof json.fullUrl === 'string' && json.fullUrl) ||
-        normalizeBackendMediaUrl(primaryMedia, true),
-      imageUrl: normImg || (params.kind === 'image' ? primaryMedia : undefined),
-      videoUrl: normVid || (params.kind === 'video' ? primaryMedia : undefined),
-      audioUrl: normAud || (params.kind === 'audio' ? primaryMedia : undefined),
-      waveform: Array.isArray(json.waveform)
-        ? (json.waveform as number[])
-        : undefined,
-      outputs: outputs.length > 0 ? outputs : primaryMedia ? [primaryMedia] : [],
-      jobId: json.jobId as string | undefined,
-    };
+    return parseCompletedNodePayload(json, params);
   } catch (err) {
     return {
       ok: false,
@@ -643,8 +751,8 @@ export async function generateNodeViaBackend(
         err instanceof Error && err.name === 'AbortError'
           ? `Timed out waiting for ${params.platformId} (${params.modelId}) to finish generating.`
           : err instanceof Error
-          ? `Could not reach :3001 /api/generate-node (${err.message})`
-          : 'Could not reach :3001 /api/generate-node',
+          ? `Could not reach backend generation engine (${err.message})`
+          : 'Could not reach backend generation engine',
     };
   }
 }
@@ -728,10 +836,7 @@ export async function fetchConnectionsStatusViaBackend(): Promise<ConnectionsSta
       return bal ? { ...srv, balance: bal } : srv;
     });
     const topBalance =
-      (json.mcpBalance as ConnectionsStatusSnapshot['mcpBalance']) ||
-      mcpBalances.higgsfield ||
-      (byId.higgsfield?.mcpBalance as ConnectionsStatusSnapshot['mcpBalance']) ||
-      enrichedMcpServers.find((s) => s.balance)?.balance;
+      (json.mcpBalance as ConnectionsStatusSnapshot['mcpBalance']) || undefined;
 
     return {
       ok: Boolean(json.ok ?? true),
@@ -3016,15 +3121,19 @@ function normalizeRawAssetItem(raw: Record<string, unknown>): CloudAssetItem {
       ? 'r2'
       : 'storage';
   const filename = typeof raw.filename === 'string' ? raw.filename : undefined;
-  const relUrl = String(
+  const rawRelUrl = String(
     raw.url || raw.mediaUrl || raw.previewUrl || raw.fullUrl || ''
   ).trim();
-  const thumb =
+  const relUrl = normalizeBackendMediaUrl(rawRelUrl, rawRelUrl.startsWith('/api/')) || rawRelUrl;
+  const rawThumb =
     typeof raw.thumbnailUrl === 'string' && raw.thumbnailUrl
       ? raw.thumbnailUrl
       : kind === 'image'
-      ? String(raw.previewUrl || relUrl)
+      ? String(raw.previewUrl || rawRelUrl)
       : undefined;
+  const thumb = rawThumb
+    ? normalizeBackendMediaUrl(rawThumb, rawThumb.startsWith('/api/')) || rawThumb
+    : undefined;
 
   return {
     id: String(raw.id || relUrl || Math.random().toString(36).slice(2)),

@@ -640,7 +640,7 @@ export class ExternalMcpHost {
       await this.connectRuntime(runtime);
     }
 
-    const rpcResponse = await this.sendRpc(
+    let rpcResponse = await this.sendRpc(
       runtime,
       'tools/call',
       {
@@ -650,14 +650,40 @@ export class ExternalMcpHost {
       params.timeoutMs ?? 180_000
     );
 
-    const resultObj = ((rpcResponse.result as Record<string, unknown>) || rpcResponse) as Record<
+    let resultObj = ((rpcResponse.result as Record<string, unknown>) || rpcResponse) as Record<
       string,
       unknown
     >;
 
     if (resultObj.isError === true) {
-      const errText = this.extractTextSummary(resultObj) || `MCP tool "${params.toolName}" returned isError=true`;
-      throw new Error(errText);
+      const errText =
+        this.extractTextSummary(resultObj) || `MCP tool "${params.toolName}" returned isError=true`;
+      if (
+        runtime.config.oauth?.refreshToken &&
+        /\b401\b|token.*expired|invalid.*token|unauthorized/i.test(errText)
+      ) {
+        const refreshed = await this.refreshOAuthToken(runtime);
+        if (refreshed) {
+          rpcResponse = await this.sendRpc(
+            runtime,
+            'tools/call',
+            {
+              name: params.toolName,
+              arguments: params.arguments || {},
+            },
+            params.timeoutMs ?? 180_000
+          );
+          resultObj = ((rpcResponse.result as Record<string, unknown>) || rpcResponse) as Record<
+            string,
+            unknown
+          >;
+        }
+      }
+      if (resultObj.isError === true) {
+        const finalErr =
+          this.extractTextSummary(resultObj) || `MCP tool "${params.toolName}" returned isError=true`;
+        throw new Error(finalErr);
+      }
     }
 
     const mediaCandidates = this.extractMediaCandidatesFromResult(resultObj);
