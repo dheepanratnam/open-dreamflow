@@ -1228,6 +1228,7 @@ export class McpStdioBridgeServer {
     });
 
     try {
+      fs.mkdirSync(os.homedir(), { recursive: true });
       fs.mkdirSync(this.mediaDir, { recursive: true });
       fs.mkdirSync(this.projectsDir, { recursive: true });
       this.hydrateProjectsIndex();
@@ -1270,6 +1271,13 @@ export class McpStdioBridgeServer {
   }
 
   public getPublicBaseUrl(): string {
+    const explicit = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+    if (explicit) return explicit;
+    const railwayDomain = String(process.env.RAILWAY_PUBLIC_DOMAIN || '')
+      .trim()
+      .replace(/^https?:\/\//, '')
+      .replace(/\/+$/, '');
+    if (railwayDomain) return `https://${railwayDomain}`;
     return `http://localhost:${this.boundPort}`;
   }
 
@@ -11663,15 +11671,26 @@ export class McpStdioBridgeServer {
         const bodyObj = (await this.readJsonBody(req)) || {};
         const activePort = this.boundPort || this.port || 3001;
         const reqHost = String(req.headers.host || '').trim();
+        const forwardedProto = String(req.headers['x-forwarded-proto'] || '')
+          .split(',')[0]
+          .trim();
+        const isLocalHostHeader =
+          !reqHost ||
+          reqHost.startsWith('localhost') ||
+          reqHost.startsWith('127.0.0.1') ||
+          reqHost.startsWith('[::1]');
+        const inferredOrigin = !isLocalHostHeader
+          ? `${forwardedProto || 'https'}://${reqHost}`
+          : this.getPublicBaseUrl();
         const explicitRedirect =
           typeof bodyObj.redirectUri === 'string' && bodyObj.redirectUri.trim()
             ? bodyObj.redirectUri.trim()
             : undefined;
         const redirectUri =
           explicitRedirect ||
-          (activePort === 3001
+          (isLocalHostHeader && inferredOrigin.startsWith('http://localhost:') && activePort === 3001
             ? 'http://localhost:3001/api/mcp/oauth/callback'
-            : `http://${reqHost || `localhost:${activePort}`}/api/mcp/oauth/callback`);
+            : `${inferredOrigin}/api/mcp/oauth/callback`);
 
         const session = await this.mcpOAuthManager.startOAuth({
           platformId: typeof bodyObj.platformId === 'string' ? bodyObj.platformId : 'higgsfield',

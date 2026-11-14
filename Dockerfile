@@ -21,6 +21,9 @@ RUN set -eux; \
   else \
     echo "Warning: offline or unavailable dreamina-canvas download; skipping pre-install"; \
   fi; \
+  if [ ! -f /usr/local/bin/dreamina-canvas ] && [ -f /root/.local/bin/dreamina-canvas ]; then \
+    cp /root/.local/bin/dreamina-canvas /usr/local/bin/dreamina-canvas; \
+  fi; \
   if [ -f /usr/local/bin/dreamina-canvas ]; then \
     chmod 0755 /usr/local/bin/dreamina-canvas; \
   fi
@@ -43,7 +46,7 @@ COPY scripts ./scripts
 RUN npm run build:sdk \
   && npm run build:mcp \
   && npm run build \
-  && mkdir -p /data /data/projects /data/media \
+  && mkdir -p /data /data/home /data/projects /data/media \
   && mkdir -p /app/apps/web-studio/dist/brands /app/apps/web-studio/dist/media \
   && cp -R /app/apps/web-studio/public/brands/. /app/apps/web-studio/dist/brands/ \
   && if [ -d /app/apps/web-studio/public/media ]; then cp -R /app/apps/web-studio/public/media/. /app/apps/web-studio/dist/media/ || true; fi
@@ -51,6 +54,7 @@ RUN npm run build:sdk \
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=3001
+ENV HOME=/data/home
 ENV OPEN_DREAMFLOW_DATA_DIR=/data
 ENV DREAMFLOW_DATA_DIR=/data
 ENV DREAMFLOW_MEDIA_DIR=/data/media

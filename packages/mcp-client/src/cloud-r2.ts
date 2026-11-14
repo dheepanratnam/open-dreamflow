@@ -20,6 +20,8 @@ interface R2ResolvedConfig {
   accessKeyId: string;
   secretAccessKey: string;
   bucket: string;
+  region: string;
+  urlStyle: 'path' | 'virtual-host';
   publicBaseUrl: string | null;
   endpointHost: string;
 }
@@ -34,22 +36,58 @@ const r2ListCache = new Map<string, R2ListCacheEntry>();
 
 function readR2Config(): R2ResolvedConfig | null {
   const accountId = String(process.env.R2_ACCOUNT_ID || '').trim();
-  const accessKeyId = String(process.env.R2_ACCESS_KEY_ID || '').trim();
-  const secretAccessKey = String(process.env.R2_SECRET_ACCESS_KEY || '').trim();
-  const bucket = String(process.env.R2_BUCKET_NAME || '').trim();
+  const rawS3Endpoint = String(process.env.S3_ENDPOINT || process.env.R2_ENDPOINT || '').trim();
+  const accessKeyId = String(
+    process.env.R2_ACCESS_KEY_ID || process.env.S3_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID || ''
+  ).trim();
+  const secretAccessKey = String(
+    process.env.R2_SECRET_ACCESS_KEY ||
+      process.env.S3_SECRET_ACCESS_KEY ||
+      process.env.AWS_SECRET_ACCESS_KEY ||
+      ''
+  ).trim();
+  const bucket = String(process.env.R2_BUCKET_NAME || process.env.S3_BUCKET || '').trim();
+  const region = String(process.env.S3_REGION || process.env.R2_REGION || 'auto').trim() || 'auto';
+  const rawStyle = String(process.env.S3_URL_STYLE || '').trim().toLowerCase();
   const rawPublicBase = String(process.env.R2_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
 
-  if (!accountId || !accessKeyId || !secretAccessKey || !bucket) {
+  if ((!accountId && !rawS3Endpoint) || !accessKeyId || !secretAccessKey || !bucket) {
     return null;
   }
 
+  let baseHost = `${accountId}.r2.cloudflarestorage.com`;
+  if (rawS3Endpoint) {
+    try {
+      const parsed = new URL(
+        rawS3Endpoint.startsWith('http://') || rawS3Endpoint.startsWith('https://')
+          ? rawS3Endpoint
+          : `https://${rawS3Endpoint}`
+      );
+      baseHost = parsed.host;
+    } catch {
+      baseHost = rawS3Endpoint.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    }
+  }
+
+  const urlStyle: 'path' | 'virtual-host' =
+    rawStyle === 'virtual-host' || rawStyle === 'virtual' || baseHost.endsWith('storageapi.dev')
+      ? 'virtual-host'
+      : 'path';
+
+  const endpointHost =
+    urlStyle === 'virtual-host' && !baseHost.startsWith(`${bucket}.`)
+      ? `${bucket}.${baseHost}`
+      : baseHost;
+
   return {
-    accountId,
+    accountId: accountId || baseHost,
     accessKeyId,
     secretAccessKey,
     bucket,
+    region,
+    urlStyle,
     publicBaseUrl: rawPublicBase || null,
-    endpointHost: `${accountId}.r2.cloudflarestorage.com`,
+    endpointHost,
   };
 }
 
@@ -89,8 +127,17 @@ function normalizeObjectKey(key: string): string {
   return String(key || '').replace(/^\/+/, '').trim();
 }
 
-function encodeS3Path(bucket: string, key?: string): string {
+function encodeS3Path(bucket: string, key: string | undefined, urlStyle: 'path' | 'virtual-host'): string {
   const cleanKey = key ? normalizeObjectKey(key) : '';
+  if (urlStyle === 'virtual-host') {
+    if (!cleanKey) return '/';
+    const encodedSegments = cleanKey
+      .split('/')
+      .filter((segment) => segment.length > 0)
+      .map((segment) => encodeRfc3986(segment))
+      .join('/');
+    return `/${encodedSegments}`;
+  }
   if (!cleanKey) {
     return `/${encodeRfc3986(bucket)}`;
   }
@@ -159,7 +206,7 @@ async function executeSignedR2Request(
   const payload = opts.body ?? Buffer.alloc(0);
   const payloadHash = sha256Hex(payload);
   const { amzDate, dateStamp } = formatAmzDates();
-  const canonicalUri = encodeS3Path(cfg.bucket, opts.key);
+  const canonicalUri = encodeS3Path(cfg.bucket, opts.key, cfg.urlStyle);
 
   const queryEntries = Object.entries(opts.query || {})
     .map(([k, v]) => [encodeRfc3986(k), encodeRfc3986(v)] as const)
@@ -192,7 +239,7 @@ async function executeSignedR2Request(
     payloadHash,
   ].join('\n');
 
-  const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
+  const credentialScope = `${dateStamp}/${cfg.region}/s3/aws4_request`;
   const stringToSign = [
     'AWS4-HMAC-SHA256',
     amzDate,
@@ -201,7 +248,7 @@ async function executeSignedR2Request(
   ].join('\n');
 
   const kDate = hmacSha256(`AWS4${cfg.secretAccessKey}`, dateStamp);
-  const kRegion = hmacSha256(kDate, 'auto');
+  const kRegion = hmacSha256(kDate, cfg.region);
   const kService = hmacSha256(kRegion, 's3');
   const kSigning = hmacSha256(kService, 'aws4_request');
   const signature = crypto
