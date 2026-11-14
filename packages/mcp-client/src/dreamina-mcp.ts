@@ -2766,30 +2766,81 @@ export class DreaminaMcpEngine {
       const rawModel = strArg(args.model);
       if (!rawModel) return errToolResult('dreamina_model_info requires a model argument.');
       const mod = strArg(args.modality) as 'image' | 'video' | 'audio' | '';
-      const mapped = mod ? mapToCliModel(rawModel, mod) : rawModel;
-      let res: Record<string, unknown>;
+      const lowerRaw = rawModel.toLowerCase();
+      const inferredMod: 'image' | 'video' | 'audio' =
+        mod ||
+        (/(audio|tts)/.test(lowerRaw)
+          ? 'audio'
+          : /(seedance|veo|wan|happyhorse|omni|motion|video)/.test(lowerRaw)
+            ? 'video'
+            : 'image');
+      const mapped = mapToCliModel(rawModel, inferredMod);
+      const [sdk, allCatalog, imgSpecs, vidSpecs, audSpecs] = await Promise.all([
+        this.deps.loadProviderSdk(),
+        this.getModelsCatalog('all'),
+        this.getLiveCliModels('image'),
+        this.getLiveCliModels('video'),
+        this.getLiveCliModels('audio'),
+      ]);
+      const canonical =
+        typeof sdk.normalizeDreaminaModelId === 'function'
+          ? (
+              sdk.normalizeDreaminaModelId as (
+                raw?: string,
+                modality?: 'image' | 'video' | 'audio'
+              ) => string
+            )(rawModel, inferredMod)
+          : rawModel.trim().replace(/\./g, '_');
+      const catalogEntry =
+        allCatalog.find((m) => m.id === canonical || m.id === rawModel) || null;
+      const allCliSpecs = [...imgSpecs, ...vidSpecs, ...audSpecs];
+      const cliSpec =
+        allCliSpecs.find(
+          (s) =>
+            s.model === mapped ||
+            s.model === rawModel ||
+            s.model?.replace(/\./g, '_') === canonical ||
+            (s.aliases || []).includes(rawModel)
+        ) || null;
+      let findData: unknown = null;
       try {
-        res = await this.runCliJson(
-          ['model', mapped, ...(mod ? ['--type', mod] : [])],
+        const res = await this.runCliJson(
+          ['model', 'find', mapped, ...(mod ? ['--type', mod] : [])],
           { timeoutMs: 15_000 }
         );
+        findData = res.data || res;
       } catch {
-        res = await this.runCliJson(
-          ['model', rawModel, ...(mod ? ['--type', mod] : [])],
-          { timeoutMs: 15_000 }
-        );
+        // Ignore optional CLI find error when catalogEntry/cliSpec already matched
       }
-      return okToolResult({ ok: true, model: mapped, data: res.data || res });
+      return okToolResult({
+        ok: true,
+        model: mapped,
+        canonicalId: canonical,
+        catalogEntry,
+        cliSpec,
+        data: cliSpec || findData || catalogEntry,
+      });
     }
 
     if (toolName === 'dreamina_model_find') {
       const query = strArg(args.query);
       if (!query) return errToolResult('dreamina_model_find requires a query argument.');
-      const mod = strArg(args.modality);
-      const res = await this.runCliJson(
+      const mod = strArg(args.modality) as 'image' | 'video' | 'audio' | '';
+      const mappedQuery = mapToCliModel(
+        query,
+        mod || (/(seedance|veo|wan|happyhorse|omni)/.test(query.toLowerCase()) ? 'video' : 'image')
+      );
+      let res = await this.runCliJson(
         ['model', 'find', query, ...(mod ? ['--type', mod] : [])],
         { timeoutMs: 15_000 }
       );
+      const resData = (res.data || {}) as Record<string, unknown>;
+      if (resData.matchKind === 'none' && mappedQuery !== query) {
+        res = await this.runCliJson(
+          ['model', 'find', mappedQuery, ...(mod ? ['--type', mod] : [])],
+          { timeoutMs: 15_000 }
+        );
+      }
       return okToolResult({ ok: true, query, data: res.data || res });
     }
 
@@ -2803,9 +2854,25 @@ export class DreaminaMcpEngine {
       if (model) cmdArgs.push('--model', model);
       const res = await this.runCliJson(cmdArgs, { timeoutMs: 20_000 });
       const data = (res.data || {}) as Record<string, unknown>;
+      let voices: unknown[] = Array.isArray(data.items)
+        ? data.items
+        : Array.isArray(data.voices)
+          ? data.voices
+          : [];
+      if (voices.length === 0 && data.models && typeof data.models === 'object') {
+        for (const [mKey, mVal] of Object.entries(data.models as Record<string, unknown>)) {
+          const items = Array.isArray((mVal as Record<string, unknown> | undefined)?.items)
+            ? ((mVal as Record<string, unknown>).items as Array<Record<string, unknown>>)
+            : [];
+          for (const item of items) {
+            voices.push({ model: mKey, ...item });
+          }
+        }
+      }
       return okToolResult({
         ok: true,
-        voices: data.items || data.voices || [],
+        count: voices.length,
+        voices,
         data,
       });
     }
