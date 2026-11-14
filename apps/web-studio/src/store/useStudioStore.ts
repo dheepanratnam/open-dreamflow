@@ -7483,7 +7483,32 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   refreshAssetsCatalog: async (source, forceRefresh = false) => {
     const targetSource = source || get().assetsSourceFilter || 'all';
     set({ assetsLoading: true, assetsSourceFilter: targetSource });
+
+    if (targetSource === 'all') {
+      const storageRes = await fetchAssetsViaBackend('storage', false);
+      if (get().assetsSourceFilter !== 'all') return;
+      const storageItems = storageRes.items || [];
+      set({
+        assetsCatalog: storageItems,
+        assetsLoading: false,
+      });
+
+      void fetchAssetsViaBackend('dreamina', forceRefresh).then((drmRes) => {
+        if (get().assetsSourceFilter !== 'all') return;
+        const drmItems = drmRes.items || [];
+        if (drmItems.length === 0) return;
+        const seen = new Set(storageItems.map((i) => i.id));
+        const merged = [
+          ...storageItems,
+          ...drmItems.filter((i) => !seen.has(i.id)),
+        ].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+        set({ assetsCatalog: merged });
+      });
+      return;
+    }
+
     const res = await fetchAssetsViaBackend(targetSource, forceRefresh);
+    if (get().assetsSourceFilter !== targetSource) return;
     set({
       assetsCatalog: res.items || [],
       assetsLoading: false,
@@ -7492,7 +7517,24 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   placeCloudAssetOnCanvas: async (item) => {
     let localUrl = item.url;
-    if (!localUrl.startsWith('/media/') && /^https?:\/\//i.test(item.url)) {
+    if (
+      item.source === 'dreamina' &&
+      item.projectId &&
+      item.resourceId &&
+      !localUrl.startsWith('/media/')
+    ) {
+      get().showToast(`Importing "${item.title}" from Dreamina…`, 'ok');
+      const imp = await importAssetViaBackend({
+        projectId: item.projectId,
+        resourceId: item.resourceId,
+        modality: item.kind === 'video' ? 'video' : item.kind === 'audio' ? 'audio' : 'image',
+        title: item.title,
+        platformId: 'dreamina',
+      });
+      if (imp.ok && imp.item?.url) {
+        localUrl = imp.item.url;
+      }
+    } else if (!localUrl.startsWith('/media/') && /^https?:\/\//i.test(item.url)) {
       const imp = await importAssetViaBackend({
         url: item.url,
         kind: item.kind === 'video' ? 'video' : item.kind === 'audio' ? 'audio' : 'image',

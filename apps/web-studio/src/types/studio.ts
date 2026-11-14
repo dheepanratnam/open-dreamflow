@@ -713,12 +713,15 @@ export interface PlatformCreditSummary {
 }
 
 export interface SharedPoolSummary {
+  id?: string;
   platformId: string;
+  memberName?: string;
   enabled: boolean;
   capCredits: number | null;
   usedCredits: number;
   remainingCredits: number | null;
   ownerName?: string;
+  ownerPoolCredits?: number | null;
 }
 
 export interface CreditExpiryAlert {
@@ -732,6 +735,7 @@ export interface CreditExpiryAlert {
 export interface CreditsSummaryResponse {
   ok: boolean;
   updatedAt?: number;
+  totalPoolCredits?: number;
   platforms: PlatformCreditSummary[];
   sharedPools: SharedPoolSummary[];
   expiringSoonAlerts: CreditExpiryAlert[];
@@ -744,9 +748,9 @@ export interface CreditQuoteResponse {
   modelId: string;
   estimatedCredits: number | null;
   estimatedUsd: number | null;
-  unit: 'credits' | 'chars' | 'usd' | 'unlimited';
+  unit: 'credits' | 'chars' | 'characters' | 'usd' | 'unlimited';
   isUnlimitedEligible: boolean;
-  source: 'dreamina-cli-quote' | 'calibrated-delta' | 'rate-table';
+  source: 'dreamina-cli-quote' | 'calibrated-delta' | 'rate-table' | string;
   label: string;
   error?: string;
 }
@@ -754,11 +758,15 @@ export interface CreditQuoteResponse {
 export interface CloudAssetItem {
   id: string;
   title: string;
+  filename?: string;
   kind: 'image' | 'video' | 'audio';
   url: string;
   thumbnailUrl?: string;
   source: 'storage' | 'r2' | 'dreamina' | 'higgsfield';
   platformId?: string;
+  projectId?: string;
+  resourceId?: string;
+  cachedLocally?: boolean;
   createdAt: string;
   sizeBytes?: number;
   prompt?: string;

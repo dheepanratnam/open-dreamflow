@@ -1856,6 +1856,8 @@ export class DreaminaMcpEngine {
     );
   }
 
+  private inFlightAssetsByProfile = new Map<string, Promise<DreaminaCloudAssetItem[]>>();
+
   public async listRecentCloudAssets(
     forceRefresh = false,
     explicitProfile?: string
@@ -1863,7 +1865,7 @@ export class DreaminaMcpEngine {
     const profile = this.getActiveProfile(explicitProfile);
     const now = Date.now();
     const cached = this.recentAssetsCacheByProfile.get(profile);
-    if (!forceRefresh && cached && now - cached.fetchedAt < 20_000) {
+    if (!forceRefresh && cached && now - cached.fetchedAt < 180_000) {
       return cached.items;
     }
 
@@ -1872,28 +1874,37 @@ export class DreaminaMcpEngine {
       return [];
     }
 
-    return await this.runWithProfile(profile, async () => {
+    const existingPromise = this.inFlightAssetsByProfile.get(profile);
+    if (!forceRefresh && existingPromise) {
+      return await existingPromise;
+    }
+
+    const fetchPromise = this.runWithProfile(profile, async () => {
       try {
-        const canvasesRes = await this.runCliJson(['canvas', 'ls', '--limit', '3'], {
-          profile,
-          timeoutMs: 15_000,
-        });
-        const canvasesData = (canvasesRes.data || {}) as Record<string, unknown>;
-        const canvasItems = (Array.isArray(canvasesData.items) ? canvasesData.items : []) as Array<
-          Record<string, unknown>
-        >;
         const projectIds: string[] = [];
-        if (activeCfg.projectId) projectIds.push(activeCfg.projectId);
-        for (const c of canvasItems) {
-          const pid = typeof c.projectId === 'string' ? c.projectId.trim() : '';
-          if (pid && !projectIds.includes(pid)) projectIds.push(pid);
+        if (activeCfg.projectId) {
+          projectIds.push(activeCfg.projectId);
+        }
+        if (projectIds.length === 0 || forceRefresh) {
+          const canvasesRes = await this.runCliJson(['canvas', 'ls', '--limit', '2'], {
+            profile,
+            timeoutMs: 12_000,
+          });
+          const canvasesData = (canvasesRes.data || {}) as Record<string, unknown>;
+          const canvasItems = (Array.isArray(canvasesData.items) ? canvasesData.items : []) as Array<
+            Record<string, unknown>
+          >;
+          for (const c of canvasItems) {
+            const pid = typeof c.projectId === 'string' ? c.projectId.trim() : '';
+            if (pid && !projectIds.includes(pid)) projectIds.push(pid);
+          }
         }
 
         const collected: DreaminaCloudAssetItem[] = [];
-        for (const pid of projectIds.slice(0, 2)) {
+        for (const pid of projectIds.slice(0, 1)) {
           const findRes = await this.runCliJson(
-            ['node', 'find', '--project-id', pid, '--status', 'success', '--limit', '12'],
-            { profile, timeoutMs: 15_000 }
+            ['node', 'find', '--project-id', pid, '--status', 'success', '--limit', '8'],
+            { profile, timeoutMs: 12_000 }
           );
           const findItems = (Array.isArray((findRes.data as Record<string, unknown> | undefined)?.items)
             ? (findRes.data as Record<string, unknown>).items
@@ -1907,7 +1918,7 @@ export class DreaminaMcpEngine {
 
           const showRes = await this.runCliJson(
             ['node', 'show', '--project-id', pid, ...nodeIds.flatMap((id) => ['--node-id', id])],
-            { profile, timeoutMs: 20_000 }
+            { profile, timeoutMs: 15_000 }
           );
           const showNodes = (Array.isArray((showRes.data as Record<string, unknown> | undefined)?.nodes)
             ? (showRes.data as Record<string, unknown>).nodes
@@ -1958,12 +1969,17 @@ export class DreaminaMcpEngine {
           }
         }
 
-        this.recentAssetsCacheByProfile.set(profile, { fetchedAt: now, items: collected });
+        this.recentAssetsCacheByProfile.set(profile, { fetchedAt: Date.now(), items: collected });
         return collected;
       } catch {
         return cached?.items || [];
+      } finally {
+        this.inFlightAssetsByProfile.delete(profile);
       }
     });
+
+    this.inFlightAssetsByProfile.set(profile, fetchPromise);
+    return await fetchPromise;
   }
 
   public async quoteCliCost(params: {

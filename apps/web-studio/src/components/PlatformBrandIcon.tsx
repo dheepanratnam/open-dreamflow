@@ -46,8 +46,8 @@ const BRAND_ASSET_MAP: Record<string, BrandAssetSpec> = {
   sume: {
     src: '/brands/sume.png',
     label: 'Sume',
-    boxClass: 'bg-[#0B2239] border border-white/10 p-[12%]',
-    imgClass: 'w-full h-full object-contain',
+    boxClass: 'bg-[#0B2239] border border-white/10',
+    imgClass: 'w-full h-full object-contain scale-[0.78]',
   },
   elevenlabs: {
     src: '/brands/elevenlabs.svg',
@@ -58,8 +58,8 @@ const BRAND_ASSET_MAP: Record<string, BrandAssetSpec> = {
   openai: {
     src: '/brands/openai.svg',
     label: 'OpenAI',
-    boxClass: 'bg-[#0e0e0e] border border-white/15 p-[18%]',
-    imgClass: 'w-full h-full object-contain invert',
+    boxClass: 'bg-[#0e0e0e] border border-white/15',
+    imgClass: 'w-full h-full object-cover',
   },
   fal: {
     src: '/brands/fal.png',
@@ -76,7 +76,7 @@ const BRAND_ASSET_MAP: Record<string, BrandAssetSpec> = {
   openart: {
     src: '/brands/openart.png',
     label: 'OpenArt',
-    boxClass: 'bg-white p-[14%]',
+    boxClass: 'bg-white',
     imgClass: 'w-full h-full object-contain',
   },
   imagineart: {
@@ -136,7 +136,16 @@ export const PlatformBrandIcon: React.FC<PlatformBrandIconProps> = ({
   size = 'md',
   className = '',
 }) => {
-  const key = String(platformId || 'custom-mcp').toLowerCase();
+  const rawKey = String(platformId || 'custom-mcp').toLowerCase();
+  const key = rawKey.startsWith('higgsfield')
+    ? 'higgsfield'
+    : rawKey.startsWith('dreamina') || rawKey.startsWith('seedance') || rawKey.startsWith('seedream')
+    ? 'dreamina'
+    : rawKey.startsWith('eleven')
+    ? 'elevenlabs'
+    : rawKey.startsWith('kling')
+    ? 'kling'
+    : rawKey;
   const spec = BRAND_ASSET_MAP[key] || DEFAULT_BRAND_SPEC;
 
   return (

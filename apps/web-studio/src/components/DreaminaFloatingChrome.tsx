@@ -47,6 +47,7 @@ import type { DreaminaToolId, PlatformId } from '../types/studio';
 import { useStudioStore } from '../store/useStudioStore';
 import { SmartMediaImage } from './SmartMedia';
 import { PlatformBrandIcon } from './PlatformBrandIcon';
+import { normalizeBackendMediaUrl } from '../services/executionRouter';
 import { downloadTextFile, generateFcpxmlDocument } from '../utils/exporters';
 
 interface DockToolItem {
@@ -1016,7 +1017,8 @@ export const DreaminaFloatingChrome: React.FC = () => {
                   }
                   if (
                     q &&
-                    !item.title.toLowerCase().includes(q) &&
+                    !(item.title || '').toLowerCase().includes(q) &&
+                    !(item.filename || '').toLowerCase().includes(q) &&
                     !(item.prompt || '').toLowerCase().includes(q)
                   ) {
                     return false;
@@ -1044,11 +1046,28 @@ export const DreaminaFloatingChrome: React.FC = () => {
                     className="group rounded-[10px] overflow-hidden bg-[#141414] border border-white/[0.08] hover:border-white/[0.28] text-left transition-all"
                   >
                     <div className="aspect-video bg-[#191919] relative overflow-hidden">
-                      <SmartMediaImage
-                        src={asset.thumbnailUrl || asset.url}
-                        alt={asset.title}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
-                      />
+                      {asset.kind === 'video' && !asset.thumbnailUrl ? (
+                        <video
+                          src={normalizeBackendMediaUrl(asset.url, true)}
+                          muted
+                          playsInline
+                          preload="metadata"
+                          onMouseEnter={(e) => {
+                            void e.currentTarget.play().catch(() => {});
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.pause();
+                            e.currentTarget.currentTime = 0;
+                          }}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                        />
+                      ) : (
+                        <SmartMediaImage
+                          src={asset.thumbnailUrl || asset.url}
+                          alt={asset.title}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                        />
+                      )}
                       <div className="absolute top-1.5 left-1.5 flex items-center gap-1 rounded-[5px] bg-black/75 px-1 py-0.5">
                         <PlatformBrandIcon
                           platformId={(asset.platformId || asset.source) as PlatformId}

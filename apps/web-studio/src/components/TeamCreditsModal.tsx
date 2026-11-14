@@ -353,22 +353,27 @@ export const TeamCreditsModal: React.FC = () => {
 
                   {dreaminaSummary?.buckets && dreaminaSummary.buckets.length > 0 ? (
                     <div className="space-y-1.5 pt-1 border-t border-white/[0.06]">
-                      <div className="text-[10px] font-medium uppercase tracking-wider text-white/40">
-                        Expiry Buckets Timeline
+                      <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-wider text-white/45">
+                        <span>Expiry Buckets Timeline</span>
+                        <span className="tabular-nums">
+                          {dreaminaSummary.buckets.length} buckets
+                        </span>
                       </div>
-                      {dreaminaSummary.buckets.map((b, idx) => (
-                        <div
-                          key={idx}
-                          className="flex items-center justify-between rounded-lg bg-black/35 px-2.5 py-1.5 text-[11px]"
-                        >
-                          <span className="font-semibold tabular-nums text-white">
-                            {b.credits.toLocaleString()} cr
-                          </span>
-                          <span className="text-amber-300/90 tabular-nums">
-                            {b.expiresAt} ({b.daysRemaining}d left)
-                          </span>
-                        </div>
-                      ))}
+                      <div className="max-h-[196px] overflow-y-auto pr-1 space-y-1">
+                        {dreaminaSummary.buckets.map((b, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-center justify-between rounded-lg bg-black/35 px-2.5 py-1.5 text-[11px]"
+                          >
+                            <span className="font-semibold tabular-nums text-white">
+                              {b.credits.toLocaleString()} cr
+                            </span>
+                            <span className="text-amber-300/90 tabular-nums">
+                              {b.expiresAt} ({b.daysRemaining}d left)
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ) : (
                     <div className="text-[11px] text-white/45 pt-1 border-t border-white/[0.06]">
@@ -421,12 +426,19 @@ export const TeamCreditsModal: React.FC = () => {
                     </div>
                     <div className="text-right">
                       <div className="text-[16px] font-semibold tabular-nums text-white">
-                        {higgsSummary?.supportsUnlimited && !higgsSummary?.credits
+                        {higgsSummary?.credits != null
+                          ? `${higgsSummary.credits.toLocaleString(undefined, {
+                              maximumFractionDigits: 1,
+                            })} cr`
+                          : higgsSummary?.supportsUnlimited
                           ? '∞ Unlimited'
-                          : higgsSummary?.credits != null
-                          ? `${higgsSummary.credits.toLocaleString()} cr`
                           : '—'}
                       </div>
+                      {higgsSummary?.supportsUnlimited && higgsSummary?.credits != null && (
+                        <div className="text-[10px] font-medium text-[#20D5EC]">
+                          ∞ Unlimited Eligible
+                        </div>
+                      )}
                       {higgsSummary?.nextResetAt && (
                         <div className="text-[10px] text-white/45 tabular-nums">
                           Resets {higgsSummary.nextResetAt}
@@ -573,17 +585,19 @@ export const TeamCreditsModal: React.FC = () => {
                           : 0;
                       return (
                         <div
-                          key={pool.platformId}
+                          key={pool.id || pool.platformId}
                           className="rounded-lg border border-white/[0.07] bg-black/35 p-3 space-y-1.5"
                         >
                           <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
                               <PlatformBrandIcon
                                 platformId={pool.platformId as PlatformId}
                                 size="sm"
                               />
-                              <span className="text-[12px] font-medium">
-                                {pool.platformId}
+                              <span className="text-[12px] font-medium truncate">
+                                {pool.memberName
+                                  ? `${pool.memberName} · ${pool.platformId}`
+                                  : pool.platformId}
                               </span>
                             </div>
                             <span

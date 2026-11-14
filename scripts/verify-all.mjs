@@ -2973,9 +2973,64 @@ async function verifyStage18MultiUserCloudCreditsAndUiAudit() {
       `deploy-option-a.mjs --check unexpected output: ${deployOut}`
     );
 
+    // 10. Visual brand & frontend contract regression checks
+    const openaiSvg = fs.readFileSync(path.join(ROOT, 'apps/web-studio/public/brands/openai.svg'), 'utf8');
+    assert(
+      openaiSvg.includes('width=') && openaiSvg.includes('height='),
+      'apps/web-studio/public/brands/openai.svg must declare explicit width= and height='
+    );
+    const brandIconSrc = fs.readFileSync(
+      path.join(ROOT, 'apps/web-studio/src/components/PlatformBrandIcon.tsx'),
+      'utf8'
+    );
+    assert(
+      !brandIconSrc.includes('p-['),
+      'apps/web-studio/src/components/PlatformBrandIcon.tsx must contain zero p-[ percentage padding classes'
+    );
+    const execRouterSrc = fs.readFileSync(
+      path.join(ROOT, 'apps/web-studio/src/services/executionRouter.ts'),
+      'utf8'
+    );
+    assert(
+      execRouterSrc.includes('Object.entries') &&
+        execRouterSrc.includes('sharedPools') &&
+        execRouterSrc.includes('entry.grants') &&
+        execRouterSrc.includes('json.asset'),
+      'executionRouter.ts must handle keyed-object json.platforms (Object.entries), owner sharedPools (entry.grants), and json.asset in importAssetViaBackend'
+    );
+
+    // 11. Live :3001 /api/assets?source=storage latency & user-asset integrity check
+    let liveAssetsInfo = 'ephemeral-only';
+    try {
+      const liveHealth = await fetch('http://127.0.0.1:3001/health');
+      if (liveHealth.ok) {
+        const a0 = performance.now();
+        const liveAssetsRes = await fetch('http://127.0.0.1:3001/api/assets?source=storage');
+        const liveAssetsMs = performance.now() - a0;
+        assert(liveAssetsRes.status === 200, `Live GET :3001/api/assets?source=storage returned ${liveAssetsRes.status}`);
+        const liveAssetsJson = await liveAssetsRes.json();
+        const liveItems = Array.isArray(liveAssetsJson.items) ? liveAssetsJson.items : [];
+        assert(
+          liveAssetsMs < 150,
+          `Live GET :3001/api/assets?source=storage took ${liveAssetsMs.toFixed(2)}ms (expected <150ms)`
+        );
+        assert(
+          liveItems.length >= 35,
+          `Expected >= 35 real user items in live /api/assets?source=storage, got ${liveItems.length}`
+        );
+        assert(
+          !liveItems.some((it) => String(it.filename || '').startsWith('real_')),
+          'Found legacy real_* demo asset in live /api/assets?source=storage'
+        );
+        liveAssetsInfo = `${liveItems.length} items in ${liveAssetsMs.toFixed(2)}ms`;
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('Verification failed:')) throw err;
+    }
+
     logStep(
       '18/18 multi-user-cloud-credits-and-ui-audit',
-      `Verified 401 auth gate, Friend #1 cap 403 & Friend #2 disabled 403, AES-GCM vault isolation, cached quote (${cachedQuoteMs.toFixed(2)}ms), 0 real_* /api/assets, /brands/* immutable, self-test gate & deploy --check`
+      `Verified 401 auth gate, Friend #1 cap 403 & Friend #2 disabled 403, AES-GCM vault isolation, cached quote (${cachedQuoteMs.toFixed(2)}ms), live storage (${liveAssetsInfo}), openai.svg/PlatformBrandIcon/executionRouter contracts, /brands/* immutable, self-test gate & deploy --check`
     );
   } finally {
     await s18Bridge.stop();

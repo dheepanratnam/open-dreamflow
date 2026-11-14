@@ -2948,6 +2948,111 @@ export async function deleteTeamMemberViaBackend(userId: string): Promise<boolea
   }
 }
 
+const PLATFORM_DISPLAY_LABELS: Record<string, string> = {
+  dreamina: 'Dreamina',
+  higgsfield: 'Higgsfield',
+  elevenlabs: 'ElevenLabs',
+  'google-flow': 'Google Flow',
+  kling: 'Kling AI',
+  openai: 'OpenAI',
+  fal: 'fal.ai',
+  replicate: 'Replicate',
+  comfyui: 'ComfyUI',
+  openart: 'OpenArt',
+  imagineart: 'ImagineArt',
+  sume: 'Sume',
+};
+
+function formatFriendlyDateLabel(raw?: string | number | null): string | undefined {
+  if (raw === null || raw === undefined || raw === '') return undefined;
+  const date =
+    typeof raw === 'number'
+      ? new Date(raw > 1e12 ? raw : raw * 1000)
+      : new Date(String(raw));
+  if (Number.isNaN(date.getTime())) return String(raw);
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function formatAssetTitleFromFilename(filename?: string, fallbackKind = 'Asset'): string {
+  if (!filename) return fallbackKind;
+  const stem = filename.replace(/\.[a-z0-9]+$/i, '');
+  const m = /^(dreamina_mcp|higgsfield_mcp|upload|render|upscale4k|inpaint|outpaint|nobg|bridge)_(.+)$/i.exec(
+    stem
+  );
+  if (m) {
+    const prefixMap: Record<string, string> = {
+      dreamina_mcp: 'Dreamina',
+      higgsfield_mcp: 'Higgsfield',
+      upload: 'Upload',
+      render: 'Render',
+      upscale4k: '4K Upscale',
+      inpaint: 'Inpaint',
+      outpaint: 'Outpaint',
+      nobg: 'Cutout',
+      bridge: 'Keyframe Bridge',
+    };
+    const label = prefixMap[m[1].toLowerCase()] || m[1];
+    const shortSuffix = m[2].slice(-6);
+    return `${label} · ${shortSuffix}`;
+  }
+  return stem.replace(/[_-]+/g, ' ').slice(0, 48);
+}
+
+function normalizeRawAssetItem(raw: Record<string, unknown>): CloudAssetItem {
+  const rawModality = String(raw.kind || raw.modality || 'image').toLowerCase();
+  const kind: 'image' | 'video' | 'audio' =
+    rawModality === 'video' ? 'video' : rawModality === 'audio' ? 'audio' : 'image';
+  const rawSource = String(raw.source || 'storage').toLowerCase();
+  const source: 'storage' | 'r2' | 'dreamina' | 'higgsfield' =
+    rawSource === 'dreamina'
+      ? 'dreamina'
+      : rawSource === 'higgsfield'
+      ? 'higgsfield'
+      : rawSource === 'r2'
+      ? 'r2'
+      : 'storage';
+  const filename = typeof raw.filename === 'string' ? raw.filename : undefined;
+  const relUrl = String(
+    raw.url || raw.mediaUrl || raw.previewUrl || raw.fullUrl || ''
+  ).trim();
+  const thumb =
+    typeof raw.thumbnailUrl === 'string' && raw.thumbnailUrl
+      ? raw.thumbnailUrl
+      : kind === 'image'
+      ? String(raw.previewUrl || relUrl)
+      : undefined;
+
+  return {
+    id: String(raw.id || relUrl || Math.random().toString(36).slice(2)),
+    title:
+      typeof raw.title === 'string' && raw.title.trim()
+        ? raw.title.trim()
+        : formatAssetTitleFromFilename(filename, `Studio ${kind}`),
+    filename,
+    kind,
+    url: relUrl,
+    ...(thumb ? { thumbnailUrl: thumb } : {}),
+    source,
+    platformId: typeof raw.platformId === 'string' ? raw.platformId : undefined,
+    projectId: typeof raw.projectId === 'string' ? raw.projectId : undefined,
+    resourceId: typeof raw.resourceId === 'string' ? raw.resourceId : undefined,
+    cachedLocally: typeof raw.cachedLocally === 'boolean' ? raw.cachedLocally : undefined,
+    createdAt:
+      typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
+    sizeBytes:
+      typeof raw.sizeBytes === 'number'
+        ? raw.sizeBytes
+        : typeof raw.bytes === 'number'
+        ? raw.bytes
+        : undefined,
+    prompt: typeof raw.prompt === 'string' ? raw.prompt : undefined,
+  };
+}
+
 export async function fetchCreditsSummaryViaBackend(
   refresh = false
 ): Promise<CreditsSummaryResponse> {
@@ -2955,22 +3060,167 @@ export async function fetchCreditsSummaryViaBackend(
     const res = await authFetch(
       `${LOCAL_MCP_BASE}/api/credits/summary?refresh=${refresh ? '1' : '0'}`
     );
-    const json = (await res.json().catch(() => ({}))) as Partial<CreditsSummaryResponse>;
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok || json.ok === false) {
       return {
         ok: false,
         platforms: [],
         sharedPools: [],
         expiringSoonAlerts: [],
-        error: json.error || `HTTP ${res.status}`,
+        error: (typeof json.error === 'string' && json.error) || `HTTP ${res.status}`,
       };
     }
+
+    const rawPlatformsInput = json.platforms;
+    const rawPlatformList: Array<Record<string, unknown>> = Array.isArray(rawPlatformsInput)
+      ? (rawPlatformsInput as Array<Record<string, unknown>>)
+      : rawPlatformsInput && typeof rawPlatformsInput === 'object'
+      ? Object.entries(rawPlatformsInput as Record<string, Record<string, unknown>>).map(
+          ([pid, val]) => ({
+            platformId: pid,
+            ...(val && typeof val === 'object' ? val : {}),
+          })
+        )
+      : [];
+
+    const platforms = rawPlatformList.map((p) => {
+      const pid = String(p.platformId || '');
+      const rawBuckets = Array.isArray(p.buckets)
+        ? (p.buckets as Array<Record<string, unknown>>)
+        : [];
+      const buckets = rawBuckets.map((b) => ({
+        credits: Number(b.credits || 0),
+        expiresAt:
+          formatFriendlyDateLabel(b.expiresAt as string | undefined) ||
+          String(b.expiresAt || ''),
+        daysRemaining: Number(b.daysRemaining ?? 0),
+      }));
+
+      const creditsVal =
+        typeof p.credits === 'number'
+          ? p.credits
+          : typeof p.remainingCharacters === 'number'
+          ? p.remainingCharacters
+          : null;
+      const limitVal =
+        typeof p.limit === 'number'
+          ? p.limit
+          : typeof p.characterLimit === 'number'
+          ? p.characterLimit
+          : null;
+      const resetDay = typeof p.resetDay === 'number' ? p.resetDay : null;
+      const nextResetAt =
+        formatFriendlyDateLabel(
+          (p.nextResetAt as string | undefined) ||
+            (typeof p.nextResetUnix === 'number' ? p.nextResetUnix : undefined) ||
+            (p.vipLevelExpiresAt as string | undefined) ||
+            (p.manualExpiresAt as string | undefined)
+        ) || (resetDay ? `Day ${resetDay} monthly` : undefined);
+
+      return {
+        platformId: pid,
+        name:
+          (typeof p.name === 'string' && p.name) ||
+          PLATFORM_DISPLAY_LABELS[pid] ||
+          pid,
+        connected: Boolean(p.connected),
+        configured: Boolean(p.configured ?? p.connected),
+        credits: creditsVal,
+        limit: limitVal,
+        unit: typeof p.unit === 'string' ? p.unit : undefined,
+        plan:
+          (typeof p.plan === 'string' && p.plan) ||
+          (typeof p.tier === 'string' && p.tier) ||
+          (typeof p.vipLevel === 'string' && p.vipLevel) ||
+          undefined,
+        vipLevel: typeof p.vipLevel === 'string' ? p.vipLevel : undefined,
+        vipLevelExpiresAt: formatFriendlyDateLabel(
+          p.vipLevelExpiresAt as string | undefined
+        ),
+        expiresAt: formatFriendlyDateLabel(p.expiresAt as string | undefined),
+        nextResetAt,
+        supportsUnlimited: Boolean(p.supportsUnlimited),
+        buckets,
+        account: typeof p.account === 'string' ? p.account : undefined,
+      };
+    });
+
+    const rawPools = Array.isArray(json.sharedPools)
+      ? (json.sharedPools as Array<Record<string, unknown>>)
+      : [];
+    const sharedPools: CreditsSummaryResponse['sharedPools'] = [];
+    for (const entry of rawPools) {
+      if (entry && typeof entry.grants === 'object' && entry.grants !== null) {
+        const memberName = String(entry.displayName || entry.email || entry.userId || 'Member');
+        const userId = String(entry.userId || memberName);
+        const grantsMap = entry.grants as Record<
+          string,
+          { enabled?: boolean; capCredits?: number | null; usedCredits?: number }
+        >;
+        for (const [pid, g] of Object.entries(grantsMap)) {
+          if (!g || (!g.enabled && !(g.usedCredits && g.usedCredits > 0))) continue;
+          const used = Number(g.usedCredits || 0);
+          const cap = typeof g.capCredits === 'number' ? g.capCredits : null;
+          sharedPools.push({
+            id: `${userId}_${pid}`,
+            platformId: pid,
+            memberName,
+            enabled: Boolean(g.enabled),
+            capCredits: cap,
+            usedCredits: used,
+            remainingCredits: cap !== null ? Math.max(0, cap - used) : null,
+          });
+        }
+      } else if (entry && typeof entry.platformId === 'string') {
+        const used = Number(entry.usedCredits || 0);
+        const cap = typeof entry.capCredits === 'number' ? entry.capCredits : null;
+        sharedPools.push({
+          id: String(entry.platformId),
+          platformId: entry.platformId,
+          enabled: Boolean(entry.enabled),
+          capCredits: cap,
+          usedCredits: used,
+          remainingCredits:
+            typeof entry.remainingCredits === 'number'
+              ? entry.remainingCredits
+              : cap !== null
+              ? Math.max(0, cap - used)
+              : null,
+          ownerPoolCredits:
+            typeof entry.ownerPoolCredits === 'number' ? entry.ownerPoolCredits : null,
+        });
+      }
+    }
+
+    const rawAlerts = Array.isArray(json.expiringSoonAlerts)
+      ? (json.expiringSoonAlerts as Array<Record<string, unknown>>)
+      : [];
+    const expiringSoonAlerts = rawAlerts.map((al) => {
+      const days = Number(al.daysRemaining ?? 0);
+      return {
+        platformId: String(al.platformId || 'dreamina'),
+        credits: Number(al.credits || 0),
+        expiresAt:
+          formatFriendlyDateLabel(al.expiresAt as string | undefined) ||
+          String(al.expiresAt || ''),
+        daysRemaining: days,
+        severity: (days <= 3 ? 'urgent' : 'warning') as 'urgent' | 'warning',
+      };
+    });
+
     return {
       ok: true,
-      updatedAt: json.updatedAt,
-      platforms: Array.isArray(json.platforms) ? json.platforms : [],
-      sharedPools: Array.isArray(json.sharedPools) ? json.sharedPools : [],
-      expiringSoonAlerts: Array.isArray(json.expiringSoonAlerts) ? json.expiringSoonAlerts : [],
+      updatedAt:
+        typeof json.updatedAt === 'number'
+          ? json.updatedAt
+          : typeof json.fetchedAt === 'string'
+          ? Date.parse(json.fetchedAt)
+          : Date.now(),
+      totalPoolCredits:
+        typeof json.totalPoolCredits === 'number' ? json.totalPoolCredits : undefined,
+      platforms,
+      sharedPools,
+      expiringSoonAlerts,
     };
   } catch (err) {
     return {
@@ -3003,9 +3253,31 @@ export async function fetchCreditQuoteViaBackend(payload: {
       body: JSON.stringify(payload),
     });
     if (!res.ok) return null;
-    const json = (await res.json().catch(() => null)) as CreditQuoteResponse | null;
+    const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
     if (!json || json.ok === false) return null;
-    return json;
+    const rawUnit = String(json.unit || 'credits');
+    const unit = (rawUnit === 'characters' ? 'chars' : rawUnit) as CreditQuoteResponse['unit'];
+    const isUnlim = Boolean(json.isUnlimitedEligible ?? json.unlimitedEligible);
+    const estCredits =
+      typeof json.estimatedCredits === 'number' ? json.estimatedCredits : null;
+    return {
+      ok: true,
+      platformId: String(json.platformId || payload.platformId),
+      modelId: String(json.modelId || payload.modelId),
+      estimatedCredits: estCredits,
+      estimatedUsd: typeof json.estimatedUsd === 'number' ? json.estimatedUsd : null,
+      unit,
+      isUnlimitedEligible: isUnlim,
+      source: String(json.source || 'rate-table'),
+      label:
+        typeof json.label === 'string'
+          ? json.label
+          : isUnlim
+          ? '∞ Unlim'
+          : estCredits !== null
+          ? `${estCredits} ${unit === 'chars' ? 'chars' : 'cr'}`
+          : '',
+    };
   } catch {
     return null;
   }
@@ -3021,15 +3293,18 @@ export async function fetchAssetsViaBackend(
     );
     const json = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
-      items?: CloudAssetItem[];
+      items?: Array<Record<string, unknown>>;
       error?: string;
     };
     if (!res.ok || json.ok === false) {
       return { ok: false, items: [], error: json.error || `HTTP ${res.status}` };
     }
+    const items = Array.isArray(json.items)
+      ? json.items.map((it) => normalizeRawAssetItem(it)).filter((it) => Boolean(it.url))
+      : [];
     return {
       ok: true,
-      items: Array.isArray(json.items) ? json.items : [],
+      items,
     };
   } catch (err) {
     return {
@@ -3041,7 +3316,10 @@ export async function fetchAssetsViaBackend(
 }
 
 export async function importAssetViaBackend(payload: {
-  url: string;
+  url?: string;
+  projectId?: string;
+  resourceId?: string;
+  modality?: string;
   kind?: 'image' | 'video' | 'audio';
   title?: string;
   platformId?: string;
@@ -3050,17 +3328,28 @@ export async function importAssetViaBackend(payload: {
     const res = await authFetch(`${LOCAL_MCP_BASE}/api/assets/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        ...payload,
+        modality: payload.modality || payload.kind || 'image',
+      }),
     });
     const json = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
-      item?: CloudAssetItem;
+      item?: Record<string, unknown>;
+      asset?: Record<string, unknown>;
       error?: string;
     };
-    if (!res.ok || json.ok === false || !json.item) {
+    const rawObj = json.item || json.asset;
+    if (!res.ok || json.ok === false || !rawObj) {
       return { ok: false, error: json.error || `Asset import failed (HTTP ${res.status})` };
     }
-    return { ok: true, item: json.item };
+    return {
+      ok: true,
+      item: normalizeRawAssetItem({
+        ...rawObj,
+        title: payload.title || (rawObj.title as string | undefined),
+      }),
+    };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'Asset import failed' };
   }

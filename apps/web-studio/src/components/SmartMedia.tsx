@@ -16,6 +16,9 @@ export function isRuntimeGeneratedMediaPath(relPath: string): boolean {
 export function buildCandidateUrls(src?: string): string[] {
   if (!src) return [];
   if (src.startsWith('data:') || src.startsWith('blob:')) return [src];
+  if (src.startsWith('/api/')) {
+    return [`${BACKEND_ORIGIN}${src}`, src];
+  }
   if (src.startsWith('/media/')) {
     if (isRuntimeGeneratedMediaPath(src)) {
       return [`${BACKEND_ORIGIN}${src}`, src];

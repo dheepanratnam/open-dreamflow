@@ -2141,7 +2141,12 @@ export const ContextualNodeOverlay: React.FC = () => {
                         ? creditQuote.isUnlimitedEligible || creditQuote.unit === 'unlimited'
                           ? ' · ∞ Unlim'
                           : creditQuote.estimatedCredits != null
-                          ? ` · ${creditQuote.estimatedCredits} cr`
+                          ? ` · ${creditQuote.estimatedCredits.toLocaleString()} ${
+                              creditQuote.unit === 'chars' ||
+                              creditQuote.unit === 'characters'
+                                ? 'chars'
+                                : 'cr'
+                            }`
                           : ''
                         : ''}
                     </span>
