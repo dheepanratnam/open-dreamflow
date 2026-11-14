@@ -85,6 +85,23 @@ export interface ExtractedMcpMediaCandidate {
   /** Either a `data:<mime>;base64,...` URI, an `https://...` URL, or an `absfile:<path>` marker */
   source: string;
   mimeType?: string;
+  isThumbnail?: boolean;
+}
+
+export interface VirtualMcpServerAdapter {
+  id: string;
+  name: string;
+  platformId: string;
+  url?: string;
+  account?: McpOAuthAccountInfo;
+  authType?: 'oauth' | 'headers' | 'stdio';
+  getTools: () => ExternalMcpToolSchema[];
+  callTool: (
+    toolName: string,
+    args: Record<string, unknown>,
+    timeoutMs?: number
+  ) => Promise<Record<string, unknown>>;
+  onRemove?: () => void | Promise<void>;
 }
 
 interface PendingRpcRequest {
@@ -126,9 +143,16 @@ function writeJsonAtomic(targetPath: string, data: unknown): void {
   fs.renameSync(tmp, targetPath);
 }
 
+interface VirtualServerEntry {
+  adapter: VirtualMcpServerAdapter;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export class ExternalMcpHost {
   private readonly registryPath: string;
   private readonly servers = new Map<string, LiveServerRuntime>();
+  private readonly virtualServers = new Map<string, VirtualServerEntry>();
   private nextRpcId = 1;
   private readonly quiet: boolean;
 
@@ -201,18 +225,68 @@ export class ExternalMcpHost {
     };
   }
 
+  private toVirtualPublicSummary(entry: VirtualServerEntry): PublicMcpServerSummary {
+    const { adapter, createdAt, updatedAt } = entry;
+    return {
+      id: adapter.id,
+      name: adapter.name,
+      platformId: adapter.platformId,
+      transport: 'http',
+      authType: adapter.authType || 'oauth',
+      ...(adapter.account ? { account: adapter.account } : {}),
+      url: adapter.url || `builtin://${adapter.id}`,
+      status: 'connected',
+      pid: null,
+      error: null,
+      tools: adapter.getTools(),
+      createdAt,
+      updatedAt,
+    };
+  }
+
+  public registerVirtualServer(adapter: VirtualMcpServerAdapter): PublicMcpServerSummary {
+    const existing = this.virtualServers.get(adapter.id);
+    const now = new Date().toISOString();
+    const entry: VirtualServerEntry = {
+      adapter,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    this.virtualServers.set(adapter.id, entry);
+    return this.toVirtualPublicSummary(entry);
+  }
+
+  public unregisterVirtualServer(serverId: string): boolean {
+    return this.virtualServers.delete(serverId);
+  }
+
   public listServers(): PublicMcpServerSummary[] {
-    return Array.from(this.servers.values()).map((r) => this.toPublicSummary(r));
+    const out: PublicMcpServerSummary[] = [];
+    for (const v of this.virtualServers.values()) {
+      out.push(this.toVirtualPublicSummary(v));
+    }
+    for (const r of this.servers.values()) {
+      out.push(this.toPublicSummary(r));
+    }
+    return out;
   }
 
   public getConnectedServersForPlatform(platformId: string): PublicMcpServerSummary[] {
-    return Array.from(this.servers.values())
-      .filter(
-        (r) =>
-          r.status === 'connected' &&
-          (r.config.platformId === platformId || platformId === 'custom-mcp')
-      )
-      .map((r) => this.toPublicSummary(r));
+    const out: PublicMcpServerSummary[] = [];
+    for (const v of this.virtualServers.values()) {
+      if (v.adapter.platformId === platformId || platformId === 'custom-mcp') {
+        out.push(this.toVirtualPublicSummary(v));
+      }
+    }
+    for (const r of this.servers.values()) {
+      if (
+        r.status === 'connected' &&
+        (r.config.platformId === platformId || platformId === 'custom-mcp')
+      ) {
+        out.push(this.toPublicSummary(r));
+      }
+    }
+    return out;
   }
 
   public findBestServerForExecution(params: {
@@ -220,6 +294,10 @@ export class ExternalMcpHost {
     platformId?: string;
   }): PublicMcpServerSummary | null {
     if (params.mcpServerId) {
+      const exactVirtual = this.virtualServers.get(params.mcpServerId);
+      if (exactVirtual) {
+        return this.toVirtualPublicSummary(exactVirtual);
+      }
       const exact = this.servers.get(params.mcpServerId);
       if (exact && exact.status === 'connected') {
         return this.toPublicSummary(exact);
@@ -231,9 +309,17 @@ export class ExternalMcpHost {
           return this.toPublicSummary(r);
         }
       }
+      for (const v of this.virtualServers.values()) {
+        if (v.adapter.platformId === params.platformId) {
+          return this.toVirtualPublicSummary(v);
+        }
+      }
       if (params.platformId === 'custom-mcp') {
         for (const r of this.servers.values()) {
           if (r.status === 'connected') return this.toPublicSummary(r);
+        }
+        for (const v of this.virtualServers.values()) {
+          return this.toVirtualPublicSummary(v);
         }
       }
     }
@@ -245,8 +331,10 @@ export class ExternalMcpHost {
     modality: 'image' | 'video' | 'audio',
     explicitToolName?: string
   ): ExternalMcpToolSchema | null {
-    const runtime = this.servers.get(serverId);
-    if (!runtime || runtime.tools.length === 0) return null;
+    const virtual = this.virtualServers.get(serverId);
+    const runtimeTools = virtual ? virtual.adapter.getTools() : this.servers.get(serverId)?.tools;
+    if (!runtimeTools || runtimeTools.length === 0) return null;
+    const runtime = { tools: runtimeTools };
 
     if (explicitToolName) {
       const exact = runtime.tools.find((t) => t.name === explicitToolName);
@@ -254,8 +342,21 @@ export class ExternalMcpHost {
     }
 
     const canonicalNames: Record<'image' | 'video' | 'audio', string[]> = {
-      image: ['generate_image', 'create_image', 'text_to_image', 'render_image'],
-      video: ['generate_video', 'create_video', 'text_to_video', 'image_to_video', 'render_video'],
+      image: [
+        'generate_image',
+        'dreamina_generate_image',
+        'create_image',
+        'text_to_image',
+        'render_image',
+      ],
+      video: [
+        'generate_video',
+        'dreamina_generate_video',
+        'create_video',
+        'text_to_video',
+        'image_to_video',
+        'render_video',
+      ],
       audio: [
         'generate_audio',
         'text_to_speech',
@@ -436,6 +537,12 @@ export class ExternalMcpHost {
   }
 
   public async refreshServerTools(serverId: string): Promise<PublicMcpServerSummary> {
+    const virtual = this.virtualServers.get(serverId);
+    if (virtual) {
+      virtual.updatedAt = new Date().toISOString();
+      return this.toVirtualPublicSummary(virtual);
+    }
+
     const runtime = this.servers.get(serverId);
     if (!runtime) {
       throw new Error(`External MCP server not found: ${serverId}`);
@@ -459,6 +566,13 @@ export class ExternalMcpHost {
   }
 
   public async removeServer(serverId: string): Promise<{ ok: true; id: string; deleted: boolean }> {
+    const virtual = this.virtualServers.get(serverId);
+    if (virtual) {
+      await virtual.adapter.onRemove?.();
+      this.virtualServers.delete(serverId);
+      return { ok: true, id: serverId, deleted: true };
+    }
+
     const runtime = this.servers.get(serverId);
     if (!runtime) {
       return { ok: true, id: serverId, deleted: false };
@@ -488,6 +602,29 @@ export class ExternalMcpHost {
     mediaCandidates: ExtractedMcpMediaCandidate[];
     textSummary: string;
   }> {
+    const virtual = this.virtualServers.get(params.serverId);
+    if (virtual) {
+      const resultObj = await virtual.adapter.callTool(
+        params.toolName,
+        params.arguments || {},
+        params.timeoutMs ?? 180_000
+      );
+      if (resultObj.isError === true) {
+        const errText =
+          this.extractTextSummary(resultObj) ||
+          `MCP tool "${params.toolName}" returned isError=true`;
+        throw new Error(errText);
+      }
+      const mediaCandidates = this.extractMediaCandidatesFromResult(resultObj);
+      const textSummary = this.extractTextSummary(resultObj);
+      return {
+        server: this.toVirtualPublicSummary(virtual),
+        rawResult: resultObj,
+        mediaCandidates,
+        textSummary,
+      };
+    }
+
     const runtime = this.servers.get(params.serverId);
     if (!runtime) {
       throw new Error(`External MCP server "${params.serverId}" is not registered.`);
@@ -547,9 +684,15 @@ export class ExternalMcpHost {
       aspectRatio?: string;
       resolution?: string;
       durationSec?: number;
+      batchCount?: number;
       voiceId?: string;
       modelId?: string;
       referenceImages?: string[];
+      videoReferences?: string[];
+      startImageUrl?: string;
+      endImageUrl?: string;
+      generateAudio?: boolean;
+      seed?: number;
     }
   ): Record<string, unknown> {
     const schema = (tool.inputSchema || {}) as Record<string, unknown>;
@@ -570,11 +713,17 @@ export class ExternalMcpHost {
           ...(nodeInput.negativePrompt ? { negative_prompt: nodeInput.negativePrompt } : {}),
           ...(nodeInput.aspectRatio ? { aspect_ratio: nodeInput.aspectRatio } : {}),
           ...(nodeInput.durationSec ? { duration: nodeInput.durationSec } : {}),
+          ...(nodeInput.batchCount ? { batch_count: nodeInput.batchCount, count: nodeInput.batchCount } : {}),
           ...(nodeInput.voiceId ? { voice_id: nodeInput.voiceId } : {}),
           ...(nodeInput.modelId ? { model: nodeInput.modelId } : {}),
           ...(nodeInput.referenceImages?.length
             ? { image_url: nodeInput.referenceImages[0], reference_images: nodeInput.referenceImages }
             : {}),
+          ...(nodeInput.videoReferences?.length
+            ? { video_references: nodeInput.videoReferences, video_url: nodeInput.videoReferences[0] }
+            : {}),
+          ...(nodeInput.startImageUrl ? { start_image_url: nodeInput.startImageUrl } : {}),
+          ...(nodeInput.endImageUrl ? { end_image_url: nodeInput.endImageUrl } : {}),
         };
       }
 
@@ -601,8 +750,20 @@ export class ExternalMcpHost {
         ['duration_seconds', 'durationSeconds', 'duration', 'durationSec', 'seconds'],
         nodeInput.durationSec
       );
+      setFirstMatching(
+        ['batch_count', 'batchCount', 'count', 'n', 'num_images', 'batch_size'],
+        nodeInput.batchCount
+      );
       setFirstMatching(['voice_id', 'voiceId', 'voice'], nodeInput.voiceId);
       setFirstMatching(['model_id', 'modelId', 'model', 'model_name'], nodeInput.modelId);
+      if (typeof nodeInput.generateAudio === 'boolean') {
+        setFirstMatching(['generate_audio', 'generateAudio', 'sound', 'audio'], nodeInput.generateAudio);
+      }
+      if (typeof nodeInput.seed === 'number' && Number.isFinite(nodeInput.seed)) {
+        setFirstMatching(['seed'], Math.round(nodeInput.seed));
+      }
+      setFirstMatching(['start_image_url', 'startImageUrl', 'first_frame'], nodeInput.startImageUrl);
+      setFirstMatching(['end_image_url', 'endImageUrl', 'last_frame'], nodeInput.endImageUrl);
 
       if (nodeInput.referenceImages && nodeInput.referenceImages.length > 0) {
         setFirstMatching(
@@ -612,6 +773,16 @@ export class ExternalMcpHost {
         setFirstMatching(
           ['reference_images', 'referenceImages', 'images', 'image_urls'],
           nodeInput.referenceImages
+        );
+      }
+      if (nodeInput.videoReferences && nodeInput.videoReferences.length > 0) {
+        setFirstMatching(
+          ['video_url', 'videoUrl', 'video', 'input_video', 'motion_video', 'driving_video'],
+          nodeInput.videoReferences[0]
+        );
+        setFirstMatching(
+          ['video_references', 'videoReferences', 'reference_videos', 'videos'],
+          nodeInput.videoReferences
         );
       }
       return mapped;
@@ -1188,7 +1359,11 @@ export class ExternalMcpHost {
       for (const { key, hint, deferred } of urlKeys) {
         const val = obj[key];
         if (typeof val === 'string' && val.trim()) {
-          (deferred ? deferredCandidates : candidates).push({ source: val.trim(), kindHint: hint });
+          (deferred ? deferredCandidates : candidates).push({
+            source: val.trim(),
+            kindHint: hint,
+            ...(deferred ? { isThumbnail: true } : {}),
+          });
         }
       }
 
@@ -1305,15 +1480,24 @@ export class ExternalMcpHost {
         if (!text) continue;
 
         // Try JSON parse first
+        let parsedJsonHandled = false;
         if (text.startsWith('{') || text.startsWith('[')) {
           try {
             const parsed = JSON.parse(text);
-            if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-              inspectObject(parsed as Record<string, unknown>);
+            if (typeof parsed === 'object' && parsed !== null) {
+              if (Array.isArray(parsed)) {
+                inspectNestedValue(parsed);
+              } else {
+                inspectObject(parsed as Record<string, unknown>);
+              }
+              parsedJsonHandled = true;
             }
           } catch {
             // Fall through to regex extraction
           }
+        }
+        if (parsedJsonHandled) {
+          continue;
         }
 
         // Check embedded data: URI
@@ -1346,6 +1530,13 @@ export class ExternalMcpHost {
       }
     }
 
-    return [...candidates, ...deferredCandidates];
+    const seen = new Set<string>();
+    const deduped: ExtractedMcpMediaCandidate[] = [];
+    for (const item of [...candidates, ...deferredCandidates]) {
+      if (!item.source || seen.has(item.source)) continue;
+      seen.add(item.source);
+      deduped.push(item);
+    }
+    return deduped;
   }
 }

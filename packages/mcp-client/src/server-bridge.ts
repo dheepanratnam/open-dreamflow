@@ -59,6 +59,7 @@ import {
   mapDomainToCreatorPlatformId,
 } from './browser-session-manager.js';
 import { McpOAuthManager } from './mcp-oauth.js';
+import { DreaminaMcpEngine } from './dreamina-mcp.js';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -266,11 +267,13 @@ export interface BridgeJobRecord {
   audioEnabled?: boolean;
   voiceId?: string;
   referenceImages: string[];
+  videoReferences?: string[];
   status: 'queued' | 'running' | 'succeeded' | 'failed';
   createdAt: string;
   claimedAt?: string | null;
   completedAt?: string | null;
   mediaUrl?: string | null;
+  outputs?: string[];
   imageUrl?: string | null;
   videoUrl?: string | null;
   audioUrl?: string | null;
@@ -322,11 +325,24 @@ export class BridgeHttpError extends Error {
  */
 export function resolveReferenceToPublicOrDataUrl(
   refUrl: string,
-  mediaDir?: string
+  mediaDir?: string,
+  options: { allowAbsFileForVideo?: boolean } = {}
 ): string {
   const trimmed = String(refUrl || '').trim();
   if (!trimmed) return '';
-  if (trimmed.startsWith('data:')) return trimmed;
+  if (trimmed.startsWith('data:') || trimmed.startsWith('absfile:')) return trimmed;
+  if (trimmed.startsWith('file://')) {
+    const filePath = trimmed.slice('file://'.length);
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      const ext = path.extname(filePath).toLowerCase();
+      const mime = (MIME_BY_EXT[ext] ? MIME_BY_EXT[ext].split(';')[0].trim() : '') || '';
+      if (options.allowAbsFileForVideo && mime.startsWith('video/')) {
+        return `absfile:${path.resolve(filePath)}`;
+      }
+      const buf = fs.readFileSync(filePath);
+      return `data:${mime || 'image/png'};base64,${buf.toString('base64')}`;
+    }
+  }
 
   const localMatch =
     /^\/media\/([^?#]+)$/i.exec(trimmed) ||
@@ -347,10 +363,13 @@ export function resolveReferenceToPublicOrDataUrl(
     }
 
     if (chosenPath) {
-      const buf = fs.readFileSync(chosenPath);
       const ext = path.extname(chosenPath).toLowerCase();
       const mime =
         (MIME_BY_EXT[ext] ? MIME_BY_EXT[ext].split(';')[0].trim() : '') || 'image/png';
+      if (options.allowAbsFileForVideo && mime.startsWith('video/')) {
+        return `absfile:${path.resolve(chosenPath)}`;
+      }
+      const buf = fs.readFileSync(chosenPath);
       return `data:${mime};base64,${buf.toString('base64')}`;
     }
   }
@@ -1061,6 +1080,7 @@ export class McpStdioBridgeServer {
   public readonly externalMcpHost: ExternalMcpHost;
   public readonly browserSessionManager: BrowserSessionManager;
   public readonly mcpOAuthManager: McpOAuthManager;
+  public readonly dreaminaMcpEngine: DreaminaMcpEngine;
 
   private httpServer: http.Server | null = null;
   private childProc: ChildProcessWithoutNullStreams | null = null;
@@ -1141,12 +1161,42 @@ export class McpStdioBridgeServer {
         });
       },
     });
+    this.dreaminaMcpEngine = new DreaminaMcpEngine({
+      externalMcpHost: this.externalMcpHost,
+      loadProviderSdk: () => this.loadProviderSdk(),
+      checkBrowserStatus: async () => {
+        const cdp = await this.browserSessionManager.inspectOpenCreatorTabsViaCdp();
+        const extensionTabActive = this.isBridgeSessionRecentlyActive('dreamina');
+        const cdpDreaminaOpen =
+          cdp.platforms.includes('dreamina') ||
+          cdp.openDomains.some((d) => d.includes('dreamina') || d.includes('jimeng'));
+        return {
+          extensionTabActive,
+          cdpDreaminaOpen,
+          cdpReachable: cdp.reachable,
+          openUrls: cdp.tabs.map((t) => t.url),
+        };
+      },
+      launchDreaminaBrowser: (dryRun) =>
+        this.browserSessionManager.launchCreatorBrowser({
+          platformId: 'dreamina',
+          dryRun,
+        }),
+      runBrowserGeneration: (genParams) => this.enqueueBridgeJob(genParams),
+      onSessionUpdate: (session) => {
+        this.broadcastBridgeWsPayload({
+          type: 'mcp_oauth_update',
+          session,
+        });
+      },
+    });
 
     try {
       fs.mkdirSync(this.mediaDir, { recursive: true });
       fs.mkdirSync(this.projectsDir, { recursive: true });
       this.hydrateBridgeInbox();
       this.externalMcpHost.hydrateFromDiskInBackground();
+      this.dreaminaMcpEngine.hydrateOnStartup();
     } catch {
       // Ignore if read-only fs in synthetic harness
     }
@@ -2765,6 +2815,17 @@ export class McpStdioBridgeServer {
       .map((ref) => resolveReferenceToPublicOrDataUrl(ref, this.mediaDir))
       .filter(Boolean);
 
+    const rawVideoRefList = Array.isArray(params.videoReferences)
+      ? params.videoReferences.filter(
+          (x): x is string => typeof x === 'string' && x.trim().length > 0
+        )
+      : [];
+    const videoReferences = rawVideoRefList
+      .map((ref) =>
+        resolveReferenceToPublicOrDataUrl(ref, this.mediaDir, { allowAbsFileForVideo: true })
+      )
+      .filter(Boolean);
+
     const jobId =
       typeof params.jobId === 'string' && params.jobId.trim()
         ? params.jobId.trim()
@@ -2784,11 +2845,13 @@ export class McpStdioBridgeServer {
       audioEnabled: typeof params.audioEnabled === 'boolean' ? params.audioEnabled : undefined,
       voiceId: typeof params.voiceId === 'string' ? params.voiceId : undefined,
       referenceImages,
+      ...(videoReferences.length > 0 ? { videoReferences } : {}),
       status: 'queued',
       createdAt: new Date().toISOString(),
       claimedAt: null,
       completedAt: null,
       mediaUrl: null,
+      outputs: [],
       imageUrl: null,
       videoUrl: null,
       audioUrl: null,
@@ -2893,6 +2956,12 @@ export class McpStdioBridgeServer {
       jobId: finishedJob.jobId,
       job: finishedJob,
       mediaUrl: finishedJob.mediaUrl,
+      outputs:
+        Array.isArray(finishedJob.outputs) && finishedJob.outputs.length > 0
+          ? finishedJob.outputs
+          : finishedJob.mediaUrl
+            ? [finishedJob.mediaUrl]
+            : [],
       imageUrl: finishedJob.imageUrl,
       videoUrl: finishedJob.videoUrl,
       audioUrl: finishedJob.audioUrl,
@@ -2964,6 +3033,17 @@ export class McpStdioBridgeServer {
       job.error = String(payload.error || `Live ${platformMeta.name} browser job failed.`);
       job.completedAt = new Date().toISOString();
     } else {
+      const arrayCandidates: string[] = [];
+      for (const arrField of [payload.outputs, payload.imageUrls, payload.mediaUrls]) {
+        if (Array.isArray(arrField)) {
+          for (const item of arrField) {
+            if (typeof item === 'string' && item.trim() && !arrayCandidates.includes(item.trim())) {
+              arrayCandidates.push(item.trim());
+            }
+          }
+        }
+      }
+
       const rawMediaCandidate =
         (typeof payload.dataUrl === 'string' && payload.dataUrl.trim()) ||
         (typeof payload.dataBase64 === 'string' && payload.dataBase64.trim()) ||
@@ -2971,6 +3051,7 @@ export class McpStdioBridgeServer {
         (typeof payload.videoUrl === 'string' && payload.videoUrl.trim()) ||
         (typeof payload.imageUrl === 'string' && payload.imageUrl.trim()) ||
         (typeof payload.mediaUrl === 'string' && payload.mediaUrl.trim()) ||
+        arrayCandidates[0] ||
         '';
 
       if (!rawMediaCandidate) {
@@ -2982,10 +3063,17 @@ export class McpStdioBridgeServer {
       }
 
       const explicitMime = typeof payload.mimeType === 'string' ? payload.mimeType : undefined;
-      const saved = await this.ingestExternalMediaToDisk(rawMediaCandidate, prefix, explicitMime);
+      const toIngest =
+        arrayCandidates.length > 1 ? arrayCandidates : [rawMediaCandidate];
+      const savedList = [];
+      for (const candidateSrc of toIngest) {
+        savedList.push(await this.ingestExternalMediaToDisk(candidateSrc, prefix, explicitMime));
+      }
+      const saved = savedList[0];
 
       job.status = 'succeeded';
       job.mediaUrl = saved.mediaUrl;
+      job.outputs = savedList.map((s) => s.mediaUrl);
       job.imageUrl = !saved.isVideo && !saved.isAudio ? saved.mediaUrl : null;
       job.videoUrl = saved.isVideo ? saved.mediaUrl : null;
       job.audioUrl = saved.isAudio ? saved.mediaUrl : null;
@@ -4010,6 +4098,33 @@ export class McpStdioBridgeServer {
     const platformId = String(options.platformId || 'higgsfield').trim().toLowerCase() || 'higgsfield';
     const forceRefresh = Boolean(options.forceRefresh);
     const allMcpServers = this.externalMcpHost.listServers();
+
+    if (platformId === 'dreamina') {
+      const matchingDreamina = allMcpServers.find(
+        (s) =>
+          s.status === 'connected' &&
+          s.platformId === 'dreamina' &&
+          s.tools.some((t) => t.name === 'dreamina_models_explore' || t.name === 'models_explore')
+      );
+      if (matchingDreamina) {
+        try {
+          const models = await this.dreaminaMcpEngine.getModelsCatalog('all');
+          if (models.length > 0) {
+            return {
+              ok: true,
+              platformId,
+              serverId: matchingDreamina.id,
+              source: 'mcp',
+              count: models.length,
+              models,
+            };
+          }
+        } catch {
+          // fall through to canonical catalog
+        }
+      }
+    }
+
     const matching = allMcpServers.find(
       (s) =>
         s.status === 'connected' &&
@@ -4061,8 +4176,17 @@ export class McpStdioBridgeServer {
     const liveCatalogByServerId = new Map<string, Array<Record<string, unknown>>>();
     await Promise.all(
       allMcpServers
-        .filter((s) => s.status === 'connected' && s.tools.some((t) => t.name === 'models_explore'))
+        .filter(
+          (s) =>
+            s.status === 'connected' &&
+            s.tools.some((t) => t.name === 'models_explore' || t.name === 'dreamina_models_explore')
+        )
         .map(async (s) => {
+          if (s.platformId === 'dreamina' && s.tools.some((t) => t.name === 'dreamina_models_explore')) {
+            const live = await this.dreaminaMcpEngine.getModelsCatalog('all');
+            if (live.length > 0) liveCatalogByServerId.set(s.id, live);
+            return;
+          }
           const live = await this.getHiggsfieldLiveCatalogWithCache(s.id, forceRefresh);
           if (live.length > 0) liveCatalogByServerId.set(s.id, live);
         })
@@ -4418,34 +4542,51 @@ export class McpStdioBridgeServer {
       timeoutMs: Number(params.timeoutMs) || 180_000,
     });
 
-    const platformPrefix = `${callOut.server.platformId || 'external'}_mcp`;
-    let savedMedia:
-      | {
-          mediaUrl: string;
-          imageUrl?: string;
-          videoUrl?: string;
-          audioUrl?: string;
-          fullPath: string;
-          fullUrl: string;
-          bytes: number;
-          isVideo: boolean;
-          isAudio: boolean;
-        }
-      | undefined;
+    const maxOutputsRaw = Number(params.maxOutputs ?? params.batchCount ?? 1);
+    const maxOutputs =
+      Number.isFinite(maxOutputsRaw) && maxOutputsRaw > 1
+        ? Math.min(8, Math.round(maxOutputsRaw))
+        : 1;
 
+    const platformPrefix = `${callOut.server.platformId || 'external'}_mcp`;
+    type SavedMcpMedia = {
+      mediaUrl: string;
+      imageUrl?: string;
+      videoUrl?: string;
+      audioUrl?: string;
+      fullPath: string;
+      fullUrl: string;
+      bytes: number;
+      isVideo: boolean;
+      isAudio: boolean;
+    };
+
+    const nonThumbCandidates = callOut.mediaCandidates.filter(
+      (c) => !c.isThumbnail && !/_min\.[a-z0-9]+(?:[?#]|$)/i.test(c.source)
+    );
+    const candidatesToIngest =
+      nonThumbCandidates.length > 0 ? nonThumbCandidates : callOut.mediaCandidates;
+
+    const savedMediaList: SavedMcpMedia[] = [];
+    const seenCandidateSources = new Set<string>();
     let lastIngestErr = '';
-    for (const candidate of callOut.mediaCandidates) {
+    for (const candidate of candidatesToIngest) {
+      if (savedMediaList.length >= maxOutputs) break;
+      const srcKey = candidate.source.trim();
+      if (!srcKey || seenCandidateSources.has(srcKey)) continue;
+      seenCandidateSources.add(srcKey);
       try {
-        savedMedia = await this.ingestExternalMediaToDisk(
+        const ingested = await this.ingestExternalMediaToDisk(
           candidate.source,
           platformPrefix,
           candidate.mimeType
         );
-        break;
+        savedMediaList.push(ingested);
       } catch (err) {
         lastIngestErr = err instanceof Error ? err.message : String(err);
       }
     }
+    const savedMedia = savedMediaList[0];
 
     if (params.requireMedia === true && !savedMedia) {
       throw new BridgeHttpError(
@@ -4477,6 +4618,8 @@ export class McpStdioBridgeServer {
       }
     }
 
+    const mediaUrls = savedMediaList.map((s) => s.mediaUrl);
+
     return {
       ok: true,
       status: 'COMPLETED',
@@ -4489,6 +4632,7 @@ export class McpStdioBridgeServer {
       ...(savedMedia
         ? {
             mediaUrl: savedMedia.mediaUrl,
+            mediaUrls,
             fullUrl: savedMedia.fullUrl,
             imageUrl: savedMedia.imageUrl,
             videoUrl: savedMedia.videoUrl,
@@ -4501,39 +4645,71 @@ export class McpStdioBridgeServer {
     };
   }
 
-  private extractPendingMcpJobId(obj: Record<string, unknown>, text?: unknown): string {
+  private extractPendingMcpJobIds(obj: Record<string, unknown>, text?: unknown): string[] {
+    const ids: string[] = [];
+    const pushId = (val: unknown) => {
+      if (typeof val !== 'string' && typeof val !== 'number') return;
+      const s = String(val).trim();
+      if (s && !ids.includes(s)) ids.push(s);
+    };
+
     const resultsArr = Array.isArray(obj.results) ? (obj.results as Array<Record<string, unknown>>) : [];
-    const jobsArr = Array.isArray(obj.jobs) ? (obj.jobs as Array<Record<string, unknown>>) : [];
+    for (const item of resultsArr) {
+      if (item && typeof item === 'object') {
+        pushId(item.id || item.job_id || item.jobId);
+      }
+    }
+
+    const jobsArr = Array.isArray(obj.jobs) ? (obj.jobs as Array<unknown>) : [];
+    for (const item of jobsArr) {
+      if (typeof item === 'string') {
+        pushId(item);
+      } else if (item && typeof item === 'object') {
+        const rec = item as Record<string, unknown>;
+        pushId(rec.job_id || rec.jobId || rec.id);
+      }
+    }
+
+    const jobIdsArr = Array.isArray(obj.jobIds)
+      ? obj.jobIds
+      : Array.isArray(obj.job_ids)
+        ? obj.job_ids
+        : [];
+    for (const jid of jobIdsArr) {
+      pushId(jid);
+    }
+
     const genObj =
       typeof obj.generation === 'object' && obj.generation !== null
         ? (obj.generation as Record<string, unknown>)
         : {};
-    const direct =
-      resultsArr[0]?.id ||
-      resultsArr[0]?.job_id ||
-      jobsArr[0]?.job_id ||
-      jobsArr[0]?.id ||
-      genObj.id ||
-      obj.jobId ||
-      obj.job_id ||
-      obj.request_id ||
-      obj.task_id ||
-      obj.id ||
-      '';
-    const directStr = String(direct).trim();
-    if (directStr) return directStr;
-    const txt = typeof text === 'string' ? text : '';
-    if (/submitted/i.test(txt)) {
-      const uuidMatch = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.exec(txt);
-      if (uuidMatch) return uuidMatch[0];
+    pushId(genObj.id || genObj.job_id || genObj.jobId);
+    pushId(obj.jobId || obj.job_id || obj.request_id || obj.task_id || obj.id);
+
+    if (ids.length === 0) {
+      const txt = typeof text === 'string' ? text : '';
+      if (/submitted|queued|pending/i.test(txt)) {
+        const matches = txt.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) || [];
+        for (const m of matches) pushId(m);
+      }
     }
-    return '';
+    return ids;
+  }
+
+  private clearMcpRefUploadCache(serverId: string): void {
+    const prefix = `${serverId}::`;
+    for (const key of this.mcpRefUploadCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.mcpRefUploadCache.delete(key);
+      }
+    }
   }
 
   private async uploadReferenceForHiggsfieldMcp(
     serverId: string,
     refSource: string,
-    tools: ExternalMcpToolSchema[]
+    tools: ExternalMcpToolSchema[],
+    mediaHint?: 'image' | 'video'
   ): Promise<string> {
     const trimmed = String(refSource || '').trim();
     if (!trimmed) return '';
@@ -4546,13 +4722,18 @@ export class McpStdioBridgeServer {
       fs.existsSync(strippedAbsPath) &&
       fs.statSync(strippedAbsPath).isFile();
 
-    let cacheKey = `${serverId}::url:${trimmed}`;
+    const looksLikeVideo =
+      mediaHint === 'video' ||
+      (dataUriMatch && dataUriMatch[1].trim().toLowerCase().startsWith('video/')) ||
+      /\.(mp4|mov|webm)(?:[?#]|$)/i.test(trimmed);
+
+    let cacheKey = `${serverId}::${looksLikeVideo ? 'video' : 'image'}:url:${trimmed}`;
     if (dataUriMatch) {
       const digest = crypto.createHash('sha256').update(trimmed).digest('hex');
-      cacheKey = `${serverId}::data:${digest}`;
+      cacheKey = `${serverId}::${looksLikeVideo ? 'video' : 'image'}:data:${digest}`;
     } else if (isLocalPath) {
       const st = fs.statSync(strippedAbsPath);
-      cacheKey = `${serverId}::file:${path.resolve(strippedAbsPath)}:${st.size}:${Math.trunc(st.mtimeMs)}`;
+      cacheKey = `${serverId}::${looksLikeVideo ? 'video' : 'image'}:file:${path.resolve(strippedAbsPath)}:${st.size}:${Math.trunc(st.mtimeMs)}`;
     }
 
     const cached = this.mcpRefUploadCache.get(cacheKey);
@@ -4562,7 +4743,7 @@ export class McpStdioBridgeServer {
       const imported = await this.externalMcpHost.callTool({
         serverId,
         toolName: 'media_import_url',
-        arguments: { url: trimmed, type: 'image' },
+        arguments: { url: trimmed, type: looksLikeVideo ? 'video' : 'image' },
         timeoutMs: 30_000,
       });
       const sc = (imported.rawResult?.structuredContent || {}) as Record<string, unknown>;
@@ -4586,50 +4767,77 @@ export class McpStdioBridgeServer {
     }
 
     let buffer: Buffer;
-    let mimeType = 'image/png';
-    let filename = 'canvas_ref.png';
+    let mimeType = looksLikeVideo ? 'video/mp4' : 'image/png';
+    let filename = looksLikeVideo ? 'canvas_ref.mp4' : 'canvas_ref.png';
+
+    const extensionFromMime = (m: string, fallbackExt: string): string => {
+      const cleanM = m.toLowerCase().split(';')[0].trim();
+      if (EXT_BY_MIME[cleanM]) return EXT_BY_MIME[cleanM].replace(/^\./, '');
+      if (cleanM.includes('jpeg') || cleanM.includes('jpg')) return 'jpg';
+      if (cleanM.includes('webp')) return 'webp';
+      if (cleanM.includes('quicktime') || cleanM.includes('mov')) return 'mov';
+      if (cleanM.includes('webm')) return 'webm';
+      if (cleanM.includes('mp4')) return 'mp4';
+      return fallbackExt;
+    };
 
     if (dataUriMatch) {
-      mimeType = dataUriMatch[1].trim().toLowerCase() || 'image/png';
+      mimeType = dataUriMatch[1].trim().toLowerCase() || (looksLikeVideo ? 'video/mp4' : 'image/png');
       buffer = Buffer.from(dataUriMatch[2].replace(/\s+/g, ''), 'base64');
-      const ext = mimeType.includes('jpeg') || mimeType.includes('jpg')
-        ? 'jpg'
-        : mimeType.includes('webp')
-          ? 'webp'
-          : mimeType.includes('mp4')
-            ? 'mp4'
-            : 'png';
+      const ext = extensionFromMime(mimeType, looksLikeVideo ? 'mp4' : 'png');
       filename = `canvas_ref.${ext}`;
     } else if (isLocalPath) {
       buffer = fs.readFileSync(strippedAbsPath);
       const ext = path.extname(strippedAbsPath).toLowerCase();
-      mimeType = (MIME_BY_EXT[ext] ? MIME_BY_EXT[ext].split(';')[0].trim() : '') || 'image/png';
-      filename = path.basename(strippedAbsPath) || 'canvas_ref.png';
+      mimeType =
+        (MIME_BY_EXT[ext] ? MIME_BY_EXT[ext].split(';')[0].trim() : '') ||
+        (looksLikeVideo ? 'video/mp4' : 'image/png');
+      filename = path.basename(strippedAbsPath) || (looksLikeVideo ? 'canvas_ref.mp4' : 'canvas_ref.png');
     } else if (/^https?:\/\//i.test(trimmed)) {
       const fetchRes = await fetch(trimmed);
       if (!fetchRes.ok) {
         throw new BridgeHttpError(
           502,
-          `Failed to fetch reference image for Higgsfield MCP upload (${fetchRes.status}): ${trimmed}`,
+          `Failed to fetch reference media for Higgsfield MCP upload (${fetchRes.status}): ${trimmed}`,
           'higgsfield'
         );
       }
-      mimeType = (fetchRes.headers.get('content-type') || 'image/png').split(';')[0].trim();
+      const headerMime = (fetchRes.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      mimeType =
+        headerMime && headerMime !== 'application/octet-stream'
+          ? headerMime
+          : looksLikeVideo
+            ? 'video/mp4'
+            : 'image/png';
       buffer = Buffer.from(await fetchRes.arrayBuffer());
-      const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
+      const ext = extensionFromMime(mimeType, looksLikeVideo ? 'mp4' : 'png');
       filename = `canvas_ref.${ext}`;
     } else {
       throw new BridgeHttpError(
         400,
-        `Unsupported reference image source for Higgsfield MCP upload: ${trimmed.slice(0, 80)}`,
+        `Unsupported reference media source for Higgsfield MCP upload: ${trimmed.slice(0, 80)}`,
         'higgsfield'
       );
     }
 
+    const mediaUploadTool = tools.find((t) => t.name === 'media_upload');
+    const mediaUploadProps =
+      (mediaUploadTool?.inputSchema?.properties as Record<string, unknown> | undefined) || {};
+    const confirmType =
+      mimeType.startsWith('video/') || looksLikeVideo
+        ? 'video'
+        : mimeType.startsWith('audio/')
+          ? 'audio'
+          : 'image';
+
     const uploadInit = await this.externalMcpHost.callTool({
       serverId,
       toolName: 'media_upload',
-      arguments: { filename, content_type: mimeType },
+      arguments: {
+        filename,
+        content_type: mimeType,
+        ...('type' in mediaUploadProps ? { type: confirmType } : {}),
+      },
       timeoutMs: 30_000,
     });
 
@@ -4678,11 +4886,6 @@ export class McpStdioBridgeServer {
       );
     }
 
-    const confirmType = mimeType.startsWith('video/')
-      ? 'video'
-      : mimeType.startsWith('audio/')
-        ? 'audio'
-        : 'image';
     await this.externalMcpHost.callTool({
       serverId,
       toolName: 'media_confirm',
@@ -4739,6 +4942,36 @@ export class McpStdioBridgeServer {
     }
 
     return getHiggsfieldMcpMediaRole(normalizedModel, index, isEndFrame);
+  }
+
+  private resolveHiggsfieldVideoRoleForModel(
+    normalizedModel: string,
+    modelDef: Record<string, unknown> | null,
+    _index: number
+  ): string | null {
+    const modelRoles = Array.isArray(modelDef?.mediaRoles)
+      ? (modelDef.mediaRoles as Array<unknown>).map((r) => String(r).trim()).filter(Boolean)
+      : null;
+
+    const preferredVideoRoles = [
+      'video_references',
+      'video',
+      'input_video',
+      'motion_video',
+      'driving_video',
+      'reference_video',
+    ];
+
+    if (modelRoles && modelRoles.length > 0) {
+      for (const candidate of preferredVideoRoles) {
+        if (modelRoles.includes(candidate)) return candidate;
+      }
+    }
+
+    const lower = normalizedModel.toLowerCase();
+    if (lower.includes('motion')) return 'motion_video';
+    if (lower.includes('video_edit') || lower.includes('replace_object')) return 'video';
+    return 'video_references';
   }
 
   private buildHiggsfieldModelParams(opts: {
@@ -4992,8 +5225,21 @@ export class McpStdioBridgeServer {
       const curMode = String(hfParams.mode || '').toLowerCase();
       if (!curMode || curMode === 'text-to-video' || curMode === 't2v') {
         const imageRefCount = medias.filter((m) => m.role === 'image_references').length;
+        const hasVideoRef = medias.some(
+          (m) =>
+            m.role === 'video_references' ||
+            m.role === 'video' ||
+            m.role === 'input_video' ||
+            m.role === 'motion_video' ||
+            m.role === 'driving_video' ||
+            m.role === 'reference_video'
+        );
         const hasStartImage = medias.some((m) => m.role === 'start_image');
-        if (modeOpts.includes('reference-to-video') && (!hasStartImage || imageRefCount > 1)) {
+        if (hasVideoRef && modeOpts.includes('video-to-video')) {
+          hfParams.mode = 'video-to-video';
+        } else if (hasVideoRef && modeOpts.includes('motion-control')) {
+          hfParams.mode = 'motion-control';
+        } else if (modeOpts.includes('reference-to-video') && (hasVideoRef || !hasStartImage || imageRefCount > 1)) {
           hfParams.mode = 'reference-to-video';
         } else if (modeOpts.includes('image-to-video')) {
           hfParams.mode = 'image-to-video';
@@ -5127,6 +5373,36 @@ export class McpStdioBridgeServer {
     const resolvedReferenceImages = collectedRefs
       .map((ref) => resolveReferenceToPublicOrDataUrl(ref, this.mediaDir))
       .filter(Boolean);
+
+    const rawVideoRefs: string[] = [];
+    for (const srcList of [params.videoReferences, settings.videoReferences]) {
+      if (Array.isArray(srcList)) {
+        for (const v of srcList) {
+          if (typeof v === 'string' && v.trim() && !rawVideoRefs.includes(v.trim())) {
+            rawVideoRefs.push(v.trim());
+          }
+        }
+      }
+    }
+    if (typeof params.videoReferenceUrl === 'string' && params.videoReferenceUrl.trim()) {
+      const v = params.videoReferenceUrl.trim();
+      if (!rawVideoRefs.includes(v)) rawVideoRefs.push(v);
+    }
+    const resolvedVideoReferences = rawVideoRefs
+      .map((ref) =>
+        resolveReferenceToPublicOrDataUrl(ref, this.mediaDir, { allowAbsFileForVideo: true })
+      )
+      .filter(Boolean);
+
+    const rawFrameMode = String(settings.referenceFrameMode ?? params.referenceFrameMode ?? '')
+      .trim()
+      .toLowerCase();
+    const referenceFrameMode: 'start-end' | 'multi-ref' | 'auto' =
+      rawFrameMode === 'start-end' || rawFrameMode === 'keyframes' || rawFrameMode === 'start_end'
+        ? 'start-end'
+        : rawFrameMode === 'multi-ref' || rawFrameMode === 'multi' || rawFrameMode === 'references'
+          ? 'multi-ref'
+          : 'auto';
 
     // Extract credentials from `params.credentials`, top-level fields, or server environment
     const credsObj =
@@ -5268,19 +5544,23 @@ export class McpStdioBridgeServer {
           typeof params.startImageUrl === 'string' && Boolean(params.startImageUrl.trim());
         const hasExplicitEndFrame =
           typeof params.endImageUrl === 'string' && Boolean(params.endImageUrl.trim());
-        const endRefIndex = hasExplicitEndFrame ? resolvedReferenceImages.length - 1 : -1;
-        const modelModeSpec = Array.isArray(modelDef?.parameters)
-          ? (modelDef.parameters as Array<Record<string, unknown>>).find((p) => p?.name === 'mode')
-          : undefined;
-        const supportsRef2VidMode =
-          Array.isArray(modelModeSpec?.options) &&
-          modelModeSpec.options.some((o) => String(o) === 'reference-to-video');
+        const isStartEndMode = referenceFrameMode === 'start-end';
+        const endRefIndex = hasExplicitEndFrame
+          ? resolvedReferenceImages.length - 1
+          : isStartEndMode && resolvedReferenceImages.length >= 2
+            ? 1
+            : -1;
+        const modelRolesArr = Array.isArray(modelDef?.mediaRoles)
+          ? (modelDef.mediaRoles as Array<unknown>).map((r) => String(r).trim())
+          : [];
+        const modelSupportsImageRefs = modelRolesArr.includes('image_references');
         const requestedModeLower = String(mergedModelParams.mode ?? '').trim().toLowerCase();
         const preferMultiImageReferences =
+          !isStartEndMode &&
           !hasExplicitStartFrame &&
           !hasExplicitEndFrame &&
-          resolvedReferenceImages.length > 1 &&
-          supportsRef2VidMode &&
+          resolvedReferenceImages.length >= 2 &&
+          modelSupportsImageRefs &&
           requestedModeLower !== 'image-to-video';
 
         const medias: Array<{ value: string; role: string }> = [];
@@ -5309,10 +5589,31 @@ export class McpStdioBridgeServer {
             const uploadedMediaId = await this.uploadReferenceForHiggsfieldMcp(
               candidateMcpServer.id,
               resolvedReferenceImages[i],
-              candidateMcpServer.tools
+              candidateMcpServer.tools,
+              'image'
             );
             if (uploadedMediaId) {
               medias.push({ value: uploadedMediaId, role });
+            }
+          }
+        }
+
+        if (selectedOutputFormat !== 'svg' && resolvedVideoReferences.length > 0) {
+          for (let i = 0; i < resolvedVideoReferences.length; i++) {
+            const videoRole = this.resolveHiggsfieldVideoRoleForModel(
+              normalizedHiggsfieldModel,
+              modelDef,
+              i
+            );
+            if (!videoRole) continue;
+            const uploadedVideoId = await this.uploadReferenceForHiggsfieldMcp(
+              candidateMcpServer.id,
+              resolvedVideoReferences[i],
+              candidateMcpServer.tools,
+              'video'
+            );
+            if (uploadedVideoId) {
+              medias.push({ value: uploadedVideoId, role: videoRole });
             }
           }
         }
@@ -5340,25 +5641,41 @@ export class McpStdioBridgeServer {
           ...explicitTop,
         };
       } else {
+        const startImgResolved =
+          typeof params.startImageUrl === 'string' && params.startImageUrl.trim()
+            ? resolveReferenceToPublicOrDataUrl(params.startImageUrl.trim(), this.mediaDir)
+            : referenceFrameMode === 'start-end' && resolvedReferenceImages[0]
+              ? resolvedReferenceImages[0]
+              : undefined;
+        const endImgResolved =
+          typeof params.endImageUrl === 'string' && params.endImageUrl.trim()
+            ? resolveReferenceToPublicOrDataUrl(params.endImageUrl.trim(), this.mediaDir)
+            : referenceFrameMode === 'start-end' && resolvedReferenceImages[1]
+              ? resolvedReferenceImages[1]
+              : undefined;
         const builtArgs = this.externalMcpHost.buildArgumentsForToolSchema(chosenTool, {
           prompt,
           negativePrompt,
           aspectRatio,
           resolution,
           durationSec,
+          batchCount,
           voiceId,
           modelId: rawModelForMcp || undefined,
           referenceImages: resolvedReferenceImages,
+          videoReferences: resolvedVideoReferences,
+          startImageUrl: startImgResolved,
+          endImageUrl: endImgResolved,
+          generateAudio: audioEnabled,
+          seed:
+            seedParam !== undefined && seedParam !== null && seedParam !== '' && Number.isFinite(Number(seedParam))
+              ? Math.round(Number(seedParam))
+              : undefined,
         });
         mcpToolArgs = { ...builtArgs, ...explicitMcpArgs };
       }
 
-      let mcpOut = await this.executeExternalMcpToolCall({
-        serverId: candidateMcpServer.id,
-        toolName: chosenTool.name,
-        arguments: mcpToolArgs,
-        timeoutMs: params.timeoutMs,
-      });
+      const targetOutputCount = kind === 'image' ? batchCount : 1;
 
       const readStructuredObj = (out: Record<string, unknown>): Record<string, unknown> =>
         (typeof out.structuredData === 'object' && out.structuredData !== null
@@ -5367,150 +5684,282 @@ export class McpStdioBridgeServer {
             ? out.rawResult
             : {}) as Record<string, unknown>;
 
-      let structured = readStructuredObj(mcpOut);
-      let pendingJobId = this.extractPendingMcpJobId(structured, mcpOut.textContent);
+      const collectOutUrls = (out: Record<string, unknown>): string[] => {
+        const arr = Array.isArray(out.mediaUrls)
+          ? (out.mediaUrls as unknown[]).filter((u): u is string => typeof u === 'string' && u.trim().length > 0)
+          : [];
+        if (arr.length > 0) return arr;
+        return typeof out.mediaUrl === 'string' && out.mediaUrl ? [out.mediaUrl] : [];
+      };
 
-      // Handle Higgsfield MCP `unlim_choice`: try Ultimate free unlimited allowance first, fallback to paid credits
-      if (isHiggsfieldOfficialMcp && hfBaseParams && !mcpOut.mediaUrl && !pendingJobId) {
-        const needsUnlimChoice =
-          structured.unlim_choice !== undefined ||
-          String(structured.status || '').toLowerCase() === 'unlim_choice' ||
-          /unlim_choice/i.test(String(mcpOut.textContent || ''));
+      const statusTool =
+        candidateMcpServer.tools.find((t) => t.name === 'job_status') ||
+        candidateMcpServer.tools.find((t) =>
+          /(get_job|check_job|job_status|task_status|request_status|generation_status|poll|job_result|get_result)/i.test(
+            t.name
+          )
+        ) ||
+        candidateMcpServer.tools.find(
+          (t) =>
+            /status|result/i.test(t.name) &&
+            !/gpu_status|account|credit|user|health|model/i.test(t.name)
+        );
 
-        if (needsUnlimChoice) {
-          let triedPaidFallback = false;
-          try {
-            mcpOut = await this.executeExternalMcpToolCall({
-              serverId: candidateMcpServer.id,
-              toolName: chosenTool.name,
-              arguments: {
-                ...mcpToolArgs,
-                params: { ...hfBaseParams, use_unlim: true },
-              },
-              timeoutMs: params.timeoutMs,
-            });
-            structured = readStructuredObj(mcpOut);
-            pendingJobId = this.extractPendingMcpJobId(structured, mcpOut.textContent);
-            const stillIneligible =
-              !mcpOut.mediaUrl &&
-              !pendingJobId &&
-              (structured.unlim_choice !== undefined ||
-                /(unlim_choice|not eligible|ineligible)/i.test(String(mcpOut.textContent || '')));
-            if (stillIneligible) {
-              triedPaidFallback = true;
-              mcpOut = await this.executeExternalMcpToolCall({
-                serverId: candidateMcpServer.id,
-                toolName: chosenTool.name,
-                arguments: {
-                  ...mcpToolArgs,
-                  params: { ...hfBaseParams, use_unlim: false },
-                },
-                timeoutMs: params.timeoutMs,
-              });
-              structured = readStructuredObj(mcpOut);
-              pendingJobId = this.extractPendingMcpJobId(structured, mcpOut.textContent);
-            }
-          } catch (unlimErr) {
-            if (!triedPaidFallback) {
-              mcpOut = await this.executeExternalMcpToolCall({
-                serverId: candidateMcpServer.id,
-                toolName: chosenTool.name,
-                arguments: {
-                  ...mcpToolArgs,
-                  params: { ...hfBaseParams, use_unlim: false },
-                },
-                timeoutMs: params.timeoutMs,
-              });
-              structured = readStructuredObj(mcpOut);
-              pendingJobId = this.extractPendingMcpJobId(structured, mcpOut.textContent);
-            } else {
-              throw unlimErr;
+      const pollSingleMcpJob = async (
+        jid: string,
+        maxPerJob: number
+      ): Promise<{ out: Record<string, unknown>; urls: string[] }> => {
+        if (!statusTool) return { out: {}, urls: [] };
+        const pollStart = Date.now();
+        const pollMaxMs = Number(params.timeoutMs) || 120_000;
+        const statusProps = ((statusTool.inputSchema?.properties as Record<string, unknown>) || {}) as Record<
+          string,
+          unknown
+        >;
+        const usesCamelJobId = 'jobId' in statusProps || statusTool.name === 'job_status';
+        const usesSync = usesCamelJobId && ('sync' in statusProps || statusTool.name === 'job_status');
+        let pollAttempt = 0;
+        let lastOut: Record<string, unknown> = {};
+
+        while (Date.now() - pollStart < pollMaxMs) {
+          if (pollAttempt > 0) {
+            await new Promise((r) => setTimeout(r, 2000));
+          } else if (!usesSync) {
+            await new Promise((r) => setTimeout(r, 1500));
+          }
+          pollAttempt++;
+
+          const pollArgs: Record<string, unknown> = usesCamelJobId
+            ? { jobId: jid, ...(usesSync ? { sync: true } : {}) }
+            : {
+                ['request_id' in statusProps
+                  ? 'request_id'
+                  : 'job_id' in statusProps
+                    ? 'job_id'
+                    : 'task_id' in statusProps
+                      ? 'task_id'
+                      : 'id']: jid,
+              };
+
+          lastOut = await this.executeExternalMcpToolCall({
+            serverId: candidateMcpServer.id,
+            toolName: statusTool.name,
+            arguments: pollArgs,
+            timeoutMs: usesSync ? 60_000 : 30_000,
+            maxOutputs: maxPerJob,
+          });
+          const urls = collectOutUrls(lastOut);
+          if (urls.length > 0) {
+            return { out: lastOut, urls };
+          }
+          const polledObj = readStructuredObj(lastOut);
+          const polledGen =
+            typeof polledObj.generation === 'object' && polledObj.generation !== null
+              ? (polledObj.generation as Record<string, unknown>)
+              : {};
+          const polledResultsArr = Array.isArray(polledObj.results)
+            ? (polledObj.results as Array<Record<string, unknown>>)
+            : [];
+          const polledStatus = String(
+            polledGen.status || polledResultsArr[0]?.status || polledObj.status || ''
+          ).toLowerCase();
+
+          if (polledStatus === 'failed' || polledStatus === 'error' || polledStatus === 'cancelled') {
+            throw new BridgeHttpError(
+              502,
+              `MCP tool "${chosenTool.name}" job ${jid} failed (${polledStatus}).`,
+              platformId
+            );
+          }
+          if (polledStatus === 'completed' || polledStatus === 'succeeded') {
+            break;
+          }
+        }
+        return { out: lastOut, urls: collectOutUrls(lastOut) };
+      };
+
+      const submitAndResolveMcpArgs = async (
+        callArgs: Record<string, unknown>,
+        maxOutputsForCall: number
+      ): Promise<{
+        firstOut: Record<string, unknown>;
+        finalOut: Record<string, unknown>;
+        urls: string[];
+        jobIds: string[];
+      }> => {
+        let out = await this.executeExternalMcpToolCall({
+          serverId: candidateMcpServer.id,
+          toolName: chosenTool.name,
+          arguments: callArgs,
+          timeoutMs: params.timeoutMs,
+          maxOutputs: maxOutputsForCall,
+        });
+        let stObj = readStructuredObj(out);
+        let jids = this.extractPendingMcpJobIds(stObj, out.textContent);
+        let directUrls = collectOutUrls(out);
+
+        // Handle Higgsfield MCP `unlim_choice`: try Ultimate free unlimited allowance first, fallback to paid credits
+        if (
+          isHiggsfieldOfficialMcp &&
+          typeof callArgs.params === 'object' &&
+          callArgs.params !== null &&
+          directUrls.length === 0 &&
+          jids.length === 0
+        ) {
+          const baseP = callArgs.params as Record<string, unknown>;
+          const needsUnlimChoice =
+            stObj.unlim_choice !== undefined ||
+            String(stObj.status || '').toLowerCase() === 'unlim_choice' ||
+            /unlim_choice/i.test(String(out.textContent || ''));
+
+          if (needsUnlimChoice) {
+            let triedPaidFallback = false;
+            const preferPaidOnly = batchCount > 1;
+            try {
+              if (!preferPaidOnly) {
+                out = await this.executeExternalMcpToolCall({
+                  serverId: candidateMcpServer.id,
+                  toolName: chosenTool.name,
+                  arguments: {
+                    ...callArgs,
+                    params: { ...baseP, use_unlim: true },
+                  },
+                  timeoutMs: params.timeoutMs,
+                  maxOutputs: maxOutputsForCall,
+                });
+                stObj = readStructuredObj(out);
+                jids = this.extractPendingMcpJobIds(stObj, out.textContent);
+                directUrls = collectOutUrls(out);
+              }
+              const stillIneligible =
+                preferPaidOnly ||
+                (directUrls.length === 0 &&
+                  jids.length === 0 &&
+                  (stObj.unlim_choice !== undefined ||
+                    /(unlim_choice|not eligible|ineligible)/i.test(String(out.textContent || ''))));
+              if (stillIneligible) {
+                triedPaidFallback = true;
+                out = await this.executeExternalMcpToolCall({
+                  serverId: candidateMcpServer.id,
+                  toolName: chosenTool.name,
+                  arguments: {
+                    ...callArgs,
+                    params: { ...baseP, use_unlim: false },
+                  },
+                  timeoutMs: params.timeoutMs,
+                  maxOutputs: maxOutputsForCall,
+                });
+                stObj = readStructuredObj(out);
+                jids = this.extractPendingMcpJobIds(stObj, out.textContent);
+                directUrls = collectOutUrls(out);
+              }
+            } catch (unlimErr) {
+              if (!triedPaidFallback) {
+                out = await this.executeExternalMcpToolCall({
+                  serverId: candidateMcpServer.id,
+                  toolName: chosenTool.name,
+                  arguments: {
+                    ...callArgs,
+                    params: { ...baseP, use_unlim: false },
+                  },
+                  timeoutMs: params.timeoutMs,
+                  maxOutputs: maxOutputsForCall,
+                });
+                stObj = readStructuredObj(out);
+                jids = this.extractPendingMcpJobIds(stObj, out.textContent);
+                directUrls = collectOutUrls(out);
+              } else {
+                throw unlimErr;
+              }
             }
           }
         }
-      }
 
-      // If async MCP tool returned a job_id / request_id and server exposes a polling tool, poll until media completes
-      if (!mcpOut.mediaUrl) {
-        if (!pendingJobId) {
-          pendingJobId = this.extractPendingMcpJobId(structured, mcpOut.textContent);
+        if (directUrls.length > 0) {
+          return { firstOut: out, finalOut: out, urls: directUrls, jobIds: jids };
         }
-        const statusTool =
-          candidateMcpServer.tools.find((t) => t.name === 'job_status') ||
-          candidateMcpServer.tools.find((t) =>
-            /(get_job|check_job|job_status|task_status|request_status|generation_status|poll|job_result|get_result)/i.test(
-              t.name
-            )
-          ) ||
-          candidateMcpServer.tools.find(
-            (t) =>
-              /status|result/i.test(t.name) &&
-              !/gpu_status|account|credit|user|health|model/i.test(t.name)
+
+        if (jids.length > 0 && statusTool) {
+          const perJobMax = jids.length > 1 ? 1 : maxOutputsForCall;
+          const polledResults = await Promise.all(
+            jids.map((jid) => pollSingleMcpJob(jid, perJobMax))
           );
-        if (pendingJobId && statusTool) {
-          const pollStart = Date.now();
-          const pollMaxMs = Number(params.timeoutMs) || 120_000;
-          const statusProps = ((statusTool.inputSchema?.properties as Record<string, unknown>) || {}) as Record<
-            string,
-            unknown
-          >;
-          const usesCamelJobId = 'jobId' in statusProps || statusTool.name === 'job_status';
-          const usesSync = usesCamelJobId && ('sync' in statusProps || statusTool.name === 'job_status');
-          let pollAttempt = 0;
-
-          while (Date.now() - pollStart < pollMaxMs && !mcpOut.mediaUrl) {
-            if (pollAttempt > 0) {
-              await new Promise((r) => setTimeout(r, 2000));
-            } else if (!usesSync) {
-              await new Promise((r) => setTimeout(r, 1500));
+          const allUrls: string[] = [];
+          let lastNonEmptyOut = out;
+          for (const pr of polledResults) {
+            if (pr.urls.length > 0) {
+              lastNonEmptyOut = pr.out;
+              for (const u of pr.urls) {
+                if (!allUrls.includes(u)) allUrls.push(u);
+              }
             }
-            pollAttempt++;
+          }
+          return { firstOut: out, finalOut: lastNonEmptyOut, urls: allUrls, jobIds: jids };
+        }
 
-            const pollArgs: Record<string, unknown> = usesCamelJobId
-              ? { jobId: pendingJobId, ...(usesSync ? { sync: true } : {}) }
-              : {
-                  ['request_id' in statusProps
-                    ? 'request_id'
-                    : 'job_id' in statusProps
-                      ? 'job_id'
-                      : 'task_id' in statusProps
-                        ? 'task_id'
-                        : 'id']: pendingJobId,
-                };
+        return { firstOut: out, finalOut: out, urls: directUrls, jobIds: jids };
+      };
 
-            mcpOut = await this.executeExternalMcpToolCall({
-              serverId: candidateMcpServer.id,
-              toolName: statusTool.name,
-              arguments: pollArgs,
-              timeoutMs: usesSync ? 60_000 : 30_000,
-            });
-            const polledObj = readStructuredObj(mcpOut);
-            const polledGen =
-              typeof polledObj.generation === 'object' && polledObj.generation !== null
-                ? (polledObj.generation as Record<string, unknown>)
-                : {};
-            const polledResultsArr = Array.isArray(polledObj.results)
-              ? (polledObj.results as Array<Record<string, unknown>>)
-              : [];
-            const polledStatus = String(
-              polledGen.status || polledResultsArr[0]?.status || polledObj.status || ''
-            ).toLowerCase();
+      const initialResult = await submitAndResolveMcpArgs(mcpToolArgs, targetOutputCount);
+      let mcpOut = initialResult.finalOut;
+      const allJobIds = [...initialResult.jobIds];
+      const collectedOutputs: string[] = [...initialResult.urls];
 
-            if (polledStatus === 'failed' || polledStatus === 'error' || polledStatus === 'cancelled') {
-              throw new BridgeHttpError(
-                502,
-                `MCP tool "${chosenTool.name}" job ${pendingJobId} failed (${polledStatus}).`,
-                platformId
-              );
+      // Guaranteed `batchCount` fulfillment on Higgsfield MCP (or any image MCP where single batch call capped < N)
+      if (
+        kind === 'image' &&
+        targetOutputCount > 1 &&
+        collectedOutputs.length > 0 &&
+        collectedOutputs.length < targetOutputCount
+      ) {
+        const remainingNeeded = targetOutputCount - collectedOutputs.length;
+        const baseSeed =
+          seedParam !== undefined && seedParam !== null && seedParam !== '' && Number.isFinite(Number(seedParam))
+            ? Math.round(Number(seedParam))
+            : Math.floor(Math.random() * 1_000_000_000);
+
+        const extraResults = await Promise.all(
+          Array.from({ length: remainingNeeded }, (_, idx) => {
+            const variedSeed = baseSeed + idx + 1;
+            let extraArgs: Record<string, unknown>;
+            if (isHiggsfieldOfficialMcp && hfBaseParams) {
+              extraArgs = {
+                ...mcpToolArgs,
+                params: {
+                  ...hfBaseParams,
+                  count: 1,
+                  use_unlim: false,
+                  seed: variedSeed,
+                },
+              };
+            } else {
+              extraArgs = {
+                ...mcpToolArgs,
+                ...(typeof mcpToolArgs.count === 'number' ? { count: 1 } : {}),
+                ...(typeof mcpToolArgs.batch_count === 'number' ? { batch_count: 1 } : {}),
+                ...(typeof mcpToolArgs.n === 'number' ? { n: 1 } : {}),
+                seed: variedSeed,
+              };
             }
-            if ((polledStatus === 'completed' || polledStatus === 'succeeded') && !mcpOut.mediaUrl) {
-              break;
-            }
+            return submitAndResolveMcpArgs(extraArgs, 1);
+          })
+        );
+
+        for (const extra of extraResults) {
+          for (const jid of extra.jobIds) {
+            if (!allJobIds.includes(jid)) allJobIds.push(jid);
+          }
+          for (const u of extra.urls) {
+            if (!collectedOutputs.includes(u)) collectedOutputs.push(u);
           }
         }
       }
 
-      if (!mcpOut.mediaUrl) {
+      const finalOutputs = collectedOutputs.slice(0, targetOutputCount);
+      const primaryMediaUrl = finalOutputs[0];
+      const pendingJobId = allJobIds[0] || '';
+
+      if (!primaryMediaUrl) {
         throw new BridgeHttpError(
           502,
           `MCP tool "${chosenTool.name}" on "${candidateMcpServer.name}" completed without returning ingestible media${
@@ -5531,17 +5980,18 @@ export class McpStdioBridgeServer {
         modelId: modelId || chosenTool.name,
         ...(isHiggsfieldOfficialMcp ? { normalizedModelId: normalizedHiggsfieldModel } : {}),
         ...(pendingJobId ? { jobId: pendingJobId } : {}),
+        ...(allJobIds.length > 1 ? { jobIds: allJobIds } : {}),
         transportUsed: 'mcp',
         providerUsed: `${platformId}-mcp`,
         mcpServerId: candidateMcpServer.id,
         mcpToolName: chosenTool.name,
-        mediaUrl: mcpOut.mediaUrl,
-        fullUrl: mcpOut.fullUrl,
-        imageUrl: mcpOut.imageUrl,
-        videoUrl: mcpOut.videoUrl,
-        audioUrl: mcpOut.audioUrl,
+        mediaUrl: primaryMediaUrl,
+        fullUrl: `${this.getPublicBaseUrl()}${primaryMediaUrl}`,
+        imageUrl: kind === 'image' ? primaryMediaUrl : mcpOut.imageUrl,
+        videoUrl: kind === 'video' ? primaryMediaUrl : mcpOut.videoUrl,
+        audioUrl: kind === 'audio' ? primaryMediaUrl : mcpOut.audioUrl,
         waveform: mcpOut.waveform,
-        outputs: [mcpOut.mediaUrl],
+        outputs: finalOutputs,
       };
     }
 
@@ -5587,7 +6037,17 @@ export class McpStdioBridgeServer {
               n: batchCount,
               referenceImages: resolvedReferenceImages,
             });
-            const saved = await this.ingestExternalMediaToDisk(out.imageUrl, 'kling_live');
+            const rawList =
+              Array.isArray(out.imageUrls) && out.imageUrls.length > 0
+                ? out.imageUrls
+                : [out.imageUrl];
+            const savedOutputs: string[] = [];
+            for (const u of rawList) {
+              if (!u) continue;
+              const s = await this.ingestExternalMediaToDisk(u, 'kling_live');
+              savedOutputs.push(s.mediaUrl);
+            }
+            const primary = savedOutputs[0];
             return {
               ok: true,
               status: 'COMPLETED',
@@ -5597,10 +6057,10 @@ export class McpStdioBridgeServer {
               modelId: out.model,
               transportUsed: 'api-key',
               providerUsed: 'kling-api',
-              mediaUrl: saved.mediaUrl,
-              fullUrl: saved.fullUrl,
-              imageUrl: saved.mediaUrl,
-              outputs: [saved.mediaUrl],
+              mediaUrl: primary,
+              fullUrl: `${this.getPublicBaseUrl()}${primary}`,
+              imageUrl: primary,
+              outputs: savedOutputs,
             };
           } else {
             const out = await client.generateVideo({
@@ -5801,7 +6261,17 @@ export class McpStdioBridgeServer {
             batchSize: batchCount,
             referenceImages: resolvedReferenceImages,
           });
-          const saved = await this.ingestExternalMediaToDisk(out.mediaUrl, 'higgsfield_live');
+          const rawOutputs =
+            kind === 'image' && Array.isArray(out.outputs) && out.outputs.length > 0
+              ? out.outputs
+              : [out.mediaUrl];
+          const savedList = [];
+          for (const rawUrl of rawOutputs) {
+            if (!rawUrl) continue;
+            savedList.push(await this.ingestExternalMediaToDisk(rawUrl, 'higgsfield_live'));
+          }
+          const saved = savedList[0];
+          const savedUrls = savedList.map((s) => s.mediaUrl);
           return {
             ok: true,
             status: 'COMPLETED',
@@ -5815,7 +6285,7 @@ export class McpStdioBridgeServer {
             fullUrl: saved.fullUrl,
             imageUrl: saved.imageUrl,
             videoUrl: saved.videoUrl,
-            outputs: [saved.mediaUrl],
+            outputs: savedUrls,
           };
         }
 
@@ -5872,26 +6342,36 @@ export class McpStdioBridgeServer {
               const inline = await sdk.toGeminiInlineData(ref);
               inlineRefs.push({ data: inline.data, mimeType: inline.mime_type });
             }
-            const out = await client.generateNativeImage({
-              prompt,
-              model: modelId || 'gemini-3.1-flash-image-preview',
-              aspectRatio,
-              referenceImages: inlineRefs,
-            });
-            const saved = await this.writeGoogleLiveImagePng(out.base64Data, out.mimeType);
+            const targetModel = modelId || 'gemini-3.1-flash-image-preview';
+            const results = await Promise.all(
+              Array.from({ length: batchCount }, () =>
+                client.generateNativeImage({
+                  prompt,
+                  model: targetModel,
+                  aspectRatio,
+                  referenceImages: inlineRefs,
+                })
+              )
+            );
+            const savedOutputs: string[] = [];
+            for (const outItem of results) {
+              const s = await this.writeGoogleLiveImagePng(outItem.base64Data, outItem.mimeType);
+              savedOutputs.push(s.imageUrl);
+            }
+            const primary = savedOutputs[0];
             return {
               ok: true,
               status: 'COMPLETED',
               nodeId,
               kind,
               platformId: 'google-flow',
-              modelId: out.model,
+              modelId: results[0].model,
               transportUsed: 'api-key',
               providerUsed: 'google-gemini-live',
-              mediaUrl: saved.imageUrl,
-              fullUrl: saved.fullUrl,
-              imageUrl: saved.imageUrl,
-              outputs: [saved.imageUrl],
+              mediaUrl: primary,
+              fullUrl: `${this.getPublicBaseUrl()}${primary}`,
+              imageUrl: primary,
+              outputs: savedOutputs,
             };
           }
         }
@@ -5906,12 +6386,24 @@ export class McpStdioBridgeServer {
           }
           const client = new sdk.SeedanceClient({ apiKey, baseUrl });
           if (kind === 'video') {
+            const startImg =
+              typeof params.startImageUrl === 'string' && params.startImageUrl.trim()
+                ? resolveReferenceToPublicOrDataUrl(params.startImageUrl.trim(), this.mediaDir)
+                : undefined;
+            const endImg =
+              typeof params.endImageUrl === 'string' && params.endImageUrl.trim()
+                ? resolveReferenceToPublicOrDataUrl(params.endImageUrl.trim(), this.mediaDir)
+                : undefined;
             const out = await client.generateVideo({
               model: modelId || 'seedance-2.5',
               prompt,
               aspectRatio,
               durationSeconds: durationSec,
               referenceImages: resolvedReferenceImages,
+              videoReferences: resolvedVideoReferences,
+              startImageUrl: startImg,
+              endImageUrl: endImg,
+              generateAudio: audioEnabled,
             });
             const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'dreamina_live');
             return {
@@ -5936,8 +6428,43 @@ export class McpStdioBridgeServer {
               n: batchCount,
               referenceImages: resolvedReferenceImages,
             });
-            const rawImg = out.imageUrl || (out.imageBase64 ? `data:image/png;base64,${out.imageBase64}` : '');
-            const saved = await this.ingestExternalMediaToDisk(rawImg, 'dreamina_live');
+            const rawImgList: string[] =
+              Array.isArray(out.imageUrls) && out.imageUrls.length > 0
+                ? [...out.imageUrls]
+                : [];
+            if (rawImgList.length === 0) {
+              const singleImg =
+                out.imageUrl || (out.imageBase64 ? `data:image/png;base64,${out.imageBase64}` : '');
+              if (singleImg) rawImgList.push(singleImg);
+            }
+            if (batchCount > 1 && rawImgList.length < batchCount) {
+              const rem = batchCount - rawImgList.length;
+              const extraOuts = await Promise.all(
+                Array.from({ length: rem }, (_, idx) =>
+                  client.generateImage({
+                    model: modelId || 'seedream-5.0-lite',
+                    prompt,
+                    aspectRatio,
+                    n: 1,
+                    seed: Math.floor(Math.random() * 1_000_000_000) + idx + 1,
+                    referenceImages: resolvedReferenceImages,
+                  })
+                )
+              );
+              for (const eo of extraOuts) {
+                const u =
+                  eo.imageUrls?.[0] ||
+                  eo.imageUrl ||
+                  (eo.imageBase64 ? `data:image/png;base64,${eo.imageBase64}` : '');
+                if (u) rawImgList.push(u);
+              }
+            }
+            const savedOutputs: string[] = [];
+            for (const rawImg of rawImgList.slice(0, batchCount)) {
+              const s = await this.ingestExternalMediaToDisk(rawImg, 'dreamina_live');
+              savedOutputs.push(s.mediaUrl);
+            }
+            const primary = savedOutputs[0];
             return {
               ok: true,
               status: 'COMPLETED',
@@ -5947,10 +6474,10 @@ export class McpStdioBridgeServer {
               modelId: out.model,
               transportUsed: 'api-key',
               providerUsed: 'seedream-api',
-              mediaUrl: saved.mediaUrl,
-              fullUrl: saved.fullUrl,
-              imageUrl: saved.mediaUrl,
-              outputs: [saved.mediaUrl],
+              mediaUrl: primary,
+              fullUrl: `${this.getPublicBaseUrl()}${primary}`,
+              imageUrl: primary,
+              outputs: savedOutputs,
             };
           }
         }
@@ -6256,11 +6783,19 @@ export class McpStdioBridgeServer {
         audioEnabled,
         voiceId,
         referenceImages: resolvedReferenceImages,
+        videoReferences: resolvedVideoReferences,
         smartFastFail: true,
         claimTimeoutMs: Number(params.claimTimeoutMs) || 15_000,
         timeoutMs: Number(params.timeoutMs) || 150_000,
         waitForResult: params.waitForResult !== false,
       });
+
+      const bridgeOutputs =
+        Array.isArray(bridgeOut.outputs) && bridgeOut.outputs.length > 0
+          ? (bridgeOut.outputs as string[])
+          : bridgeOut.mediaUrl
+            ? [String(bridgeOut.mediaUrl)]
+            : [];
 
       return {
         ok: true,
@@ -6278,7 +6813,7 @@ export class McpStdioBridgeServer {
         videoUrl: bridgeOut.videoUrl,
         audioUrl: bridgeOut.audioUrl,
         waveform: bridgeOut.waveform,
-        outputs: bridgeOut.mediaUrl ? [bridgeOut.mediaUrl] : [],
+        outputs: bridgeOutputs,
       };
     }
 
@@ -9248,6 +9783,18 @@ export class McpStdioBridgeServer {
     const oauthStatusMatch = /^\/api\/mcp\/oauth\/status\/([^/]+)$/.exec(pathname);
     if (oauthStatusMatch && req.method === 'GET') {
       const sessionId = decodeURIComponent(oauthStatusMatch[1]);
+      if (sessionId.startsWith('drm_mcp_')) {
+        const dreaminaSession = await this.dreaminaMcpEngine.getSessionStatus(sessionId);
+        if (!dreaminaSession) {
+          this.sendJson(res, 404, {
+            ok: false,
+            error: `Dreamina MCP session not found: ${sessionId}`,
+          });
+          return;
+        }
+        this.sendJson(res, 200, { ok: true, session: dreaminaSession });
+        return;
+      }
       const session = this.mcpOAuthManager.getSession(sessionId);
       if (!session) {
         this.sendJson(res, 404, {
@@ -9257,6 +9804,75 @@ export class McpStdioBridgeServer {
         return;
       }
       this.sendJson(res, 200, { ok: true, session });
+      return;
+    }
+
+    // 4a-4. Stage 10 Built-In Dreamina MCP Connection Endpoints (`mcp_dreamina`)
+    if (pathname === '/api/mcp/dreamina/connect' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const session = await this.dreaminaMcpEngine.connect({
+          mode: typeof bodyObj.mode === 'string' ? bodyObj.mode : undefined,
+          sessionIdCookie:
+            typeof bodyObj.sessionIdCookie === 'string' ? bodyObj.sessionIdCookie : undefined,
+          arkApiKey: typeof bodyObj.arkApiKey === 'string' ? bodyObj.arkApiKey : undefined,
+          arkEndpoint: typeof bodyObj.arkEndpoint === 'string' ? bodyObj.arkEndpoint : undefined,
+          launchBrowser:
+            typeof bodyObj.launchBrowser === 'boolean' ? bodyObj.launchBrowser : undefined,
+        });
+        if (session.step === 'error') {
+          this.sendJson(res, 400, {
+            ok: false,
+            sessionId: session.sessionId,
+            error: session.error || 'Dreamina MCP connection failed.',
+            session,
+          });
+          return;
+        }
+        this.sendJson(res, 200, {
+          ok: true,
+          sessionId: session.sessionId,
+          platformId: session.platformId,
+          serverId: session.serverId,
+          mode: session.mode,
+          step: session.step,
+          authorizeUrl: session.authorizeUrl,
+          session,
+        });
+      } catch (err) {
+        this.sendJson(res, 400, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    const dreaminaStatusMatch = /^\/api\/mcp\/dreamina\/status\/([^/]+)$/.exec(pathname);
+    if (dreaminaStatusMatch && req.method === 'GET') {
+      const sessionId = decodeURIComponent(dreaminaStatusMatch[1]);
+      const session = await this.dreaminaMcpEngine.getSessionStatus(sessionId);
+      if (!session) {
+        this.sendJson(res, 404, {
+          ok: false,
+          error: `Dreamina MCP session not found: ${sessionId}`,
+        });
+        return;
+      }
+      this.sendJson(res, 200, { ok: true, session });
+      return;
+    }
+
+    if (pathname === '/api/mcp/dreamina/disconnect' && req.method === 'POST') {
+      try {
+        const out = await this.dreaminaMcpEngine.disconnect();
+        this.sendJson(res, 200, out);
+      } catch (err) {
+        this.sendJson(res, 500, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       return;
     }
 
@@ -9308,6 +9924,7 @@ export class McpStdioBridgeServer {
       try {
         const bodyObj = (await this.readJsonBody(req)) || {};
         const server = await this.externalMcpHost.registerOrUpdateServer(bodyObj);
+        this.clearMcpRefUploadCache(server.id);
         this.sendJson(res, 200, { ok: true, server });
       } catch (err) {
         this.sendJson(res, 400, {
@@ -9338,6 +9955,7 @@ export class McpStdioBridgeServer {
       try {
         const serverId = decodeURIComponent(mcpDeleteMatch[1]);
         const out = await this.externalMcpHost.removeServer(serverId);
+        this.clearMcpRefUploadCache(serverId);
         this.sendJson(res, 200, out);
       } catch (err) {
         this.sendJson(res, 500, {

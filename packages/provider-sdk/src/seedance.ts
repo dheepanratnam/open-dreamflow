@@ -528,6 +528,8 @@ export class SeedanceClient {
     model: string;
     imageUrl?: string;
     imageBase64?: string;
+    imageUrls: string[];
+    images: Array<{ url?: string; b64_json?: string }>;
     rawResponse: Record<string, unknown>;
   }> {
     const model = req.model || this.defaultImageModel;
@@ -563,12 +565,18 @@ export class SeedanceClient {
       payload,
       req.signal
     );
-    const firstItem = this.extractFirstImageItem(raw);
+    const items = this.extractAllImageItems(raw);
+    const firstItem = items[0] || this.extractFirstImageItem(raw);
+    const imageUrls = items
+      .map((item) => item.url || (item.b64_json ? `data:image/png;base64,${item.b64_json}` : ''))
+      .filter(Boolean);
     return {
       provider: 'seedream',
       model,
       imageUrl: firstItem.url,
       imageBase64: firstItem.b64_json,
+      imageUrls,
+      images: items,
       rawResponse: raw,
     };
   }
@@ -580,11 +588,16 @@ export class SeedanceClient {
     resolution?: '480p' | '720p' | '1080p';
     durationSeconds?: number;
     referenceImages?: string[];
+    videoReferences?: string[];
+    startImageUrl?: string;
+    endImageUrl?: string;
+    generateAudio?: boolean;
     seed?: number;
     signal?: AbortSignal;
   }): Promise<SeedanceVideoResult> {
     const refs = (req.referenceImages || []).filter(Boolean);
-    if (refs.length >= 2) {
+    const videoRefs = (req.videoReferences || []).filter(Boolean);
+    if (refs.length >= 2 && videoRefs.length === 0 && !req.startImageUrl && !req.endImageUrl) {
       return this.synthesizeKeyframeSequence({
         prompt: req.prompt,
         model: req.model,
@@ -599,7 +612,7 @@ export class SeedanceClient {
     const model = req.model || this.defaultVideoModel;
     const resolution = req.resolution || '1080p';
     const aspectRatio = req.aspectRatio || '16:9';
-    const duration = Math.max(4, Math.min(12, req.durationSeconds ?? 5));
+    const duration = Math.max(4, Math.min(15, req.durationSeconds ?? 5));
 
     const contentParts: Array<Record<string, unknown>> = [
       {
@@ -608,12 +621,37 @@ export class SeedanceClient {
       },
     ];
 
-    if (refs[0]) {
-      const resolved = await resolveReferenceImageForCloud(refs[0], { fetchImpl: this.fetchImpl });
+    const startImg = req.startImageUrl || refs[0];
+    if (startImg) {
+      const resolved = await resolveReferenceImageForCloud(startImg, { fetchImpl: this.fetchImpl });
       contentParts.push({
         type: 'image_url',
         role: 'first_frame',
         image_url: { url: resolved.publicOrDataUrl },
+      });
+    }
+    const endImg = req.endImageUrl;
+    if (endImg) {
+      const resolvedEnd = await resolveReferenceImageForCloud(endImg, { fetchImpl: this.fetchImpl });
+      contentParts.push({
+        type: 'image_url',
+        role: 'last_frame',
+        image_url: { url: resolvedEnd.publicOrDataUrl },
+      });
+    }
+    for (const extraRef of refs.slice(startImg && !req.startImageUrl ? 1 : 0, 6)) {
+      const resolvedExtra = await resolveReferenceImageForCloud(extraRef, { fetchImpl: this.fetchImpl });
+      contentParts.push({
+        type: 'image_url',
+        role: 'reference_image',
+        image_url: { url: resolvedExtra.publicOrDataUrl },
+      });
+    }
+    for (const vRef of videoRefs.slice(0, 3)) {
+      contentParts.push({
+        type: 'video_url',
+        role: 'reference_video',
+        video_url: { url: vRef },
       });
     }
 
@@ -627,6 +665,7 @@ export class SeedanceClient {
           resolution,
           aspect_ratio: aspectRatio,
           duration,
+          ...(typeof req.generateAudio === 'boolean' ? { generate_audio: req.generateAudio } : {}),
           ...(typeof req.seed === 'number' ? { seed: req.seed } : {}),
         },
       },
@@ -686,19 +725,31 @@ export class SeedanceClient {
     url?: string;
     b64_json?: string;
   } {
+    const items = this.extractAllImageItems(raw);
+    return items[0] || {};
+  }
+
+  private extractAllImageItems(raw: Record<string, unknown>): Array<{
+    url?: string;
+    b64_json?: string;
+  }> {
+    const out: Array<{ url?: string; b64_json?: string }> = [];
     const dataArr = Array.isArray(raw.data)
       ? (raw.data as Array<Record<string, unknown>>)
       : [];
-    if (dataArr.length > 0) {
-      return {
-        url: dataArr[0].url as string | undefined,
-        b64_json: dataArr[0].b64_json as string | undefined,
-      };
+    for (const item of dataArr) {
+      if (!item || typeof item !== 'object') continue;
+      const u = typeof item.url === 'string' ? item.url : undefined;
+      const b64 = typeof item.b64_json === 'string' ? item.b64_json : undefined;
+      if (u || b64) out.push({ url: u, b64_json: b64 });
     }
-    return {
-      url: raw.image_url as string | undefined,
-      b64_json: raw.b64_json as string | undefined,
-    };
+    if (out.length === 0 && (raw.image_url || raw.b64_json)) {
+      out.push({
+        url: raw.image_url as string | undefined,
+        b64_json: raw.b64_json as string | undefined,
+      });
+    }
+    return out;
   }
 
   private async requestJson(
