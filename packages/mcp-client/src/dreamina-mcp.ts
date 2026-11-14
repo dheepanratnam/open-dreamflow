@@ -129,10 +129,39 @@ export function resolveDreaminaConfigPath(): string {
 }
 
 const DREAMINA_TOOLS: ExternalMcpToolSchema[] = [
+  // 1. Account & CLI Introspection (4)
+  {
+    name: 'balance',
+    description: 'Check live Dreamina account credits and VIP tier.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'dreamina_session_status',
+    description:
+      'Inspect current Dreamina MCP connection mode, CLI auth state, live credits, workspace projectId, and browser/API credentials.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'dreamina_auth_refresh',
+    description: 'Refresh active Dreamina OAuth session credentials via `dreamina-canvas auth refresh`.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'dreamina_cli_schema',
+    description: 'Inspect the live machine-readable `dreamina-canvas` CLI command & version schema.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        subcommand: { type: 'string', description: 'Optional subcommand filter.' },
+      },
+    },
+  },
+
+  // 2. Models & Voices (4)
   {
     name: 'dreamina_models_explore',
     description:
-      'List all Dreamina Seedream, Nano Banana, GPT Image, Seedance, Veo, Wan, HappyHorse, OmniHuman, and SeedAudio models with live CLI parameter schemas.',
+      'List all 34+ Dreamina Seedream, Nano Banana, GPT Image, Seedance, Veo, Wan, HappyHorse, OmniHuman, and SeedAudio models merged with live CLI schemas.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -141,42 +170,63 @@ const DREAMINA_TOOLS: ExternalMcpToolSchema[] = [
           enum: ['all', 'image', 'video', 'audio'],
           description: 'Optional modality filter.',
         },
+        refresh: {
+          type: 'boolean',
+          description: 'Force refresh live model list from dreamina-canvas CLI.',
+        },
       },
     },
   },
   {
-    name: 'dreamina_session_status',
-    description:
-      'Inspect current Dreamina MCP connection mode, CLI auth state, live credits, workspace projectId, and browser/API credentials.',
+    name: 'dreamina_model_info',
+    description: 'Get full mode, aspect ratio, resolution, duration, and flag schema for a specific Dreamina model via `dreamina-canvas model <name>`.',
     inputSchema: {
       type: 'object',
-      properties: {},
+      required: ['model'],
+      properties: {
+        model: { type: 'string', description: 'Canonical or CLI model ID/name.' },
+        modality: { type: 'string', enum: ['image', 'video', 'audio'] },
+      },
     },
   },
   {
-    name: 'balance',
-    description: 'Check live Dreamina account credits and VIP tier.',
+    name: 'dreamina_model_find',
+    description: 'Search Dreamina models by keyword via `dreamina-canvas model find <query>`.',
     inputSchema: {
       type: 'object',
-      properties: {},
+      required: ['query'],
+      properties: {
+        query: { type: 'string', description: 'Model keyword such as seedance, veo, wan, or seedream.' },
+        modality: { type: 'string', enum: ['image', 'video', 'audio'] },
+      },
     },
   },
+  {
+    name: 'dreamina_voices_list',
+    description: 'List official Dreamina TTS / omni-dubbing voices via `dreamina-canvas voice list`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        offset: { type: 'number', description: 'Pagination offset (default 0).' },
+        count: { type: 'number', description: 'Max voices to return (default 50).' },
+        model: { type: 'string', description: 'Optional audio model ID (e.g. seed_audio_v1).' },
+      },
+    },
+  },
+
+  // 3. One-Shot Generation (3)
   {
     name: 'dreamina_generate_image',
     description:
-      'Generate 1-8 images using Dreamina Seedream (5.5, 5.0 Pro/Lite, 4.7/4.6/4.5), Nano Banana 2.1/Pro, or GPT Image 2.5 via dreamina-canvas CLI OAuth, ModelArk API, or Browser Bridge.',
+      'Generate 1-8 images using Dreamina Seedream (5.5, 5.0 Pro/Lite, 4.7-4.0), Nano Banana 2.1/Pro, or GPT Image 2.5.',
     inputSchema: {
       type: 'object',
       required: ['prompt'],
       properties: {
         prompt: { type: 'string', description: 'Detailed image prompt.' },
-        model: {
-          type: 'string',
-          description:
-            'Model ID (seedream_5_5, seedream_5_0_pro, seedream_5_0_lite, seedream_4_7, jm_image_model_gg_bp_21, gemini_3_image_pro, dreamina_gpt_image_2_5_flare, gpt_image_2).',
-        },
-        aspect_ratio: { type: 'string', description: 'Aspect ratio such as 16:9, 9:16, 1:1, 4:3, 3:4, 21:9.' },
-        resolution: { type: 'string', description: 'Target resolution such as 1.5K, 2K, or 4K.' },
+        model: { type: 'string', description: 'Image model ID (e.g. seedream_5_5, jm_image_model_gg_bp_21).' },
+        aspect_ratio: { type: 'string', description: 'Aspect ratio (16:9, 9:16, 1:1, 4:3, 3:4, 21:9).' },
+        resolution: { type: 'string', description: 'Target resolution (1K, 1.5K, 2K, 4K).' },
         quality: { type: 'string', description: 'Optional quality hint (standard, high, ultra).' },
         batch_count: { type: 'number', description: 'Number of images to generate (1-8).' },
         count: { type: 'number', description: 'Alias for batch_count (1-8).' },
@@ -189,22 +239,14 @@ const DREAMINA_TOOLS: ExternalMcpToolSchema[] = [
   {
     name: 'dreamina_generate_video',
     description:
-      'Generate video using Dreamina Seedance 2.5 / 2.5 Flash / 2.5 Draft / 2.0 / 1.5 Pro, Veo 3.1, Wan 3.0, HappyHorse 1.1, Gemini Omni 1.1 Flash, or OmniHuman 1.5.',
+      'Generate video using Dreamina Seedance (2.5 / 2.5 Flash / 2.5 Draft / 2.0 / 2.0 Fast / 2.0 Mini / Pro Fast / 1.5 Pro / 1.0 Lite / Motion Imitation), Veo 3.1/3.1 Fast/3.1 Lite/3.0, Wan 3.0/2.6/2.5, HappyHorse 1.1, Gemini Omni 1.1 Flash, or OmniHuman 1.5.',
     inputSchema: {
       type: 'object',
       required: ['prompt'],
       properties: {
         prompt: { type: 'string', description: 'Detailed motion & scene prompt.' },
-        model: {
-          type: 'string',
-          description:
-            'Model ID (seedance_2_5, seedance_2_5_flash, seedance_2_5_draft, seedance_2_0, veo_3_1, wan_3_0, happyhorse_1_1, omnihuman_1_5).',
-        },
-        mode: {
-          type: 'string',
-          enum: ['t2v', 'first_last_frame', 'm2v'],
-          description: 'Optional generation mode override.',
-        },
+        model: { type: 'string', description: 'Video model ID (e.g. seedance_2_5, veo_3_1, wan_3_0).' },
+        mode: { type: 'string', enum: ['t2v', 'first_last_frame', 'm2v'], description: 'Optional generation mode override.' },
         aspect_ratio: { type: 'string' },
         resolution: { type: 'string', description: 'Target resolution (480p, 720p, 720P, 1080p, 1080P, 4k).' },
         duration: { type: 'number', description: 'Duration in seconds (4-30).' },
@@ -223,13 +265,13 @@ const DREAMINA_TOOLS: ExternalMcpToolSchema[] = [
   {
     name: 'dreamina_generate_audio',
     description:
-      'Generate speech or omni-dubbing audio using Dreamina SeedAudio 1.0 (`seed_audio_v1`).',
+      'Generate speech or omni-dubbing / music audio using Dreamina SeedAudio 1.0 (`seed_audio_v1`) or `legacy_tts`.',
     inputSchema: {
       type: 'object',
       required: ['prompt'],
       properties: {
         prompt: { type: 'string', description: 'TTS script or audio generation prompt.' },
-        model: { type: 'string', description: 'Audio model ID (seed_audio_v1).' },
+        model: { type: 'string', description: 'Audio model ID (seed_audio_v1, legacy_tts).' },
         mode: { type: 'string', enum: ['tts', 'music'], description: 'Audio mode (default: tts).' },
         scenario: { type: 'string', enum: ['text-reading', 'omni-dubbing'] },
         voice_name: { type: 'string', description: 'Catalog voice name for text-reading.' },
@@ -237,6 +279,507 @@ const DREAMINA_TOOLS: ExternalMcpToolSchema[] = [
         duration: { type: 'number', description: 'Duration in seconds for music mode.' },
         reference_images: { type: 'array', items: { type: 'string' } },
         audio_references: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  },
+
+  // 4. Cloud Post-Editing & Enhancement (5)
+  {
+    name: 'dreamina_upscale_image',
+    description: 'Upscale an image node or URL to 2K/4K/8K on Dreamina cloud (`node upscale image`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        node_id: { type: 'string', description: 'Existing Dreamina image node ID.' },
+        image_url: { type: 'string', description: 'Local /media/ path, HTTP URL, or data URL to upload & upscale if node_id is omitted.' },
+        project_id: { type: 'string' },
+        mode: { type: 'string', enum: ['normal', 'pro'], description: 'Upscale mode (default normal).' },
+        resolution: { type: 'string', enum: ['2K', '4K', '8K'], description: 'Target output resolution (default 4K).' },
+        detail: { type: 'number', description: 'Detail preservation level (1-100).' },
+        credit_ceiling: { type: 'number', description: 'Max credits allowed (default 500).' },
+        wait: { type: 'boolean', description: 'Wait for completion and download to /media/ (default true).' },
+        submit_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_upscale_video',
+    description: 'Upscale a video node or URL to higher resolution (`node upscale video`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        node_id: { type: 'string', description: 'Existing Dreamina video node ID.' },
+        video_url: { type: 'string', description: 'Local /media/ path or HTTP URL to upload & upscale if node_id is omitted.' },
+        project_id: { type: 'string' },
+        resolution: { type: 'string', description: 'Target resolution (e.g. 1080p, 4K).' },
+        credit_ceiling: { type: 'number' },
+        wait: { type: 'boolean', description: 'Wait for completion and download to /media/ (default true).' },
+        submit_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_cutout_image',
+    description: 'Remove background / extract foreground cutout from an image node or URL (`node cutout image`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        node_id: { type: 'string', description: 'Existing Dreamina image node ID.' },
+        image_url: { type: 'string', description: 'Local /media/ path, HTTP URL, or data URL if node_id is omitted.' },
+        project_id: { type: 'string' },
+        credit_ceiling: { type: 'number' },
+        wait: { type: 'boolean', description: 'Wait for completion and download to /media/ (default true).' },
+        submit_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_interpolate_video',
+    description: 'Frame-interpolate a video node or URL to 30fps or 60fps (`node interpolate video`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        node_id: { type: 'string', description: 'Existing Dreamina video node ID.' },
+        video_url: { type: 'string', description: 'Local /media/ path or HTTP URL if node_id is omitted.' },
+        project_id: { type: 'string' },
+        fps: { type: 'number', description: 'Target frame rate (30 or 60, default 60).' },
+        credit_ceiling: { type: 'number' },
+        wait: { type: 'boolean', description: 'Wait for completion and download to /media/ (default true).' },
+        submit_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_promote_video_sample',
+    description: 'Promote a video preview sample to higher resolution (`node promote video-sample`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        node_id: { type: 'string', description: 'Existing Dreamina video node ID.' },
+        video_url: { type: 'string', description: 'Local /media/ path or HTTP URL if node_id is omitted.' },
+        project_id: { type: 'string' },
+        resolution: { type: 'string', description: 'Target resolution (e.g. 1080p, 4K).' },
+        credit_ceiling: { type: 'number' },
+        wait: { type: 'boolean', description: 'Wait for completion and download to /media/ (default true).' },
+        submit_id: { type: 'string' },
+      },
+    },
+  },
+
+  // 5. Canvas Project Management (4)
+  {
+    name: 'dreamina_canvas_list',
+    description: 'List Dreamina cloud canvas projects (`canvas ls`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number' },
+        cursor: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_canvas_current',
+    description: 'Get currently active Dreamina workspace canvas (`canvas current`).',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'dreamina_canvas_use',
+    description: 'Switch active Dreamina canvas workspace (`canvas use <project-id>`).',
+    inputSchema: {
+      type: 'object',
+      required: ['project_id'],
+      properties: {
+        project_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_canvas_create',
+    description: 'Create a new Dreamina cloud canvas project (`canvas create`).',
+    inputSchema: {
+      type: 'object',
+      required: ['name'],
+      properties: {
+        name: { type: 'string' },
+        project_id: { type: 'string' },
+        use: { type: 'boolean', description: 'Set new canvas as active workspace.' },
+      },
+    },
+  },
+
+  // 6. Typed Node Graph CRUD & Quoting (9)
+  {
+    name: 'dreamina_node_create',
+    description: 'Create a typed Dreamina canvas node: image, video, audio, element, text, or timeline.',
+    inputSchema: {
+      type: 'object',
+      required: ['type'],
+      properties: {
+        type: { type: 'string', enum: ['image', 'video', 'audio', 'element', 'text', 'timeline'] },
+        project_id: { type: 'string' },
+        node_id: { type: 'string' },
+        title: { type: 'string' },
+        prompt: { type: 'string' },
+        mode: { type: 'string' },
+        model: { type: 'string' },
+        ratio: { type: 'string' },
+        resolution: { type: 'string' },
+        duration: { type: 'number' },
+        count: { type: 'number' },
+        refs: { type: 'array', items: { type: 'string' } },
+        resource_id: { type: 'string' },
+        import_kind: { type: 'string' },
+        scenario: { type: 'string' },
+        voice_id: { type: 'string' },
+        voice_name: { type: 'string' },
+        text: { type: 'string' },
+        description: { type: 'string' },
+        main: { type: 'string' },
+        voice: { type: 'string' },
+        auxiliary: { type: 'array', items: { type: 'string' } },
+        clips: { type: 'array', items: { type: 'string' } },
+        audio_clips: { type: 'array', items: { type: 'string' } },
+        run: { type: 'boolean' },
+        wait: { type: 'boolean' },
+        credit_ceiling: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_node_edit',
+    description: 'Edit an existing typed Dreamina canvas node (`node edit <type>`).',
+    inputSchema: {
+      type: 'object',
+      required: ['type', 'node_id'],
+      properties: {
+        type: { type: 'string', enum: ['image', 'video', 'audio', 'element', 'text', 'timeline'] },
+        node_id: { type: 'string' },
+        project_id: { type: 'string' },
+        title: { type: 'string' },
+        prompt: { type: 'string' },
+        mode: { type: 'string' },
+        model: { type: 'string' },
+        ratio: { type: 'string' },
+        resolution: { type: 'string' },
+        duration: { type: 'number' },
+        count: { type: 'number' },
+        refs: { type: 'array', items: { type: 'string' } },
+        text: { type: 'string' },
+        description: { type: 'string' },
+        main: { type: 'string' },
+        voice: { type: 'string' },
+        auxiliary: { type: 'array', items: { type: 'string' } },
+        clips: { type: 'array', items: { type: 'string' } },
+        audio_clips: { type: 'array', items: { type: 'string' } },
+        clear_generation: { type: 'boolean' },
+        run: { type: 'boolean' },
+        wait: { type: 'boolean' },
+        credit_ceiling: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_node_find',
+    description: 'Find nodes on a Dreamina canvas project (`node find`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        name: { type: 'string' },
+        types: { type: 'array', items: { type: 'string' } },
+        statuses: { type: 'array', items: { type: 'string' } },
+        tags: { type: 'array', items: { type: 'string' } },
+        limit: { type: 'number' },
+        offset: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_node_show',
+    description: 'Inspect one or more Dreamina canvas nodes (`node show`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        node_id: { type: 'string' },
+        node_ids: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  },
+  {
+    name: 'dreamina_node_quote',
+    description: 'Estimate credit cost for one or more Dreamina canvas nodes (`node quote`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        node_id: { type: 'string' },
+        node_ids: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  },
+  {
+    name: 'dreamina_node_confirm',
+    description: 'Confirm credit spend ceiling for Dreamina canvas nodes (`node confirm`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        node_id: { type: 'string' },
+        node_ids: { type: 'array', items: { type: 'string' } },
+        credit_ceiling: { type: 'number', description: 'Credit ceiling integer (default 500).' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_node_run',
+    description: 'Submit/run one or more Dreamina canvas nodes (`node run`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        node_id: { type: 'string' },
+        node_ids: { type: 'array', items: { type: 'string' } },
+        submit_id: { type: 'string' },
+        credit_token: { type: 'string' },
+        wait: { type: 'boolean' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_node_delete_confirm',
+    description: 'Delete one or more Dreamina canvas nodes (`node delete confirm`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        node_id: { type: 'string' },
+        node_ids: { type: 'array', items: { type: 'string' } },
+        update_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_node_delete_status',
+    description: 'Check deletion status for Dreamina canvas nodes (`node delete status`).',
+    inputSchema: {
+      type: 'object',
+      required: ['update_id'],
+      properties: {
+        project_id: { type: 'string' },
+        node_id: { type: 'string' },
+        node_ids: { type: 'array', items: { type: 'string' } },
+        update_id: { type: 'string' },
+      },
+    },
+  },
+
+  // 7. Resources & Operations (5)
+  {
+    name: 'dreamina_resource_upload',
+    description: 'Upload a local file or remote URL to Dreamina workspace resources (`resource upload`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        file: { type: 'string' },
+        source_url: { type: 'string' },
+        type: { type: 'string', enum: ['image', 'video', 'audio'] },
+        name: { type: 'string' },
+        import_kind: { type: 'string', enum: ['local_upload', 'external_generated'] },
+        resource_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_resource_get',
+    description: 'Get metadata for a Dreamina resource (`resource get`).',
+    inputSchema: {
+      type: 'object',
+      required: ['resource_id'],
+      properties: {
+        resource_id: { type: 'string' },
+        project_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_resource_download',
+    description: 'Download a Dreamina resource to /media/dreamina_mcp_* with 0644 permissions (`resource download`).',
+    inputSchema: {
+      type: 'object',
+      required: ['resource_id'],
+      properties: {
+        resource_id: { type: 'string' },
+        project_id: { type: 'string' },
+        modality: { type: 'string', enum: ['image', 'video', 'audio'] },
+      },
+    },
+  },
+  {
+    name: 'dreamina_operation_status',
+    description: 'Check status of an async Dreamina operation (`operation status <submit-id>`).',
+    inputSchema: {
+      type: 'object',
+      required: ['submit_id'],
+      properties: {
+        submit_id: { type: 'string' },
+        project_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_operation_wait',
+    description: 'Wait for completion of a Dreamina operation (`operation wait <submit-id>`).',
+    inputSchema: {
+      type: 'object',
+      required: ['submit_id'],
+      properties: {
+        submit_id: { type: 'string' },
+        project_id: { type: 'string' },
+        interval: { type: 'string', description: 'Poll interval e.g. 3s.' },
+        timeout: { type: 'string', description: 'Max wait e.g. 300s.' },
+      },
+    },
+  },
+
+  // 8. Workflows & Templates (6)
+  {
+    name: 'dreamina_workflow_capabilities',
+    description: 'Query workflow capabilities on a Dreamina project (`workflow capabilities`).',
+    inputSchema: {
+      type: 'object',
+      properties: { project_id: { type: 'string' } },
+    },
+  },
+  {
+    name: 'dreamina_workflow_list',
+    description: 'List workflow runs on a Dreamina project (`workflow list`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        group_node_id: { type: 'string' },
+        cursor: { type: 'string' },
+        limit: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_workflow_get',
+    description: 'Get details of a Dreamina workflow run (`workflow get <run-id>`).',
+    inputSchema: {
+      type: 'object',
+      required: ['run_id'],
+      properties: { run_id: { type: 'string' } },
+    },
+  },
+  {
+    name: 'dreamina_workflow_quote_and_run',
+    description: 'Quote, confirm, execute, and optionally wait for a Dreamina workflow (`workflow quote -> confirm -> run -> wait`).',
+    inputSchema: {
+      type: 'object',
+      required: ['source'],
+      properties: {
+        project_id: { type: 'string' },
+        source: { type: 'string' },
+        run_kind: { type: 'string' },
+        group_node_id: { type: 'string' },
+        template_id: { type: 'string' },
+        template_version: { type: 'number' },
+        selected_combo_ids: { type: 'array', items: { type: 'string' } },
+        selected_step_ids: { type: 'array', items: { type: 'string' } },
+        from_node_ids: { type: 'array', items: { type: 'string' } },
+        reuse_unchanged: { type: 'boolean' },
+        max_credits: { type: 'number' },
+        credit_ceiling: { type: 'number' },
+        wait: { type: 'boolean' },
+        submit_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_workflow_cancel',
+    description: 'Cancel a running Dreamina workflow (`workflow cancel <run-id>`).',
+    inputSchema: {
+      type: 'object',
+      required: ['run_id'],
+      properties: { run_id: { type: 'string' } },
+    },
+  },
+  {
+    name: 'dreamina_workflow_templates',
+    description: 'List, get, instantiate, or check instantiation status of Dreamina workflow templates (`workflow template ...`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'get', 'instantiate', 'instantiation'], description: 'Default: list.' },
+        scope: { type: 'string' },
+        cursor: { type: 'string' },
+        limit: { type: 'number' },
+        template_id: { type: 'string' },
+        version: { type: 'number' },
+        target_project_id: { type: 'string' },
+        anchor_x: { type: 'number' },
+        anchor_y: { type: 'number' },
+        variables: { type: 'object' },
+        instantiate_id: { type: 'string' },
+      },
+    },
+  },
+
+  // 9. 3D Director Stage (4)
+  {
+    name: 'dreamina_director_catalog',
+    description: 'Browse built-in 3D Director Stage presets, characters, and camera motion rigs (`director catalog`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['builtin', 'character', 'motion'] },
+        motion_usage: { type: 'string', enum: ['direct', 'path-traversal'] },
+        count: { type: 'number' },
+        offset: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_director_create',
+    description: 'Create a 3D Director Stage node (`director create`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        title: { type: 'string' },
+        file: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_director_show',
+    description: 'Inspect a 3D Director Stage scene (`director show`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        node_id: { type: 'string' },
+        file: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'dreamina_director_apply',
+    description: 'Apply camera/character/motion JSON updates to a 3D Director Stage node (`director apply`).',
+    inputSchema: {
+      type: 'object',
+      required: ['input'],
+      properties: {
+        project_id: { type: 'string' },
+        node_id: { type: 'string' },
+        file: { type: 'string' },
+        input: {
+          description: 'JSON object or path to JSON input file for director apply.',
+        },
       },
     },
   },
@@ -301,8 +844,8 @@ function mapCanonicalDreaminaToArkModel(
 }
 
 function defaultCliModelForCanonical(
-  canonicalId: string,
-  modality: 'image' | 'video' | 'audio'
+  canonicalId?: string,
+  modality: 'image' | 'video' | 'audio' = 'image'
 ): string {
   const map: Record<string, string> = {
     seedream_5_5: 'seedream_5.5',
@@ -312,6 +855,8 @@ function defaultCliModelForCanonical(
     seedream_4_7: 'seedream_4.7',
     seedream_4_6: 'seedream_4.6',
     seedream_4_5: 'seedream_4.5',
+    seedream_4_1: 'seedream_4.1',
+    seedream_4_0: 'seedream_4.0',
     jm_image_model_gg_bp_21: 'jm_image_model_gg_bp_21',
     gemini_3_image_pro: 'gemini_3_image_pro',
     dreamina_gpt_image_2_5_flare: 'dreamina_gpt_image_2_5_flare',
@@ -322,19 +867,88 @@ function defaultCliModelForCanonical(
     seedance_2_5_draft: 'seedance_2.5_draft',
     seedance_2_0: 'seedance_2.0',
     seedance_2_0_fast: 'seedance_2.0_fast',
-    seedance_1_5_pro: 'seedance_pro_fast',
+    seedance_2_0_mini: 'seedance_2.0_mini',
+    seedance_pro_fast: 'seedance_pro_fast',
+    seedance_1_5_pro: 'seedance_2.0_fast',
+    seedance_1_0_lite: 'seedance_1.0_lite',
+    dreamina_motion_imitation: 'seedance_2.5',
     veo_3_1: 'veo_3.1',
     veo_3_1_fast: 'veo_3.1_fast',
+    veo_3_1_lite: 'veo_3.1_lite',
+    veo_3_0: 'veo_3.0',
     wan_3_0: 'wan_3.0',
+    wan_2_6: 'wan_2.6',
+    wan_2_5: 'wan_2.5',
     happyhorse_1_1: 'happyhorse_1.1',
     gemini_omni_1_1_flash: 'gemini_omni_1.1_flash',
     omnihuman_1_5: 'seedance_2.5',
     seed_audio_v1: 'seed_audio_v1',
+    legacy_tts: 'legacy_tts',
   };
-  if (map[canonicalId]) return map[canonicalId];
+  if (canonicalId && map[canonicalId]) return map[canonicalId];
   if (modality === 'audio') return 'seed_audio_v1';
   if (modality === 'video') return 'seedance_2.5';
   return 'seedream_5.5';
+}
+
+function okToolResult(payload: Record<string, unknown>, textOverride?: string): Record<string, unknown> {
+  return {
+    structuredContent: payload,
+    content: [{ type: 'text', text: textOverride || JSON.stringify(payload) }],
+  };
+}
+
+function errToolResult(message: string): Record<string, unknown> {
+  return {
+    isError: true,
+    content: [{ type: 'text', text: message }],
+  };
+}
+
+function strArg(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function strArrayArg(value: unknown, fallbackSingle?: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim());
+  }
+  if (typeof value === 'string' && value.trim()) {
+    return [value.trim()];
+  }
+  const single = strArg(fallbackSingle);
+  return single ? [single] : [];
+}
+
+function numArg(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function inferProviderFamily(modelId: string): string {
+  const lower = modelId.toLowerCase();
+  if (lower.includes('veo') || lower.includes('gemini') || lower.includes('gg_bp')) return 'Google';
+  if (lower.includes('gpt')) return 'OpenAI';
+  if (lower.includes('wan')) return 'Wan';
+  return 'ByteDance';
+}
+
+function extractCliFlagValues(spec: CliModelSpec, flagName: string): string[] {
+  const values = new Set<string>();
+  for (const mode of spec.modes || []) {
+    for (const f of mode.flags || []) {
+      if (f.flag === flagName && Array.isArray(f.values)) {
+        for (const v of f.values) {
+          if (typeof v === 'string' && v.trim()) values.add(v.trim());
+        }
+      }
+    }
+  }
+  return Array.from(values);
 }
 
 function collectResourceIdsAndUrls(
@@ -439,6 +1053,7 @@ export class DreaminaMcpEngine {
   } | null = null;
   private cliModelSchemasCache: {
     fetchedAt: number;
+    binaryPath?: string;
     itemsByModality: Record<'image' | 'video' | 'audio', CliModelSpec[]>;
   } | null = null;
   private readonly refUploadCache = new Map<string, string>();
@@ -1259,15 +1874,150 @@ export class DreaminaMcpEngine {
     return { ok: true, disconnected: wasConnected };
   }
 
-  public async getModelsCatalog(modality = 'all'): Promise<Array<Record<string, unknown>>> {
+  private hasReadyCliBinary(): boolean {
+    if (process.env.DREAMFLOW_DREAMINA_DISABLE_LIVE_CLI === '1') return false;
+    if (process.env.DREAMFLOW_DREAMINA_BINARY_PATH?.trim()) {
+      return fs.existsSync(process.env.DREAMFLOW_DREAMINA_BINARY_PATH.trim());
+    }
+    if (this.cachedCliPath && fs.existsSync(this.cachedCliPath)) return true;
+    if (this.config?.mode === 'cli_oauth') return true;
+    const candidates = [
+      path.join(os.homedir(), '.open-dreamflow', 'bin', 'dreamina-canvas'),
+      path.join(os.homedir(), '.local', 'bin', 'dreamina-canvas'),
+      '/opt/homebrew/bin/dreamina-canvas',
+      '/usr/local/bin/dreamina-canvas',
+    ];
+    return candidates.some((p) => fs.existsSync(p));
+  }
+
+  public async getModelsCatalog(
+    modality = 'all',
+    forceRefresh = false
+  ): Promise<Array<Record<string, unknown>>> {
     const sdk = await this.deps.loadProviderSdk();
-    const models = (Array.isArray(sdk.DREAMINA_CANONICAL_MODELS)
+    const baseModels = (Array.isArray(sdk.DREAMINA_CANONICAL_MODELS)
       ? sdk.DREAMINA_CANONICAL_MODELS
       : []) as Array<Record<string, unknown>>;
-    if (modality === 'image' || modality === 'video' || modality === 'audio') {
-      return models.filter((m) => String(m.modality || '') === modality);
+
+    const mapToCli =
+      typeof sdk.mapCanonicalDreaminaToCliModel === 'function'
+        ? (sdk.mapCanonicalDreaminaToCliModel as (
+            raw?: string,
+            mod?: 'image' | 'video' | 'audio'
+          ) => string)
+        : defaultCliModelForCanonical;
+    const normalizeModel =
+      typeof sdk.normalizeDreaminaModelId === 'function'
+        ? (sdk.normalizeDreaminaModelId as (
+            raw?: string,
+            mod?: 'image' | 'video' | 'audio'
+          ) => string)
+        : (raw?: string) => String(raw || '').trim().replace(/\./g, '_');
+
+    const liveByModality = await this.getAllLiveCliModels(forceRefresh);
+    const liveSpecLookup = new Map<string, CliModelSpec>();
+    for (const mod of ['image', 'video', 'audio'] as const) {
+      for (const spec of liveByModality[mod] || []) {
+        if (!spec.model) continue;
+        liveSpecLookup.set(`${mod}:${spec.model}`, spec);
+        liveSpecLookup.set(`${mod}:${spec.model.replace(/\./g, '_')}`, spec);
+        for (const alias of spec.aliases || []) {
+          liveSpecLookup.set(`${mod}:${alias}`, spec);
+        }
+      }
     }
-    return models;
+
+    const representedCliModels = new Set<string>();
+    const representedCanonicalIds = new Set<string>();
+    const enriched: Array<Record<string, unknown>> = baseModels.map((entry) => {
+      const id = String(entry.id || '');
+      const mod = (String(entry.modality || 'image') as 'image' | 'video' | 'audio');
+      const expectedCli = mapToCli(id, mod);
+      representedCanonicalIds.add(`${mod}:${id}`);
+      representedCliModels.add(`${mod}:${expectedCli}`);
+
+      const spec =
+        liveSpecLookup.get(`${mod}:${expectedCli}`) ||
+        liveSpecLookup.get(`${mod}:${id}`);
+      if (!spec) {
+        return {
+          ...entry,
+          cliModel: entry.cliModel || expectedCli,
+        };
+      }
+      if (spec.model) {
+        representedCliModels.add(`${mod}:${spec.model}`);
+      }
+      const cliRatios = extractCliFlagValues(spec, '--ratio');
+      const cliResolutions = extractCliFlagValues(spec, '--resolution');
+      const cliDurations = extractCliFlagValues(spec, '--duration')
+        .map((v) => Number(v))
+        .filter((n) => Number.isFinite(n));
+      const existingRatios = Array.isArray(entry.aspectRatios) ? (entry.aspectRatios as string[]) : [];
+      const existingRes = Array.isArray(entry.resolutions) ? (entry.resolutions as string[]) : [];
+      const existingDur = Array.isArray(entry.durations) ? (entry.durations as number[]) : [];
+
+      return {
+        ...entry,
+        cliModel: spec.model || expectedCli,
+        cliAvailable: true,
+        cliModes: (spec.modes || []).map((m) => m.name).filter(Boolean),
+        aspectRatios:
+          cliRatios.length > 0
+            ? Array.from(new Set([...existingRatios, ...cliRatios]))
+            : entry.aspectRatios,
+        resolutions:
+          cliResolutions.length > 0
+            ? Array.from(new Set([...existingRes, ...cliResolutions]))
+            : entry.resolutions,
+        durations:
+          cliDurations.length > 0
+            ? Array.from(new Set([...existingDur, ...cliDurations])).sort((a, b) => a - b)
+            : entry.durations,
+      };
+    });
+
+    // Append any newly discovered CLI models not yet listed in DREAMINA_CANONICAL_MODELS
+    for (const mod of ['image', 'video', 'audio'] as const) {
+      for (const spec of liveByModality[mod] || []) {
+        const rawName = String(spec.model || '').trim();
+        if (!rawName) continue;
+        const normalized = normalizeModel(rawName, mod);
+        if (
+          representedCliModels.has(`${mod}:${rawName}`) ||
+          representedCanonicalIds.has(`${mod}:${normalized}`) ||
+          representedCanonicalIds.has(`${mod}:${rawName.replace(/\./g, '_')}`)
+        ) {
+          continue;
+        }
+        const canonicalNewId = rawName.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
+        representedCanonicalIds.add(`${mod}:${canonicalNewId}`);
+        representedCliModels.add(`${mod}:${rawName}`);
+        const cliDurations = extractCliFlagValues(spec, '--duration')
+          .map((v) => Number(v))
+          .filter((n) => Number.isFinite(n));
+        enriched.push({
+          id: canonicalNewId || normalized,
+          name: spec.displayName || rawName,
+          modality: mod,
+          providerFamily: inferProviderFamily(rawName),
+          description: `Live discovered Dreamina CLI model (${rawName}).`,
+          aspectRatios: extractCliFlagValues(spec, '--ratio'),
+          resolutions: extractCliFlagValues(spec, '--resolution'),
+          ...(cliDurations.length > 0 ? { durations: cliDurations } : {}),
+          cliModel: rawName,
+          cliAvailable: true,
+          cliDiscovered: true,
+          cliModes: (spec.modes || []).map((m) => m.name).filter(Boolean),
+          supportedViaCli: true,
+        });
+      }
+    }
+
+    if (modality === 'image' || modality === 'video' || modality === 'audio') {
+      return enriched.filter((m) => String(m.modality || '') === modality);
+    }
+    return enriched;
   }
 
   private async ensureWorkspaceProjectId(): Promise<string> {
@@ -1318,17 +2068,36 @@ export class DreaminaMcpEngine {
     return projectId;
   }
 
-  private async getLiveCliModels(modality: 'image' | 'video' | 'audio'): Promise<CliModelSpec[]> {
+  private async getAllLiveCliModels(
+    forceRefresh = false
+  ): Promise<Record<'image' | 'video' | 'audio', CliModelSpec[]>> {
+    const empty: Record<'image' | 'video' | 'audio', CliModelSpec[]> = {
+      image: [],
+      video: [],
+      audio: [],
+    };
+    if (!forceRefresh && !this.hasReadyCliBinary()) {
+      return empty;
+    }
     const now = Date.now();
-    if (this.cliModelSchemasCache && now - this.cliModelSchemasCache.fetchedAt < 10 * 60_000) {
-      return this.cliModelSchemasCache.itemsByModality[modality] || [];
+    const currentBinOverride = process.env.DREAMFLOW_DREAMINA_BINARY_PATH?.trim() || '';
+    const cacheMatchesBin =
+      !currentBinOverride || this.cliModelSchemasCache?.binaryPath === currentBinOverride;
+    if (
+      !forceRefresh &&
+      this.cliModelSchemasCache &&
+      cacheMatchesBin &&
+      now - this.cliModelSchemasCache.fetchedAt < 10 * 60_000
+    ) {
+      return this.cliModelSchemasCache.itemsByModality;
     }
 
     try {
+      const { binaryPath } = await this.ensureDreaminaCliBinary();
       const [imgRes, vidRes, audRes] = await Promise.all([
-        this.runCliJson(['model', 'list', '--type', 'image'], { timeoutMs: 15_000 }),
-        this.runCliJson(['model', 'list', '--type', 'video'], { timeoutMs: 15_000 }),
-        this.runCliJson(['model', 'list', '--type', 'audio'], { timeoutMs: 15_000 }),
+        this.runCliJson(['model', 'list', '--type', 'image'], { binaryPath, timeoutMs: 15_000 }),
+        this.runCliJson(['model', 'list', '--type', 'video'], { binaryPath, timeoutMs: 15_000 }),
+        this.runCliJson(['model', 'list', '--type', 'audio'], { binaryPath, timeoutMs: 15_000 }),
       ]);
       const itemsByModality: Record<'image' | 'video' | 'audio', CliModelSpec[]> = {
         image: Array.isArray((imgRes.data as Record<string, unknown> | undefined)?.items)
@@ -1341,11 +2110,19 @@ export class DreaminaMcpEngine {
           ? ((audRes.data as Record<string, unknown>).items as CliModelSpec[])
           : [],
       };
-      this.cliModelSchemasCache = { fetchedAt: now, itemsByModality };
-      return itemsByModality[modality] || [];
+      this.cliModelSchemasCache = { fetchedAt: now, binaryPath, itemsByModality };
+      return itemsByModality;
     } catch {
-      return [];
+      return empty;
     }
+  }
+
+  private async getLiveCliModels(
+    modality: 'image' | 'video' | 'audio',
+    forceRefresh = false
+  ): Promise<CliModelSpec[]> {
+    const all = await this.getAllLiveCliModels(forceRefresh);
+    return all[modality] || [];
   }
 
   private coerceFlagValue(
@@ -1736,6 +2513,875 @@ export class DreaminaMcpEngine {
     };
   }
 
+  private async collectAndDownloadOutputs(
+    projectId: string,
+    nodeId: string,
+    primaryResponse: Record<string, unknown>,
+    modality: 'image' | 'video' | 'audio',
+    maxOutputs = 4
+  ): Promise<string[]> {
+    const resourceIds: string[] = [];
+    const directUrls: string[] = [];
+    collectResourceIdsAndUrls(primaryResponse.data || primaryResponse, resourceIds, directUrls);
+
+    if (resourceIds.length === 0 && directUrls.length === 0 && nodeId) {
+      const showRes = await this.runCliJson(
+        ['node', 'show', '--project-id', projectId, '--node-id', nodeId],
+        { timeoutMs: 30_000 }
+      );
+      collectResourceIdsAndUrls(showRes.data || showRes, resourceIds, directUrls);
+    }
+
+    const outputs: string[] = [];
+    for (const rid of Array.from(new Set(resourceIds)).slice(0, maxOutputs)) {
+      outputs.push(await this.downloadResourceToMediaDir(projectId, rid, modality));
+    }
+
+    if (outputs.length === 0 && directUrls.length > 0) {
+      const ext = modality === 'video' ? '.mp4' : modality === 'audio' ? '.mp3' : '.png';
+      const mediaDir = this.getMediaDir();
+      fs.mkdirSync(mediaDir, { recursive: true, mode: 0o755 });
+      for (const remoteUrl of directUrls.slice(0, maxOutputs)) {
+        const res = await fetch(remoteUrl, { signal: AbortSignal.timeout(45_000) });
+        if (!res.ok) continue;
+        const buf = Buffer.from(await res.arrayBuffer());
+        const fileName = `dreamina_mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+        const finalPath = path.join(mediaDir, fileName);
+        fs.writeFileSync(finalPath, buf);
+        fs.chmodSync(finalPath, 0o644);
+        outputs.push(`/media/${fileName}`);
+      }
+    }
+
+    return outputs;
+  }
+
+  private async resolveOrCreateSourceNodeId(
+    projectId: string,
+    args: Record<string, unknown>,
+    mediaType: 'image' | 'video'
+  ): Promise<string> {
+    const explicitNodeId = strArg(args.node_id);
+    if (explicitNodeId) return explicitNodeId;
+
+    const sourceUrl =
+      strArg(args.image_url) || strArg(args.video_url) || strArg(args.source_url);
+    if (!sourceUrl) {
+      throw new Error(
+        `Provide either node_id or ${mediaType === 'image' ? 'image_url' : 'video_url'}.`
+      );
+    }
+
+    const uploadedRef = await this.uploadReferenceToDreamina(projectId, sourceUrl, mediaType);
+    const resourceId = uploadedRef.replace(/^res:/, '');
+    const createRes = await this.runCliJson(
+      [
+        'node',
+        'create',
+        mediaType,
+        '--project-id',
+        projectId,
+        '--import-kind',
+        'local_upload',
+        '--resource-id',
+        resourceId,
+        '--title',
+        `Post-Edit ${mediaType}`,
+      ],
+      { timeoutMs: 45_000 }
+    );
+    const data = (createRes.data || {}) as Record<string, unknown>;
+    const createdNodeId = String(
+      data.nodeId ||
+        (data.node as Record<string, unknown> | undefined)?.nodeId ||
+        (data.node as Record<string, unknown> | undefined)?.id ||
+        ''
+    ).trim();
+    if (!createdNodeId) {
+      throw new Error(`node create ${mediaType} for post-edit returned no nodeId.`);
+    }
+    return createdNodeId;
+  }
+
+  private async executePostEditTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    timeoutMs?: number
+  ): Promise<Record<string, unknown>> {
+    const projectId = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+    const sourceModality: 'image' | 'video' =
+      toolName === 'dreamina_upscale_image' || toolName === 'dreamina_cutout_image'
+        ? 'image'
+        : 'video';
+    const nodeId = await this.resolveOrCreateSourceNodeId(projectId, args, sourceModality);
+    const wait = args.wait !== false;
+    const creditCeiling = Math.max(1, Math.round(numArg(args.credit_ceiling) ?? 500));
+    const submitIdArg = strArg(args.submit_id) || crypto.randomUUID();
+
+    let subArgs: string[] = [];
+    if (toolName === 'dreamina_upscale_image') {
+      subArgs = [
+        'node',
+        'upscale',
+        'image',
+        '--project-id',
+        projectId,
+        '--node-id',
+        nodeId,
+        '--mode',
+        strArg(args.mode) || 'normal',
+        '--resolution',
+        strArg(args.resolution) || '4K',
+        ...(numArg(args.detail) !== undefined
+          ? ['--detail', String(Math.max(1, Math.min(100, Math.round(numArg(args.detail)!))))]
+          : []),
+      ];
+    } else if (toolName === 'dreamina_upscale_video') {
+      subArgs = [
+        'node',
+        'upscale',
+        'video',
+        '--project-id',
+        projectId,
+        '--node-id',
+        nodeId,
+        '--resolution',
+        strArg(args.resolution) || '1080p',
+      ];
+    } else if (toolName === 'dreamina_cutout_image') {
+      subArgs = ['node', 'cutout', 'image', '--project-id', projectId, '--node-id', nodeId];
+    } else if (toolName === 'dreamina_interpolate_video') {
+      subArgs = [
+        'node',
+        'interpolate',
+        'video',
+        '--project-id',
+        projectId,
+        '--node-id',
+        nodeId,
+        '--fps',
+        String(Math.round(numArg(args.fps) ?? 60)),
+      ];
+    } else {
+      subArgs = [
+        'node',
+        'promote',
+        'video-sample',
+        '--project-id',
+        projectId,
+        '--node-id',
+        nodeId,
+        '--resolution',
+        strArg(args.resolution) || '1080p',
+      ];
+    }
+
+    subArgs.push('--credit-ceiling', String(creditCeiling), '--submit-id', submitIdArg);
+    if (wait) {
+      subArgs.push('--wait');
+    }
+
+    const cmdRes = await this.runCliJson(subArgs, {
+      timeoutMs: Math.max(Number(timeoutMs) || 0, 240_000),
+    });
+    const data = (cmdRes.data || {}) as Record<string, unknown>;
+    const resultNodeId = String(
+      data.targetNodeId ||
+        data.outputNodeId ||
+        data.resultNodeId ||
+        data.nodeId ||
+        nodeId
+    ).trim();
+    const returnedSubmitId = String(data.submitId || submitIdArg).trim();
+
+    if (!wait) {
+      return okToolResult({
+        ok: true,
+        status: 'submitted',
+        projectId,
+        nodeId: resultNodeId,
+        sourceNodeId: nodeId,
+        submitId: returnedSubmitId,
+        data,
+      });
+    }
+
+    let outputs = await this.collectAndDownloadOutputs(
+      projectId,
+      resultNodeId,
+      cmdRes,
+      sourceModality,
+      4
+    );
+    if (outputs.length === 0 && resultNodeId !== nodeId) {
+      outputs = await this.collectAndDownloadOutputs(
+        projectId,
+        nodeId,
+        cmdRes,
+        sourceModality,
+        4
+      );
+    }
+    this.cachedBalance = null;
+    void this.getBalanceInfo(true);
+
+    return okToolResult({
+      ok: true,
+      status: 'completed',
+      projectId,
+      nodeId: resultNodeId,
+      sourceNodeId: nodeId,
+      submitId: returnedSubmitId,
+      ...(sourceModality === 'image' ? { imageUrl: outputs[0] } : { videoUrl: outputs[0] }),
+      outputs,
+      data,
+    });
+  }
+
+  private async executeExtendedCliTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    mapToCliModel: (raw?: string, modality?: 'image' | 'video' | 'audio') => string,
+    timeoutMs?: number
+  ): Promise<Record<string, unknown> | null> {
+    if (toolName === 'dreamina_auth_refresh') {
+      const res = await this.runCliJson(['auth', 'refresh'], { timeoutMs: 20_000 });
+      return okToolResult({ ok: true, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_cli_schema') {
+      const res = await this.runCliJson(['schema'], { timeoutMs: 15_000 });
+      const data = (res.data || res) as Record<string, unknown>;
+      const sub = strArg(args.subcommand).toLowerCase();
+      if (sub && typeof data === 'object' && data !== null && Array.isArray(data.commands)) {
+        const filtered = (data.commands as Array<Record<string, unknown>>).filter((c) =>
+          String(c.name || c.path || '').toLowerCase().includes(sub)
+        );
+        return okToolResult({ ok: true, subcommand: sub, commands: filtered, schema: data });
+      }
+      return okToolResult({ ok: true, schema: data });
+    }
+
+    if (toolName === 'dreamina_model_info') {
+      const rawModel = strArg(args.model);
+      if (!rawModel) return errToolResult('dreamina_model_info requires a model argument.');
+      const mod = strArg(args.modality) as 'image' | 'video' | 'audio' | '';
+      const mapped = mod ? mapToCliModel(rawModel, mod) : rawModel;
+      let res: Record<string, unknown>;
+      try {
+        res = await this.runCliJson(
+          ['model', mapped, ...(mod ? ['--type', mod] : [])],
+          { timeoutMs: 15_000 }
+        );
+      } catch {
+        res = await this.runCliJson(
+          ['model', rawModel, ...(mod ? ['--type', mod] : [])],
+          { timeoutMs: 15_000 }
+        );
+      }
+      return okToolResult({ ok: true, model: mapped, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_model_find') {
+      const query = strArg(args.query);
+      if (!query) return errToolResult('dreamina_model_find requires a query argument.');
+      const mod = strArg(args.modality);
+      const res = await this.runCliJson(
+        ['model', 'find', query, ...(mod ? ['--type', mod] : [])],
+        { timeoutMs: 15_000 }
+      );
+      return okToolResult({ ok: true, query, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_voices_list') {
+      const cmdArgs = ['voice', 'list'];
+      const offset = numArg(args.offset);
+      const count = numArg(args.count);
+      const model = strArg(args.model);
+      if (offset !== undefined) cmdArgs.push('--offset', String(Math.round(offset)));
+      if (count !== undefined) cmdArgs.push('--count', String(Math.round(count)));
+      if (model) cmdArgs.push('--model', model);
+      const res = await this.runCliJson(cmdArgs, { timeoutMs: 20_000 });
+      const data = (res.data || {}) as Record<string, unknown>;
+      return okToolResult({
+        ok: true,
+        voices: data.items || data.voices || [],
+        data,
+      });
+    }
+
+    if (
+      toolName === 'dreamina_upscale_image' ||
+      toolName === 'dreamina_upscale_video' ||
+      toolName === 'dreamina_cutout_image' ||
+      toolName === 'dreamina_interpolate_video' ||
+      toolName === 'dreamina_promote_video_sample'
+    ) {
+      return await this.executePostEditTool(toolName, args, timeoutMs);
+    }
+
+    // 5. Canvas Project Management (4)
+    if (toolName === 'dreamina_canvas_list') {
+      const cmdArgs = ['canvas', 'ls'];
+      const limit = numArg(args.limit);
+      const cursor = strArg(args.cursor);
+      if (limit !== undefined) cmdArgs.push('--limit', String(Math.round(limit)));
+      if (cursor) cmdArgs.push('--cursor', cursor);
+      const res = await this.runCliJson(cmdArgs, { timeoutMs: 20_000 });
+      return okToolResult({ ok: true, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_canvas_current') {
+      const res = await this.runCliJson(['canvas', 'current'], { timeoutMs: 15_000 });
+      return okToolResult({ ok: true, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_canvas_use') {
+      const pid = strArg(args.project_id);
+      if (!pid) return errToolResult('dreamina_canvas_use requires project_id.');
+      const res = await this.runCliJson(['canvas', 'use', pid], { timeoutMs: 20_000 });
+      if (this.config) {
+        this.config.projectId = pid;
+        this.config.updatedAt = new Date().toISOString();
+        this.writeConfigToDisk(this.config);
+      }
+      return okToolResult({ ok: true, projectId: pid, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_canvas_create') {
+      const name = strArg(args.name);
+      if (!name) return errToolResult('dreamina_canvas_create requires name.');
+      const pid = strArg(args.project_id);
+      const cmdArgs = [
+        'canvas',
+        'create',
+        name,
+        ...(pid ? ['--project-id', pid] : []),
+        ...(args.use ? ['--use'] : []),
+      ];
+      const res = await this.runCliJson(cmdArgs, { timeoutMs: 20_000 });
+      const data = (res.data || {}) as Record<string, unknown>;
+      const createdPid = String(
+        data.projectId || (data.canvas as Record<string, unknown> | undefined)?.projectId || pid || ''
+      ).trim();
+      if (args.use && createdPid && this.config) {
+        this.config.projectId = createdPid;
+        this.config.updatedAt = new Date().toISOString();
+        this.writeConfigToDisk(this.config);
+      }
+      return okToolResult({ ok: true, projectId: createdPid, data });
+    }
+
+    // 6. Typed Node Graph CRUD & Quoting (9)
+    if (toolName === 'dreamina_node_create' || toolName === 'dreamina_node_edit') {
+      const isEdit = toolName === 'dreamina_node_edit';
+      const nodeType = strArg(args.type);
+      if (!['image', 'video', 'audio', 'element', 'text', 'timeline'].includes(nodeType)) {
+        return errToolResult(
+          `${toolName} requires type in [image, video, audio, element, text, timeline].`
+        );
+      }
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const nodeId = strArg(args.node_id);
+      if (isEdit && !nodeId) {
+        return errToolResult('dreamina_node_edit requires node_id.');
+      }
+
+      const cmdArgs = [
+        'node',
+        isEdit ? 'edit' : 'create',
+        nodeType,
+        '--project-id',
+        pid,
+        ...(nodeId ? ['--node-id', nodeId] : []),
+      ];
+      const addStr = (flag: string, val: unknown) => {
+        const s = strArg(val);
+        if (s) cmdArgs.push(flag, s);
+      };
+      const addNum = (flag: string, val: unknown) => {
+        const n = numArg(val);
+        if (n !== undefined) cmdArgs.push(flag, String(Math.round(n)));
+      };
+
+      addStr('--title', args.title);
+      addStr('--prompt', args.prompt);
+      addStr('--mode', args.mode);
+      const rawModel = strArg(args.model);
+      if (rawModel && (nodeType === 'image' || nodeType === 'video' || nodeType === 'audio')) {
+        cmdArgs.push('--model', mapToCliModel(rawModel, nodeType));
+      } else if (rawModel) {
+        cmdArgs.push('--model', rawModel);
+      }
+      addStr('--ratio', args.ratio);
+      addStr('--resolution', args.resolution);
+      addNum('--duration', args.duration);
+      addNum('--count', args.count);
+      addStr('--resource-id', args.resource_id);
+      addStr('--import-kind', args.import_kind);
+      addStr('--scenario', args.scenario);
+      addStr('--voice-id', args.voice_id);
+      addStr('--voice-name', args.voice_name);
+      addStr('--text', args.text);
+      addStr('--description', args.description);
+      addStr('--main', args.main);
+      addStr('--voice', args.voice);
+      for (const r of strArrayArg(args.refs)) cmdArgs.push('--ref', r);
+      for (const a of strArrayArg(args.auxiliary)) cmdArgs.push('--auxiliary', a);
+      for (const c of strArrayArg(args.clips)) cmdArgs.push('--clip', c);
+      for (const ac of strArrayArg(args.audio_clips)) cmdArgs.push('--audio-clip', ac);
+      if (isEdit && args.clear_generation) cmdArgs.push('--clear-generation');
+      if (args.run) cmdArgs.push('--run');
+      if (args.wait) cmdArgs.push('--wait');
+      addNum('--credit-ceiling', args.credit_ceiling);
+
+      const res = await this.runCliJson(cmdArgs, {
+        timeoutMs: args.wait ? Math.max(Number(timeoutMs) || 0, 180_000) : 45_000,
+      });
+      return okToolResult({ ok: true, projectId: pid, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_node_find') {
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const cmdArgs = ['node', 'find', '--project-id', pid];
+      if (strArg(args.name)) cmdArgs.push('--name', strArg(args.name));
+      for (const t of strArrayArg(args.types)) cmdArgs.push('--type', t);
+      for (const s of strArrayArg(args.statuses)) cmdArgs.push('--status', s);
+      for (const tag of strArrayArg(args.tags)) cmdArgs.push('--tag', tag);
+      if (numArg(args.limit) !== undefined) cmdArgs.push('--limit', String(Math.round(numArg(args.limit)!)));
+      if (numArg(args.offset) !== undefined) cmdArgs.push('--offset', String(Math.round(numArg(args.offset)!)));
+      const res = await this.runCliJson(cmdArgs, { timeoutMs: 25_000 });
+      return okToolResult({ ok: true, projectId: pid, data: res.data || res });
+    }
+
+    if (
+      toolName === 'dreamina_node_show' ||
+      toolName === 'dreamina_node_quote' ||
+      toolName === 'dreamina_node_confirm' ||
+      toolName === 'dreamina_node_run' ||
+      toolName === 'dreamina_node_delete_confirm' ||
+      toolName === 'dreamina_node_delete_status'
+    ) {
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const nodeIds = strArrayArg(args.node_ids, args.node_id);
+      if (nodeIds.length === 0) {
+        return errToolResult(`${toolName} requires node_id or node_ids.`);
+      }
+      const nodeFlags = nodeIds.flatMap((id) => ['--node-id', id]);
+
+      if (toolName === 'dreamina_node_show') {
+        const res = await this.runCliJson(['node', 'show', '--project-id', pid, ...nodeFlags], {
+          timeoutMs: 25_000,
+        });
+        return okToolResult({ ok: true, projectId: pid, data: res.data || res });
+      }
+      if (toolName === 'dreamina_node_quote') {
+        const res = await this.runCliJson(['node', 'quote', '--project-id', pid, ...nodeFlags], {
+          timeoutMs: 25_000,
+        });
+        return okToolResult({ ok: true, projectId: pid, data: res.data || res });
+      }
+      if (toolName === 'dreamina_node_confirm') {
+        const ceiling = Math.max(1, Math.round(numArg(args.credit_ceiling) ?? 500));
+        const res = await this.runCliJson(
+          ['node', 'confirm', '--project-id', pid, ...nodeFlags, '--credit-ceiling', String(ceiling)],
+          { timeoutMs: 25_000 }
+        );
+        return okToolResult({ ok: true, projectId: pid, data: res.data || res });
+      }
+      if (toolName === 'dreamina_node_run') {
+        const submitId = strArg(args.submit_id) || crypto.randomUUID();
+        const creditToken = strArg(args.credit_token);
+        const cmdArgs = [
+          'node',
+          'run',
+          '--project-id',
+          pid,
+          ...nodeFlags,
+          '--submit-id',
+          submitId,
+          ...(creditToken ? ['--credit-token', creditToken] : []),
+        ];
+        const res = await this.runCliJson(cmdArgs, { timeoutMs: 45_000 });
+        const runData = (res.data || {}) as Record<string, unknown>;
+        const actualSubmitId = String(runData.submitId || submitId).trim();
+        if (args.wait === true && actualSubmitId) {
+          await this.runCliJson(
+            ['operation', 'wait', actualSubmitId, '--project-id', pid, '--interval', '3s', '--timeout', '300s'],
+            { timeoutMs: Math.max(Number(timeoutMs) || 0, 315_000) }
+          );
+        }
+        return okToolResult({ ok: true, projectId: pid, submitId: actualSubmitId, data: runData });
+      }
+      if (toolName === 'dreamina_node_delete_confirm') {
+        const updateId = strArg(args.update_id) || crypto.randomUUID();
+        const res = await this.runCliJson(
+          ['node', 'delete', 'confirm', '--project-id', pid, ...nodeFlags, '--update-id', updateId],
+          { timeoutMs: 25_000 }
+        );
+        return okToolResult({ ok: true, projectId: pid, updateId, data: res.data || res });
+      }
+      const updateId = strArg(args.update_id);
+      if (!updateId) return errToolResult('dreamina_node_delete_status requires update_id.');
+      const res = await this.runCliJson(
+        ['node', 'delete', 'status', '--project-id', pid, ...nodeFlags, '--update-id', updateId],
+        { timeoutMs: 25_000 }
+      );
+      return okToolResult({ ok: true, projectId: pid, updateId, data: res.data || res });
+    }
+
+    // 7. Resources & Operations (5)
+    if (toolName === 'dreamina_resource_upload') {
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      let filePath = strArg(args.file);
+      const sourceUrl = strArg(args.source_url);
+      if (!filePath && !sourceUrl) {
+        return errToolResult('dreamina_resource_upload requires file or source_url.');
+      }
+      if (filePath.startsWith('/media/')) {
+        filePath = path.join(this.getMediaDir(), path.basename(filePath.replace(/^\/media\//, '')));
+      }
+      const cmdArgs = [
+        'resource',
+        'upload',
+        '--project-id',
+        pid,
+        ...(filePath ? ['--file', filePath] : ['--source-url', sourceUrl]),
+        ...(strArg(args.type) ? ['--type', strArg(args.type)] : []),
+        ...(strArg(args.name) ? ['--name', strArg(args.name)] : []),
+        ...(strArg(args.import_kind) ? ['--import-kind', strArg(args.import_kind)] : []),
+        ...(strArg(args.resource_id) ? ['--resource-id', strArg(args.resource_id)] : []),
+      ];
+      const res = await this.runCliJson(cmdArgs, { timeoutMs: 90_000 });
+      return okToolResult({ ok: true, projectId: pid, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_resource_get') {
+      const resourceId = strArg(args.resource_id);
+      if (!resourceId) return errToolResult('dreamina_resource_get requires resource_id.');
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const res = await this.runCliJson(['resource', 'get', resourceId, '--project-id', pid], {
+        timeoutMs: 25_000,
+      });
+      return okToolResult({ ok: true, projectId: pid, resourceId, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_resource_download') {
+      const resourceId = strArg(args.resource_id);
+      if (!resourceId) return errToolResult('dreamina_resource_download requires resource_id.');
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const mod = (strArg(args.modality) as 'image' | 'video' | 'audio' | '') || 'image';
+      const localUrl = await this.downloadResourceToMediaDir(pid, resourceId, mod);
+      return okToolResult({
+        ok: true,
+        projectId: pid,
+        resourceId,
+        url: localUrl,
+        mediaUrl: localUrl,
+        outputs: [localUrl],
+        ...(mod === 'video'
+          ? { videoUrl: localUrl }
+          : mod === 'audio'
+            ? { audioUrl: localUrl }
+            : { imageUrl: localUrl }),
+      });
+    }
+
+    if (toolName === 'dreamina_operation_status') {
+      const submitId = strArg(args.submit_id);
+      if (!submitId) return errToolResult('dreamina_operation_status requires submit_id.');
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const res = await this.runCliJson(['operation', 'status', submitId, '--project-id', pid], {
+        timeoutMs: 25_000,
+      });
+      return okToolResult({ ok: true, projectId: pid, submitId, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_operation_wait') {
+      const submitId = strArg(args.submit_id);
+      if (!submitId) return errToolResult('dreamina_operation_wait requires submit_id.');
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const interval = strArg(args.interval) || '3s';
+      const timeoutStr = strArg(args.timeout) || '300s';
+      const res = await this.runCliJson(
+        [
+          'operation',
+          'wait',
+          submitId,
+          '--project-id',
+          pid,
+          '--interval',
+          interval,
+          '--timeout',
+          timeoutStr,
+        ],
+        { timeoutMs: Math.max(Number(timeoutMs) || 0, 315_000) }
+      );
+      return okToolResult({ ok: true, projectId: pid, submitId, data: res.data || res });
+    }
+
+    // 8. Workflows & Templates (6)
+    if (toolName === 'dreamina_workflow_capabilities') {
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const res = await this.runCliJson(['workflow', 'capabilities', '--project-id', pid], {
+        timeoutMs: 20_000,
+      });
+      return okToolResult({ ok: true, projectId: pid, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_workflow_list') {
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const cmdArgs = [
+        'workflow',
+        'list',
+        '--project-id',
+        pid,
+        ...(strArg(args.group_node_id) ? ['--group-node-id', strArg(args.group_node_id)] : []),
+        ...(strArg(args.cursor) ? ['--cursor', strArg(args.cursor)] : []),
+        ...(numArg(args.limit) !== undefined ? ['--limit', String(Math.round(numArg(args.limit)!))] : []),
+      ];
+      const res = await this.runCliJson(cmdArgs, { timeoutMs: 25_000 });
+      return okToolResult({ ok: true, projectId: pid, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_workflow_get') {
+      const runId = strArg(args.run_id);
+      if (!runId) return errToolResult('dreamina_workflow_get requires run_id.');
+      const res = await this.runCliJson(['workflow', 'get', runId], { timeoutMs: 20_000 });
+      return okToolResult({ ok: true, runId, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_workflow_quote_and_run') {
+      const source = strArg(args.source);
+      if (!source) return errToolResult('dreamina_workflow_quote_and_run requires source.');
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const quoteArgs = [
+        'workflow',
+        'quote',
+        '--project-id',
+        pid,
+        '--source',
+        source,
+        ...(strArg(args.run_kind) ? ['--run-kind', strArg(args.run_kind)] : []),
+        ...(strArg(args.group_node_id) ? ['--group-node-id', strArg(args.group_node_id)] : []),
+        ...(strArg(args.template_id) ? ['--template-id', strArg(args.template_id)] : []),
+        ...(numArg(args.template_version) !== undefined
+          ? ['--template-version', String(Math.round(numArg(args.template_version)!))]
+          : []),
+        ...strArrayArg(args.selected_combo_ids).flatMap((x) => ['--selected-combo-ids', x]),
+        ...strArrayArg(args.selected_step_ids).flatMap((x) => ['--selected-step-ids', x]),
+        ...strArrayArg(args.from_node_ids).flatMap((x) => ['--from-node-ids', x]),
+        ...(args.reuse_unchanged ? ['--reuse-unchanged'] : []),
+      ];
+      const quoteRes = await this.runCliJson(quoteArgs, { timeoutMs: 45_000 });
+      const quoteData = (quoteRes.data || {}) as Record<string, unknown>;
+      const quoteId = String(quoteData.quoteId || quoteData.id || '').trim();
+      if (!quoteId) {
+        throw new Error('workflow quote returned no quoteId.');
+      }
+
+      const maxCredits = Math.max(
+        1,
+        Math.round(numArg(args.max_credits) ?? numArg(args.credit_ceiling) ?? 500)
+      );
+      const confirmRes = await this.runCliJson(
+        ['workflow', 'confirm', '--quote-id', quoteId, '--max-credits', String(maxCredits)],
+        { timeoutMs: 30_000 }
+      );
+      const confirmData = (confirmRes.data || {}) as Record<string, unknown>;
+      const creditToken = strArg(confirmData.creditConfirmationToken || confirmData.creditToken);
+      const submitId = strArg(args.submit_id) || crypto.randomUUID();
+      const runRes = await this.runCliJson(
+        [
+          'workflow',
+          'run',
+          '--quote-id',
+          quoteId,
+          ...(creditToken ? ['--credit-confirmation-token', creditToken] : []),
+          '--submit-id',
+          submitId,
+        ],
+        { timeoutMs: 45_000 }
+      );
+      const runData = (runRes.data || {}) as Record<string, unknown>;
+      const runId = String(runData.runId || runData.id || '').trim();
+      let finalData = runData;
+      if (args.wait !== false && runId) {
+        const waitRes = await this.runCliJson(
+          ['workflow', 'wait', runId, '--interval', '3s', '--timeout', '300s'],
+          { timeoutMs: Math.max(Number(timeoutMs) || 0, 315_000) }
+        );
+        finalData = (waitRes.data || runData) as Record<string, unknown>;
+      }
+      return okToolResult({
+        ok: true,
+        status: args.wait !== false ? 'completed' : 'submitted',
+        projectId: pid,
+        quoteId,
+        runId,
+        submitId,
+        data: finalData,
+      });
+    }
+
+    if (toolName === 'dreamina_workflow_cancel') {
+      const runId = strArg(args.run_id);
+      if (!runId) return errToolResult('dreamina_workflow_cancel requires run_id.');
+      const res = await this.runCliJson(['workflow', 'cancel', runId], { timeoutMs: 25_000 });
+      return okToolResult({ ok: true, runId, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_workflow_templates') {
+      const action = (strArg(args.action) || 'list').toLowerCase();
+      if (action === 'get') {
+        const templateId = strArg(args.template_id);
+        if (!templateId) return errToolResult('dreamina_workflow_templates(get) requires template_id.');
+        const ver = numArg(args.version);
+        const res = await this.runCliJson(
+          ['workflow', 'template', 'get', templateId, ...(ver !== undefined ? ['--version', String(Math.round(ver))] : [])],
+          { timeoutMs: 20_000 }
+        );
+        return okToolResult({ ok: true, action, data: res.data || res });
+      }
+      if (action === 'instantiation') {
+        const instId = strArg(args.instantiate_id);
+        if (!instId) return errToolResult('dreamina_workflow_templates(instantiation) requires instantiate_id.');
+        const res = await this.runCliJson(['workflow', 'template', 'instantiation', instId], {
+          timeoutMs: 20_000,
+        });
+        return okToolResult({ ok: true, action, data: res.data || res });
+      }
+      if (action === 'instantiate') {
+        const templateId = strArg(args.template_id);
+        const ver = numArg(args.version) ?? 1;
+        const targetPid =
+          strArg(args.target_project_id) || (await this.ensureWorkspaceProjectId());
+        if (!templateId) {
+          return errToolResult('dreamina_workflow_templates(instantiate) requires template_id.');
+        }
+        let varsTmpPath = '';
+        try {
+          if (args.variables && typeof args.variables === 'object') {
+            varsTmpPath = path.join(os.tmpdir(), `drm_tpl_vars_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.json`);
+            fs.writeFileSync(varsTmpPath, JSON.stringify(args.variables, null, 2));
+          }
+          const cmdArgs = [
+            'workflow',
+            'template',
+            'instantiate',
+            '--template-id',
+            templateId,
+            '--version',
+            String(Math.round(ver)),
+            '--target-project-id',
+            targetPid,
+            ...(numArg(args.anchor_x) !== undefined ? ['--anchor-x', String(numArg(args.anchor_x))] : []),
+            ...(numArg(args.anchor_y) !== undefined ? ['--anchor-y', String(numArg(args.anchor_y))] : []),
+            ...(varsTmpPath ? ['--variables-file', varsTmpPath] : []),
+          ];
+          const res = await this.runCliJson(cmdArgs, { timeoutMs: 45_000 });
+          return okToolResult({ ok: true, action, targetProjectId: targetPid, data: res.data || res });
+        } finally {
+          if (varsTmpPath && fs.existsSync(varsTmpPath)) {
+            try { fs.unlinkSync(varsTmpPath); } catch { /* ignore */ }
+          }
+        }
+      }
+      const cmdArgs = [
+        'workflow',
+        'template',
+        'list',
+        ...(strArg(args.scope) ? ['--scope', strArg(args.scope)] : []),
+        ...(strArg(args.cursor) ? ['--cursor', strArg(args.cursor)] : []),
+        ...(numArg(args.limit) !== undefined ? ['--limit', String(Math.round(numArg(args.limit)!))] : []),
+      ];
+      const res = await this.runCliJson(cmdArgs, { timeoutMs: 25_000 });
+      return okToolResult({ ok: true, action: 'list', data: res.data || res });
+    }
+
+    // 9. 3D Director Stage (4)
+    if (toolName === 'dreamina_director_catalog') {
+      const cmdArgs = [
+        'director',
+        'catalog',
+        ...(strArg(args.kind) ? ['--kind', strArg(args.kind)] : []),
+        ...(strArg(args.motion_usage) ? ['--motion-usage', strArg(args.motion_usage)] : []),
+        ...(numArg(args.count) !== undefined ? ['--count', String(Math.round(numArg(args.count)!))] : []),
+        ...(numArg(args.offset) !== undefined ? ['--offset', String(Math.round(numArg(args.offset)!))] : []),
+      ];
+      const res = await this.runCliJson(cmdArgs, { timeoutMs: 25_000 });
+      return okToolResult({ ok: true, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_director_create') {
+      const pid = strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const cmdArgs = [
+        'director',
+        'create',
+        '--project-id',
+        pid,
+        ...(strArg(args.title) ? ['--title', strArg(args.title)] : []),
+        ...(strArg(args.file) ? ['--file', strArg(args.file)] : []),
+      ];
+      const res = await this.runCliJson(cmdArgs, { timeoutMs: 30_000 });
+      return okToolResult({ ok: true, projectId: pid, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_director_show') {
+      const file = strArg(args.file);
+      const pid = file ? strArg(args.project_id) : strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const nodeId = strArg(args.node_id);
+      const cmdArgs = [
+        'director',
+        'show',
+        ...(pid ? ['--project-id', pid] : []),
+        ...(nodeId ? ['--node-id', nodeId] : []),
+        ...(file ? ['--file', file] : []),
+      ];
+      const res = await this.runCliJson(cmdArgs, { timeoutMs: 25_000 });
+      return okToolResult({ ok: true, data: res.data || res });
+    }
+
+    if (toolName === 'dreamina_director_apply') {
+      const rawInput = args.input;
+      if (rawInput === undefined || rawInput === null || rawInput === '') {
+        return errToolResult('dreamina_director_apply requires input (JSON object or file path).');
+      }
+      const file = strArg(args.file);
+      const pid = file ? strArg(args.project_id) : strArg(args.project_id) || (await this.ensureWorkspaceProjectId());
+      const nodeId = strArg(args.node_id);
+      let inputPath = '';
+      let cleanupTmp = false;
+      try {
+        if (typeof rawInput === 'string' && fs.existsSync(rawInput.trim())) {
+          inputPath = rawInput.trim();
+        } else {
+          inputPath = path.join(os.tmpdir(), `drm_dir_apply_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.json`);
+          const content = typeof rawInput === 'string' ? rawInput : JSON.stringify(rawInput, null, 2);
+          fs.writeFileSync(inputPath, content);
+          cleanupTmp = true;
+        }
+        const cmdArgs = [
+          'director',
+          'apply',
+          ...(pid ? ['--project-id', pid] : []),
+          ...(nodeId ? ['--node-id', nodeId] : []),
+          ...(file ? ['--file', file] : []),
+          '--input',
+          inputPath,
+        ];
+        const res = await this.runCliJson(cmdArgs, { timeoutMs: 45_000 });
+        return okToolResult({ ok: true, data: res.data || res });
+      } finally {
+        if (cleanupTmp && inputPath && fs.existsSync(inputPath)) {
+          try { fs.unlinkSync(inputPath); } catch { /* ignore */ }
+        }
+      }
+    }
+
+    return null;
+  }
+
   private async executeToolCall(
     toolName: string,
     args: Record<string, unknown>,
@@ -1759,12 +3405,18 @@ export class DreaminaMcpEngine {
 
     if (toolName === 'dreamina_models_explore') {
       const modality = String(args.modality || 'all').toLowerCase();
-      const models = await this.getModelsCatalog(modality);
-      const payload = { ok: true, platformId: 'dreamina', count: models.length, models };
-      return {
-        structuredContent: payload,
-        content: [{ type: 'text', text: JSON.stringify(payload) }],
-      };
+      const models = await this.getModelsCatalog(modality, Boolean(args.refresh));
+      return okToolResult({ ok: true, platformId: 'dreamina', count: models.length, models });
+    }
+
+    const extendedResult = await this.executeExtendedCliTool(
+      toolName,
+      args,
+      mapToCliModel,
+      timeoutMs
+    );
+    if (extendedResult) {
+      return extendedResult;
     }
 
     if (toolName === 'dreamina_session_status' || toolName === 'balance') {

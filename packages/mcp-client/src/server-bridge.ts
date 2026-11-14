@@ -4116,7 +4116,7 @@ export class McpStdioBridgeServer {
       );
       if (matchingDreamina) {
         try {
-          const models = await this.dreaminaMcpEngine.getModelsCatalog('all');
+          const models = await this.dreaminaMcpEngine.getModelsCatalog('all', forceRefresh);
           if (models.length > 0) {
             return {
               ok: true,
@@ -4191,7 +4191,7 @@ export class McpStdioBridgeServer {
         )
         .map(async (s) => {
           if (s.platformId === 'dreamina' && s.tools.some((t) => t.name === 'dreamina_models_explore')) {
-            const live = await this.dreaminaMcpEngine.getModelsCatalog('all');
+            const live = await this.dreaminaMcpEngine.getModelsCatalog('all', forceRefresh);
             if (live.length > 0) liveCatalogByServerId.set(s.id, live);
             return;
           }
