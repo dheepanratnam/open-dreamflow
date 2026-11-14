@@ -228,7 +228,7 @@ export function drawCinemaShotFrame(
         20
       );
       ctx.fillStyle = '#F5F5F5';
-      ctx.font = '600 10px "JetBrains Mono", monospace';
+      ctx.font = '600 10px Inter, -apple-system, BlinkMacSystemFont, sans-serif';
       ctx.fillText(opts.cameraLabel, 17, h - 14);
     }
     if (opts.hudBadge) {
@@ -236,7 +236,7 @@ export function drawCinemaShotFrame(
       ctx.fillStyle = 'rgba(25, 25, 25, 0.88)';
       ctx.fillRect(w - bw - 10, 10, bw, 19);
       ctx.fillStyle = '#F5F5F5';
-      ctx.font = '600 10px "JetBrains Mono", monospace';
+      ctx.font = '600 10px Inter, -apple-system, BlinkMacSystemFont, sans-serif';
       ctx.fillText(opts.hudBadge, w - bw - 2, 23);
     }
     ctx.restore();

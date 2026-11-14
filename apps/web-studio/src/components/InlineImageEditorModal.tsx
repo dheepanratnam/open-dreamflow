@@ -11,6 +11,7 @@ import {
 import type { AspectRatio } from '../types/studio';
 import { useStudioStore } from '../store/useStudioStore';
 import { SmartMediaImage } from './SmartMedia';
+import { renderShotDataUrl } from '../utils/proceduralMedia';
 
 interface BrushStroke {
   size: number;
@@ -122,7 +123,12 @@ export const InlineImageEditorModal: React.FC = () => {
 
   if (!modal.open || !node) return null;
 
-  const sourceImageUrl = node.imageUrl || '/media/real_courtyard_sun.jpg';
+  const sourceImageUrl =
+    node.imageUrl ||
+    renderShotDataUrl(node.aspectRatio, {
+      prompt: node.prompt || 'Image Editor Frame',
+      seed: node.seed,
+    });
 
   const getCanvasPoint = (clientX: number, clientY: number) => {
     const canvas = previewCanvasRef.current;
@@ -308,7 +314,7 @@ export const InlineImageEditorModal: React.FC = () => {
                     className="w-full h-full object-contain"
                   />
                 </div>
-                <span className="absolute bottom-2 right-2.5 px-2 py-0.5 rounded-[5px] bg-black/75 font-mono text-[10.5px] text-[#20D5EC]">
+                <span className="absolute bottom-2 right-2.5 px-2 py-0.5 rounded-[5px] bg-black/75 tabular-nums text-[10.5px] text-[#20D5EC]">
                   {selectedOutpaintPreset.dims}
                 </span>
               </div>
@@ -331,7 +337,7 @@ export const InlineImageEditorModal: React.FC = () => {
                       <div className="text-[12px] font-medium">
                         {preset.label}
                       </div>
-                      <div className="font-mono text-[10.5px] text-white/45 mt-0.5">
+                      <div className="tabular-nums text-[10.5px] text-white/45 mt-0.5">
                         {preset.dims}
                       </div>
                     </button>
@@ -358,7 +364,7 @@ export const InlineImageEditorModal: React.FC = () => {
                   onChange={(e) => setBrushSize(Number(e.target.value))}
                   className="flex-1 accent-white"
                 />
-                <span className="font-mono text-[11.5px] text-white/80 w-10 text-right">
+                <span className="tabular-nums text-[11.5px] text-white/80 w-10 text-right">
                   {brushSize}px
                 </span>
               </div>

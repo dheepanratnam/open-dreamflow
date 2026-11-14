@@ -300,7 +300,7 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
               <Play className="w-3.5 h-3.5 ml-0.5" strokeWidth={1.75} />
             )}
           </button>
-          <span className="font-mono text-[12px] tabular-nums text-white/80 tracking-tight">
+          <span className="tabular-nums text-[12px] tabular-nums text-white/80 tracking-tight">
             {formatTimecode(playheadSec)}{' '}
             <span className="text-white/35">/ {formatTimecode(totalDurationSec)}</span>
           </span>
@@ -344,7 +344,7 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
             {ticks.map((t) => (
               <div key={t} className="flex items-center gap-1">
                 <div className="w-px h-2 bg-white/[0.14]" />
-                <span className="font-mono text-[10px] tabular-nums text-white/35">
+                <span className="tabular-nums text-[10px] tabular-nums text-white/35">
                   {formatTimecode(t)}
                 </span>
               </div>
@@ -409,7 +409,7 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
                       {clip.title}
                     </span>
                   </div>
-                  <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded-[5px] bg-black/65 backdrop-blur-sm font-mono text-[10px] tabular-nums text-white/85 pointer-events-none">
+                  <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded-[5px] bg-black/65 backdrop-blur-sm tabular-nums text-[10px] tabular-nums text-white/85 pointer-events-none">
                     {formatTimecode(clip.durationSec)}
                   </div>
                 </div>
@@ -445,7 +445,7 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
             <AudioLines className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.5} />
           </div>
 
-          <span className="font-mono text-[10px] text-white/50 shrink-0">
+          <span className="tabular-nums text-[10px] text-white/50 shrink-0">
             A1 · Audio
           </span>
 
@@ -476,7 +476,7 @@ export const TimelineCanvasNode: React.FC<{ node: CanvasNode }> = ({ node }) => 
                   );
                 })}
               </div>
-              <span className="font-mono text-[9.5px] text-white/45 shrink-0">
+              <span className="tabular-nums text-[9.5px] text-white/45 shrink-0">
                 {formatTimecode(primaryAudioStem.durationSec)}
               </span>
             </div>
@@ -565,8 +565,7 @@ export const FullscreenTimelineModal: React.FC = () => {
 
   if (!open) return null;
 
-  const previewVideoSrc =
-    masterRenderUrl || activeClip?.videoUrl || '/media/real_salt_terracotta_master.mp4';
+  const previewVideoSrc = masterRenderUrl || activeClip?.videoUrl || undefined;
 
   const handleExportFcpxml = () => {
     const xml = generateFcpxmlDocument(projectTitle, timelineClips);
@@ -616,7 +615,7 @@ export const FullscreenTimelineModal: React.FC = () => {
             <span className="text-[13px] font-medium text-white/95">
               {projectTitle} · Timelines 1
             </span>
-            <span className="px-2 py-0.5 rounded-[6px] bg-white/[0.06] text-[11px] font-mono text-white/60">
+            <span className="px-2 py-0.5 rounded-[6px] bg-white/[0.06] text-[11px] tabular-nums text-white/60">
               {videoClips.length} shots · {formatTimecode(totalSec)}
             </span>
           </div>
@@ -676,9 +675,9 @@ export const FullscreenTimelineModal: React.FC = () => {
       <div className="flex-1 min-h-0 flex items-center justify-center p-6 bg-[#0e0e0e] relative">
         <div className="relative max-w-[920px] w-full aspect-video rounded-[12px] overflow-hidden bg-[#141414] border border-white/[0.1] shadow-[0_24px_60px_rgba(0,0,0,0.75)]">
           <video
-            key={previewVideoSrc}
+            key={previewVideoSrc || 'no-video'}
             src={previewVideoSrc}
-            poster={activeClip?.thumbnailUrl || '/media/real_courtyard_sun.jpg'}
+            poster={activeClip?.thumbnailUrl || undefined}
             autoPlay
             loop
             playsInline
@@ -778,7 +777,7 @@ export const FullscreenTimelineModal: React.FC = () => {
                 <Play className="w-3.5 h-3.5 ml-0.5" strokeWidth={1.75} />
               )}
             </button>
-            <span className="font-mono text-[12px] tabular-nums text-white/85">
+            <span className="tabular-nums text-[12px] tabular-nums text-white/85">
               {formatTimecode(playheadSec)}{' '}
               <span className="text-white/40">/ {formatTimecode(totalSec)}</span>
             </span>
@@ -844,7 +843,7 @@ export const FullscreenTimelineModal: React.FC = () => {
                       <span className="text-[11px] font-medium text-white truncate">
                         {clip.title}
                       </span>
-                      <span className="font-mono text-[10px] text-white/80">
+                      <span className="tabular-nums text-[10px] text-white/80">
                         {clip.durationSec}s
                       </span>
                     </div>
@@ -880,7 +879,7 @@ export const FullscreenTimelineModal: React.FC = () => {
                     <span className="text-[11px] text-white/85 truncate">
                       {clip.title}: “{clip.promptOrDialogue}”
                     </span>
-                    <span className="font-mono text-[10px] text-white/50 shrink-0">
+                    <span className="tabular-nums text-[10px] text-white/50 shrink-0">
                       {clip.durationSec}s
                     </span>
                   </div>
@@ -925,7 +924,7 @@ export const FullscreenTimelineModal: React.FC = () => {
                         />
                       ))}
                     </div>
-                    <span className="font-mono text-[10px] text-white/45 shrink-0">
+                    <span className="tabular-nums text-[10px] text-white/45 shrink-0">
                       {clip.durationSec}s
                     </span>
                   </div>

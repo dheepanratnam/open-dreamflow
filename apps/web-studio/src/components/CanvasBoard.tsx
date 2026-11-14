@@ -1132,7 +1132,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                     node.kind !== 'sticky' &&
                     node.kind !== 'text' &&
                     node.kind !== 'audio' && (
-                      <span className="font-mono text-[10px] text-white/35 shrink-0">
+                      <span className="tabular-nums text-[10px] text-white/35 shrink-0">
                         {node.resolution}
                         {node.quality ? ` · ${node.quality}` : ''}
                       </span>
@@ -1263,7 +1263,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                         </div>
 
                         {/* Dreamina Minimal Bottom-Right Duration Pill */}
-                        <div className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-[6px] bg-black/65 backdrop-blur-md font-mono text-[11px] tabular-nums text-white/90 pointer-events-none">
+                        <div className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-[6px] bg-black/65 backdrop-blur-md tabular-nums text-[11px] tabular-nums text-white/90 pointer-events-none">
                           {formatDurationPill(node.durationSec)}
                         </div>
                       </>
@@ -1381,7 +1381,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                                     fallbackSeed={(node.seed || 100) + idx}
                                     className="w-full h-full object-cover"
                                   />
-                                  <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/75 border border-white/15 font-mono text-[10px] font-semibold text-white">
+                                  <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/75 border border-white/15 tabular-nums text-[10px] font-semibold text-white">
                                     #{idx + 1}
                                   </span>
                                   <button
@@ -1544,14 +1544,14 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                                 (e.target as HTMLInputElement).blur();
                               }
                             }}
-                            className="w-28 h-6 px-2 rounded-[6px] bg-[#252525] border border-[#20D5EC]/60 text-[11px] font-mono text-white outline-none"
+                            className="w-28 h-6 px-2 rounded-[6px] bg-[#252525] border border-[#20D5EC]/60 text-[11px] tabular-nums text-white outline-none"
                           />
                         ) : (
                           <button
                             type="button"
                             onClick={() => setEditingHandleNodeId(node.id)}
                             title="Click to rename @Reference tag"
-                            className="px-2 py-0.5 rounded-[6px] bg-black/75 hover:bg-[#252525] backdrop-blur-md border border-white/[0.14] text-[11px] font-mono text-[#20D5EC]"
+                            className="px-2 py-0.5 rounded-[6px] bg-black/75 hover:bg-[#252525] backdrop-blur-md border border-white/[0.14] text-[11px] tabular-nums text-[#20D5EC]"
                           >
                             {node.elementHandles[0] || '@Ref_1'}
                           </button>
@@ -1681,10 +1681,10 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   <div className="w-full h-full p-4 bg-[#191919] flex flex-col justify-between">
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] font-mono text-[11px] text-white/85">
+                        <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] tabular-nums text-[11px] text-white/85">
                           {node.mcpTool?.name || 'mcp_tool'}
                         </span>
-                        <span className="text-[10.5px] text-[#10b981] font-mono">
+                        <span className="text-[10.5px] text-[#10b981] tabular-nums">
                           :3001/mcp
                         </span>
                       </div>
@@ -1711,7 +1711,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                       className="w-6 h-6 text-white animate-spin"
                       strokeWidth={1.75}
                     />
-                    <span className="font-mono text-[12px] text-white/90">
+                    <span className="tabular-nums text-[12px] text-white/90">
                       {node.editBadge ||
                         `Rendering ${node.progress ? `${node.progress}%` : '…'}`}
                     </span>
@@ -1724,7 +1724,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                       className="w-3 h-3 text-[#20D5EC] animate-spin"
                       strokeWidth={2}
                     />
-                    <span className="font-mono text-[11px] text-white/90">
+                    <span className="tabular-nums text-[11px] text-white/90">
                       {node.editBadge}
                     </span>
                   </div>
@@ -1916,7 +1916,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                             <span>{item.label}</span>
                           </span>
                           {item.shortcut && (
-                            <span className="font-mono text-[11px] text-white/35">
+                            <span className="tabular-nums text-[11px] text-white/35">
                               {item.shortcut}
                             </span>
                           )}
@@ -1940,7 +1940,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                 className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] disabled:opacity-35 text-white/90 flex items-center justify-between"
               >
                 <span>Paste</span>
-                <span className="font-mono text-[11px] text-white/40">⌘V</span>
+                <span className="tabular-nums text-[11px] text-white/40">⌘V</span>
               </button>
 
               <button
@@ -1956,7 +1956,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   <Undo2 className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
                   <span>Undo</span>
                 </span>
-                <span className="font-mono text-[11px] text-white/40">⌘Z</span>
+                <span className="tabular-nums text-[11px] text-white/40">⌘Z</span>
               </button>
 
               <button
@@ -1972,7 +1972,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   <Redo2 className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
                   <span>Redo</span>
                 </span>
-                <span className="font-mono text-[11px] text-white/40">⇧⌘Z</span>
+                <span className="tabular-nums text-[11px] text-white/40">⇧⌘Z</span>
               </button>
 
               <div className="my-1 h-px bg-white/[0.07]" />
@@ -2057,7 +2057,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                     <Copy className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
                     <span>Copy</span>
                   </span>
-                  <span className="font-mono text-[11px] text-white/40">⌘C</span>
+                  <span className="tabular-nums text-[11px] text-white/40">⌘C</span>
                 </button>
 
                 <button
@@ -2069,7 +2069,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center justify-between"
                 >
                   <span>Duplicate</span>
-                  <span className="font-mono text-[11px] text-white/40">⌘D</span>
+                  <span className="tabular-nums text-[11px] text-white/40">⌘D</span>
                 </button>
 
                 <button
@@ -2082,7 +2082,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] disabled:opacity-35 text-white/90 flex items-center justify-between"
                 >
                   <span>Paste</span>
-                  <span className="font-mono text-[11px] text-white/40">⌘V</span>
+                  <span className="tabular-nums text-[11px] text-white/40">⌘V</span>
                 </button>
 
                 <div className="my-1 h-px bg-white/[0.07]" />
@@ -2252,7 +2252,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                     <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} />
                     <span>Delete</span>
                   </span>
-                  <span className="font-mono text-[11px] opacity-70">⌫</span>
+                  <span className="tabular-nums text-[11px] opacity-70">⌫</span>
                 </button>
               </>
             )
@@ -2471,7 +2471,7 @@ const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
           <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] border border-white/[0.06] text-[10.5px] font-medium text-white/80">
             {modeLabel}
           </span>
-          <span className="font-mono text-[10.5px] text-white/40">
+          <span className="tabular-nums text-[10.5px] text-white/40">
             {formatDurationPill(displaySec)}
           </span>
         </div>
@@ -2517,7 +2517,7 @@ const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
         <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] border border-white/[0.06] text-[10.5px] font-medium text-white/80">
           {modeLabel}
         </span>
-        <span className="font-mono text-[11px] tabular-nums text-white/55">
+        <span className="tabular-nums text-[11px] tabular-nums text-white/55">
           {formatDurationPill(displaySec)}
         </span>
       </div>

@@ -10,9 +10,11 @@ import {
   TimelinePlaybackEngine,
 } from './components/TimelineCanvasNode';
 import { ProviderModal } from './components/ProviderModal';
+import { AuthGateModal } from './components/AuthGateModal';
+import { TeamCreditsModal } from './components/TeamCreditsModal';
 import { MultiframeChain } from './components/MultiframeChain';
 import { ShareableAppView } from './components/ShareableAppView';
-import { LOCAL_BRIDGE_WS_URL } from './services/executionRouter';
+import { getBridgeWsUrl } from './services/executionRouter';
 import type { BridgeIncomingEvent } from './types/studio';
 
 export const App: React.FC = () => {
@@ -20,15 +22,15 @@ export const App: React.FC = () => {
   const toastMessage = useStudioStore((s) => s.toastMessage);
   const toastKind = useStudioStore((s) => s.toastKind);
   const lastFailedPlatformId = useStudioStore((s) => s.lastFailedPlatformId);
+  const authBootChecked = useStudioStore((s) => s.authBootChecked);
+  const authBootstrapInfo = useStudioStore((s) => s.authBootstrapInfo);
+  const authUser = useStudioStore((s) => s.authUser);
   const openProviderModal = useStudioStore((s) => s.openProviderModal);
   const hydrateFromUrlRecipe = useStudioStore((s) => s.hydrateFromUrlRecipe);
-  const autoConnectLocalMcpBackend = useStudioStore(
-    (s) => s.autoConnectLocalMcpBackend
-  );
+  const initAuthAndBoot = useStudioStore((s) => s.initAuthAndBoot);
   const refreshPlatformsAndExternalMcp = useStudioStore(
     (s) => s.refreshPlatformsAndExternalMcp
   );
-  const bootDiskPersistence = useStudioStore((s) => s.bootDiskPersistence);
   const pingBridge = useStudioStore((s) => s.pingBridge);
   const handleIncomingBridgeEvent = useStudioStore(
     (s) => s.handleIncomingBridgeEvent
@@ -36,6 +38,7 @@ export const App: React.FC = () => {
   const setBridgeWsConnected = useStudioStore((s) => s.setBridgeWsConnected);
   const ingestBridgeWsEvent = useStudioStore((s) => s.ingestBridgeWsEvent);
   const handleBridgeJobWsEvent = useStudioStore((s) => s.handleBridgeJobWsEvent);
+  const handleCanvasSyncWsEvent = useStudioStore((s) => s.handleCanvasSyncWsEvent);
 
   useEffect(() => {
     const hasUrlRecipe =
@@ -43,10 +46,9 @@ export const App: React.FC = () => {
       new URLSearchParams(window.location.search).has('recipe');
 
     hydrateFromUrlRecipe();
-    void autoConnectLocalMcpBackend();
     void refreshPlatformsAndExternalMcp();
     if (!hasUrlRecipe) {
-      void bootDiskPersistence();
+      void initAuthAndBoot();
     }
     pingBridge();
 
@@ -61,9 +63,8 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('message', onMessage);
   }, [
     hydrateFromUrlRecipe,
-    autoConnectLocalMcpBackend,
+    initAuthAndBoot,
     refreshPlatformsAndExternalMcp,
-    bootDiskPersistence,
     pingBridge,
     handleIncomingBridgeEvent,
   ]);
@@ -120,7 +121,7 @@ export const App: React.FC = () => {
     const connectWs = () => {
       if (unmounted) return;
       try {
-        ws = new WebSocket(LOCAL_BRIDGE_WS_URL);
+        ws = new WebSocket(getBridgeWsUrl());
         ws.onopen = () => {
           if (!unmounted) setBridgeWsConnected(true);
         };
@@ -130,6 +131,8 @@ export const App: React.FC = () => {
             const parsed = JSON.parse(ev.data) as Record<string, unknown>;
             if (parsed.type === 'bridge_job_complete') {
               handleBridgeJobWsEvent(parsed);
+            } else if (parsed.type === 'canvas_sync_update') {
+              handleCanvasSyncWsEvent(parsed as unknown as BridgeIncomingEvent);
             } else if (
               parsed.type === 'bridge_asset' ||
               parsed.type === 'bridge_prompt' ||
@@ -171,7 +174,25 @@ export const App: React.FC = () => {
         // ignore
       }
     };
-  }, [setBridgeWsConnected, ingestBridgeWsEvent, handleBridgeJobWsEvent]);
+  }, [
+    authUser?.id,
+    setBridgeWsConnected,
+    ingestBridgeWsEvent,
+    handleBridgeJobWsEvent,
+    handleCanvasSyncWsEvent,
+  ]);
+
+  if (!authBootChecked) {
+    return (
+      <div className="w-screen h-screen bg-[#0e0e0e] text-white flex items-center justify-center font-sans text-[13px] text-white/60">
+        Loading workspace…
+      </div>
+    );
+  }
+
+  if (authBootstrapInfo?.authEnabled && !authUser) {
+    return <AuthGateModal />;
+  }
 
   return (
     <div className="w-screen h-screen overflow-hidden bg-[#0e0e0e] text-[#f5f5f5] relative">
@@ -206,6 +227,9 @@ export const App: React.FC = () => {
 
       {/* Zero-Markup BYOK / MCP / Chrome Extension Modal */}
       <ProviderModal />
+
+      {/* Stage 11 Credit Intelligence & Team Sharing Modal */}
+      <TeamCreditsModal />
 
       {/* Subtle Matte Toast Notification */}
       {toastMessage && (

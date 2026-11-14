@@ -97,7 +97,7 @@ export const MultiframeChain: React.FC = () => {
           <span className="text-[13.5px] font-semibold text-white">
             Smart Multiframes · Keyframe Chain ({multiframes.length}/10)
           </span>
-          <span className="px-2 py-0.5 rounded-[6px] bg-white/[0.06] font-mono text-[11px] text-white/65">
+          <span className="px-2 py-0.5 rounded-[6px] bg-white/[0.06] tabular-nums text-[11px] text-white/65">
             {totalSequenceSec}s total
           </span>
         </div>
@@ -239,7 +239,7 @@ export const MultiframeChain: React.FC = () => {
                 <div className="w-[196px] shrink-0 p-3 rounded-[12px] bg-[#191919] border border-white/[0.08] space-y-2.5">
                   <div className="flex items-center justify-between text-[11px] text-white/55">
                     <span>Transition Bridge</span>
-                    <span className="font-mono text-[#20D5EC]">
+                    <span className="tabular-nums text-[#20D5EC]">
                       {bridge.durationSec}s
                     </span>
                   </div>

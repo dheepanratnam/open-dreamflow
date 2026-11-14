@@ -388,7 +388,7 @@ const ConnectionProgressCard: React.FC<ConnectionProgressCardProps> = ({
                         type="button"
                         onClick={() => void navigator.clipboard?.writeText(session.userCode || '')}
                         title="Copy device verification code"
-                        className="inline-flex items-center gap-1 rounded border border-[#20D5EC]/40 bg-[#20D5EC]/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-white hover:bg-[#20D5EC]/25"
+                        className="inline-flex items-center gap-1 rounded border border-[#20D5EC]/40 bg-[#20D5EC]/15 px-1.5 py-0.5 tabular-nums text-[11px] font-semibold text-white hover:bg-[#20D5EC]/25"
                       >
                         <span>{session.userCode}</span>
                         <Copy className="w-2.5 h-2.5 text-[#20D5EC]" />
@@ -404,7 +404,7 @@ const ConnectionProgressCard: React.FC<ConnectionProgressCardProps> = ({
             </div>
 
             {!isConnected && (
-              <span className="text-xs font-mono text-[#20D5EC] font-semibold">
+              <span className="text-xs tabular-nums text-[#20D5EC] font-semibold">
                 {isError ? 'Stopped' : `${pct}%`}
               </span>
             )}
@@ -739,7 +739,7 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
                   </div>
                   <div className="text-[11px] text-[#9ee6cc]/85 truncate mt-0.5">
                     {resolvedAccount ? `${resolvedAccount} · ` : ''}
-                    <span className="font-mono text-[10.5px] opacity-80">
+                    <span className="tabular-nums text-[10.5px] opacity-80">
                       {server.url || `${server.command || 'stdio'} ${(server.args || []).join(' ')}`}
                     </span>
                   </div>
@@ -898,7 +898,7 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
                         }`}
                       >
                         <div className="flex items-center justify-between gap-1.5">
-                          <span className="text-[11.5px] font-mono font-semibold truncate">
+                          <span className="text-[11.5px] tabular-nums font-semibold truncate">
                             {tool.name}
                           </span>
                           <span className="text-[9.5px] text-[#808080] shrink-0">
@@ -921,7 +921,7 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
               <div className="rounded-xl border border-white/[0.08] bg-[#101010] p-3.5 space-y-3">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="text-xs font-mono font-semibold text-white">
+                    <div className="text-xs tabular-nums font-semibold text-white">
                       {activeTool.name}
                     </div>
                     {activeTool.description && (
@@ -950,7 +950,7 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
                 </div>
 
                 {showAllSchemas && activeTool.inputSchema && (
-                  <pre className="max-h-28 overflow-auto rounded-lg bg-black/50 border border-white/[0.06] p-2 text-[10px] font-mono text-[#9ca3af]">
+                  <pre className="max-h-28 overflow-auto rounded-lg bg-black/50 border border-white/[0.06] p-2 text-[10px] tabular-nums text-[#9ca3af]">
                     {JSON.stringify(activeTool.inputSchema, null, 2)}
                   </pre>
                 )}
@@ -959,7 +959,7 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {schemaProperties.map((prop) => (
                       <div key={prop.key} className="space-y-1">
-                        <label className="block text-[10.5px] font-mono text-[#b5b5b5]">
+                        <label className="block text-[10.5px] tabular-nums text-[#b5b5b5]">
                           {prop.key}
                           {prop.required ? (
                             <span className="text-[#ef4444] ml-0.5">*</span>
@@ -1004,7 +1004,7 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
                       rows={2}
                       value={rawJsonArgs}
                       onChange={(e) => setRawJsonArgs(e.target.value)}
-                      className="w-full rounded-lg border border-white/[0.1] bg-[#171717] px-2.5 py-1.5 text-[11px] font-mono text-white focus:border-[#20D5EC] focus:outline-none"
+                      className="w-full rounded-lg border border-white/[0.1] bg-[#171717] px-2.5 py-1.5 text-[11px] tabular-nums text-white focus:border-[#20D5EC] focus:outline-none"
                     />
                   </div>
                 )}
@@ -1038,12 +1038,12 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
                   >
                     {callResult.error && <div>{callResult.error}</div>}
                     {callResult.textContent && (
-                      <div className="whitespace-pre-wrap break-words font-mono text-[10.5px]">
+                      <div className="whitespace-pre-wrap break-words tabular-nums text-[10.5px]">
                         {callResult.textContent}
                       </div>
                     )}
                     {callResult.structuredData !== undefined && (
-                      <pre className="max-h-32 overflow-auto rounded bg-black/40 p-2 font-mono text-[10px]">
+                      <pre className="max-h-32 overflow-auto rounded bg-black/40 p-2 tabular-nums text-[10px]">
                         {JSON.stringify(callResult.structuredData, null, 2)}
                       </pre>
                     )}
@@ -1120,6 +1120,9 @@ export const ProviderModal: React.FC = () => {
   const runLiveBridgeTestGeneration = useStudioStore((s) => s.runLiveBridgeTestGeneration);
 
   const showToast = useStudioStore((s) => s.showToast);
+  const authUser = useStudioStore((s) => s.authUser);
+  const sharedAvailablePools = useStudioStore((s) => s.sharedAvailablePools);
+  const openTeamCreditsModal = useStudioStore((s) => s.openTeamCreditsModal);
 
   const [selectedPlatformId, setSelectedPlatformId] = useState<PlatformId>('higgsfield');
 
@@ -1574,6 +1577,37 @@ export const ProviderModal: React.FC = () => {
           </div>
         </div>
 
+        {/* Member Personal vs Shared Account Hint */}
+        {authUser?.role === 'member' && (
+          <div className="px-5 py-2.5 border-b border-white/[0.07] bg-[#20D5EC]/[0.07] flex items-center justify-between gap-3 text-[11.5px]">
+            <div className="text-white/85">
+              {sharedAvailablePools.length > 0 ? (
+                <span>
+                  Using owner&apos;s shared pools for{' '}
+                  <strong className="text-[#20D5EC]">
+                    {sharedAvailablePools.map((p) => p.platformId).join(', ')}
+                  </strong>
+                  . Add your own keys or accounts below to run under &ldquo;My Credits&rdquo;.
+                </span>
+              ) : (
+                <span>
+                  Connect your own API keys or creator accounts below to generate on any platform.
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                closeProviderModal();
+                openTeamCreditsModal('credits');
+              }}
+              className="shrink-0 rounded-lg border border-[#20D5EC]/35 bg-[#20D5EC]/15 hover:bg-[#20D5EC]/25 px-2.5 py-1 text-[11px] font-medium text-[#20D5EC]"
+            >
+              View Credit Pools
+            </button>
+          </div>
+        )}
+
         {/* Main Split Body */}
         <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-[276px_1fr] overflow-hidden">
           {/* Left Rail — Company Directory with Distinct Brand Icons */}
@@ -2027,7 +2061,7 @@ export const ProviderModal: React.FC = () => {
                         </h3>
                         <p className="text-xs text-[#b0b0b0] leading-relaxed max-w-lg">
                           Sign in once at{' '}
-                          <span className="font-mono text-white">dreamina.capcut.com</span> or attach a BytePlus ARK key to unlock{' '}
+                          <span className="tabular-nums text-white">dreamina.capcut.com</span> or attach a BytePlus ARK key to unlock{' '}
                           <strong className="text-white">Seedream 5.5</strong>,{' '}
                           <strong className="text-white">5.0 Pro</strong>,{' '}
                           <strong className="text-white">Seedance 2.5</strong> &amp;{' '}
@@ -2309,7 +2343,7 @@ export const ProviderModal: React.FC = () => {
                       <div className="px-4 pb-3.5 pt-2 border-t border-white/[0.06] space-y-3">
                         <p className="text-[11px] text-[#969696]">
                           Launch a CDP-monitored Chrome window, sign into{' '}
-                          <span className="text-white font-mono">dreamina.capcut.com</span> once, then click{' '}
+                          <span className="text-white tabular-nums">dreamina.capcut.com</span> once, then click{' '}
                           <strong className="text-white">Check &amp; Sync Browser Sign-In</strong> or bind Browser MCP directly.
                         </p>
                         <div className="flex flex-wrap items-center gap-2">
@@ -2512,7 +2546,7 @@ export const ProviderModal: React.FC = () => {
                                 type="text"
                                 value={inlineMcpCommand}
                                 onChange={(e) => setInlineMcpCommand(e.target.value)}
-                                className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs font-mono text-white focus:border-[#20D5EC] focus:outline-none"
+                                className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs tabular-nums text-white focus:border-[#20D5EC] focus:outline-none"
                               />
                             </div>
                             <div>
@@ -2521,7 +2555,7 @@ export const ProviderModal: React.FC = () => {
                                 type="text"
                                 value={inlineMcpArgs}
                                 onChange={(e) => setInlineMcpArgs(e.target.value)}
-                                className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs font-mono text-white focus:border-[#20D5EC] focus:outline-none"
+                                className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs tabular-nums text-white focus:border-[#20D5EC] focus:outline-none"
                               />
                             </div>
                           </>
@@ -2771,7 +2805,7 @@ export const ProviderModal: React.FC = () => {
                     }`}
                   />
                   <span className="font-medium text-[#d4d4d4]">{localStudioEngine.name}</span>
-                  <span className="font-mono text-[10px] text-[#787878]">
+                  <span className="tabular-nums text-[10px] text-[#787878]">
                     {localStudioEngine.url}
                   </span>
                 </div>
@@ -2840,7 +2874,7 @@ export const ProviderModal: React.FC = () => {
                   Open <code className="text-[#d4d4d4]">chrome://extensions</code> → enable Developer Mode → Load Unpacked folder:
                 </p>
                 <div className="flex items-center gap-1.5">
-                  <code className="flex-1 rounded bg-white/[0.05] px-2 py-1 font-mono text-[10px] text-[#d4d4d4] truncate">
+                  <code className="flex-1 rounded bg-white/[0.05] px-2 py-1 tabular-nums text-[10px] text-[#d4d4d4] truncate">
                     {extensionFolderPath}
                   </code>
                   <button
@@ -2862,7 +2896,7 @@ export const ProviderModal: React.FC = () => {
                   Paste once in DevTools Console on any open creator tab:
                 </p>
                 <div className="flex items-center gap-1.5">
-                  <code className="flex-1 rounded bg-white/[0.05] px-2 py-1 font-mono text-[10px] text-[#d4d4d4] truncate">
+                  <code className="flex-1 rounded bg-white/[0.05] px-2 py-1 tabular-nums text-[10px] text-[#d4d4d4] truncate">
                     {consoleSnippet}
                   </code>
                   <button

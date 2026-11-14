@@ -1,10 +1,17 @@
 import type {
   AspectRatio,
+  AuthBootstrapInfo,
+  AuthMePayload,
+  BillingMetaEntry,
   BridgeIncomingEvent,
   BrowserPlatformTarget,
   BYOKCredentials,
+  CloudAssetItem,
   ConnectionTransport,
   ConnectionsStatusSnapshot,
+  CreditQuoteResponse,
+  CreditsSummaryResponse,
+  CreditSourcePreference,
   DiskProjectMeta,
   DiskProjectRecord,
   ExternalMcpServerRecord,
@@ -19,9 +26,20 @@ import type {
   ProviderId,
   ProviderVerificationResult,
   ResolutionTier,
+  SharedCreditGrant,
+  StudioAuthUser,
+  TeamMemberSummary,
 } from '../types/studio';
+import { renderShotDataUrl } from '../utils/proceduralMedia';
 
 function resolveBackendOrigin(): string {
+  const envBase =
+    typeof import.meta !== 'undefined'
+      ? (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL
+      : undefined;
+  if (envBase && envBase.trim()) {
+    return envBase.trim().replace(/\/+$/, '');
+  }
   if (
     typeof window !== 'undefined' &&
     (window.location.protocol === 'http:' || window.location.protocol === 'https:')
@@ -49,6 +67,60 @@ const LOCAL_MCP_WS_ORIGIN = LOCAL_MCP_BASE.replace(/^http:\/\//, 'ws://').replac
 export const LOCAL_MCP_HTTP_URL = `${LOCAL_MCP_BASE}/mcp`;
 export const LOCAL_MCP_WS_URL = `${LOCAL_MCP_WS_ORIGIN}/mcp`;
 export const LOCAL_BRIDGE_WS_URL = `${LOCAL_MCP_WS_ORIGIN}/bridge`;
+
+export const AUTH_TOKEN_STORAGE_KEY = 'dreamflow_auth_token_v1';
+
+let authModeActive = false;
+
+export function setAuthModeActive(active: boolean): void {
+  authModeActive = active;
+}
+
+export function getStoredAuthToken(): string | null {
+  try {
+    return typeof localStorage !== 'undefined'
+      ? localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredAuthToken(token: string | null): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (token) localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    else localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function buildAuthHeaders(extra?: HeadersInit): Headers {
+  const headers = new Headers(extra);
+  const token = getStoredAuthToken();
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  if (authModeActive || token) {
+    headers.set('X-Dreamflow-Require-Auth', '1');
+  }
+  return headers;
+}
+
+export function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return fetch(input, {
+    ...init,
+    headers: buildAuthHeaders(init?.headers),
+  });
+}
+
+export function getBridgeWsUrl(): string {
+  const token = getStoredAuthToken();
+  if (!token) return LOCAL_BRIDGE_WS_URL;
+  const sep = LOCAL_BRIDGE_WS_URL.includes('?') ? '&' : '?';
+  return `${LOCAL_BRIDGE_WS_URL}${sep}token=${encodeURIComponent(token)}`;
+}
 
 export type BackendProviderSlug =
   | 'gemini'
@@ -250,7 +322,7 @@ export async function probeLiveMcpBackend(): Promise<McpBackendHealth> {
     const healthTimer = setTimeout(() => healthCtrl.abort(), 2200);
 
     const [healthRes, mcpDiscovery] = await Promise.allSettled([
-      fetch(`${LOCAL_MCP_BASE}/api/health`, { signal: healthCtrl.signal }).then(async (r) => {
+      authFetch(`${LOCAL_MCP_BASE}/api/health`, { signal: healthCtrl.signal }).then(async (r) => {
         clearTimeout(healthTimer);
         if (!r.ok) return null;
         return (await r.json()) as {
@@ -336,7 +408,7 @@ export async function verifyProviderViaBackend(params: {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 18000);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/verify-provider`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/verify-provider`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -429,6 +501,7 @@ export interface GenerateNodeBackendParams {
   endImageUrl?: string;
   mcpServerId?: string;
   mcpToolName?: string;
+  creditSource?: CreditSourcePreference;
   credentials?: {
     apiKey?: string;
     accessKey?: string;
@@ -474,7 +547,7 @@ export async function generateNodeViaBackend(
       ? toBackendRelativeMediaPath(params.endImageUrl) || params.endImageUrl
       : undefined;
 
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/generate-node`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/generate-node`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -485,6 +558,7 @@ export async function generateNodeViaBackend(
         ...(params.referenceFrameMode ? { referenceFrameMode: params.referenceFrameMode } : {}),
         ...(cleanedStartImg ? { startImageUrl: cleanedStartImg } : {}),
         ...(cleanedEndImg ? { endImageUrl: cleanedEndImg } : {}),
+        ...(params.creditSource ? { creditSource: params.creditSource } : {}),
       }),
     });
     clearTimeout(timer);
@@ -579,7 +653,7 @@ export async function fetchConnectionsStatusViaBackend(): Promise<ConnectionsSta
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 5000);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/connections/status`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/connections/status`, {
       signal: ctrl.signal,
     });
     clearTimeout(timer);
@@ -668,6 +742,15 @@ export async function fetchConnectionsStatusViaBackend(): Promise<ConnectionsSta
       mcpServers: enrichedMcpServers,
       mcpBalance: topBalance,
       mcpBalances,
+      ownConnected: Array.isArray(json.ownConnected)
+        ? (json.ownConnected.filter((x): x is string => typeof x === 'string'))
+        : undefined,
+      sharedAvailable: Array.isArray(json.sharedAvailable)
+        ? (json.sharedAvailable as SharedCreditGrant[])
+        : undefined,
+      connectedPlatforms: Array.isArray(json.connectedPlatforms)
+        ? (json.connectedPlatforms.filter((x): x is string => typeof x === 'string'))
+        : undefined,
       browserSessionOpen: Boolean(json.browserSessionOpen),
       activeBrowserProfileDir:
         typeof json.activeBrowserProfileDir === 'string'
@@ -700,7 +783,7 @@ export async function launchConnectedBrowserViaBackend(
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 12000);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/connections/launch-browser`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/connections/launch-browser`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -751,7 +834,7 @@ export async function checkBrowserConnectionsViaBackend(
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 5000);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/connections/check-browser`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/connections/check-browser`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -808,7 +891,7 @@ export async function startMcpOAuthViaBackend(
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/oauth/start`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/mcp/oauth/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -852,7 +935,7 @@ export async function getMcpOAuthStatusViaBackend(sessionId: string): Promise<{
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 5000);
-    const res = await fetch(
+    const res = await authFetch(
       `${LOCAL_MCP_BASE}/api/mcp/oauth/status/${encodeURIComponent(sessionId)}`,
       { signal: ctrl.signal }
     );
@@ -891,7 +974,7 @@ export async function startDreaminaMcpConnectViaBackend(payload: {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 25000);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/dreamina/connect`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/mcp/dreamina/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -968,7 +1051,7 @@ export async function getDreaminaMcpStatusViaBackend(sessionId: string): Promise
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 5000);
-    const res = await fetch(
+    const res = await authFetch(
       `${LOCAL_MCP_BASE}/api/mcp/dreamina/status/${encodeURIComponent(sessionId)}`,
       { signal: ctrl.signal }
     );
@@ -1000,7 +1083,7 @@ export async function disconnectDreaminaMcpViaBackend(): Promise<{
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 8000);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/dreamina/disconnect`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/mcp/dreamina/disconnect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -1024,7 +1107,7 @@ export async function callExternalMcpToolViaBackend(
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 120000);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/call`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/mcp/call`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -1087,7 +1170,7 @@ export async function listExternalMcpServers(): Promise<{
   servers: ExternalMcpServerRecord[];
 }> {
   try {
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/servers`);
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/mcp/servers`);
     if (!res.ok) return { ok: false, servers: [] };
     const json = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
@@ -1118,7 +1201,7 @@ export async function registerExternalMcpServer(payload: {
   error?: string;
 }> {
   try {
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/servers`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/mcp/servers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -1149,7 +1232,7 @@ export async function refreshExternalMcpServer(id: string): Promise<{
   error?: string;
 }> {
   try {
-    const res = await fetch(
+    const res = await authFetch(
       `${LOCAL_MCP_BASE}/api/mcp/servers/${encodeURIComponent(id)}/refresh`,
       { method: 'POST' }
     );
@@ -1169,7 +1252,7 @@ export async function refreshExternalMcpServer(id: string): Promise<{
 
 export async function deleteExternalMcpServer(id: string): Promise<{ ok: boolean }> {
   try {
-    const res = await fetch(
+    const res = await authFetch(
       `${LOCAL_MCP_BASE}/api/mcp/servers/${encodeURIComponent(id)}`,
       { method: 'DELETE' }
     );
@@ -1185,7 +1268,7 @@ export async function callExternalMcpTool(params: {
   arguments: Record<string, unknown>;
 }): Promise<{ ok: boolean; result?: unknown; error?: string }> {
   try {
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/mcp/call`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/mcp/call`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -1223,7 +1306,7 @@ export async function generateImageViaBackend(params: {
     const backendProvider = toBackendProviderSlug(params.provider);
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 120000);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/generate-image`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/generate-image`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -1300,7 +1383,7 @@ export async function enqueueLiveBridgeJobViaBackend(params: {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs + 10000);
 
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/bridge/enqueue`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/bridge/enqueue`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -1428,7 +1511,7 @@ export async function renderVideoViaBackend(params: {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), isCloud ? 240000 : 32000);
 
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/render-video`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/render-video`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -1516,7 +1599,7 @@ export async function sliceGridViaBackend(
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 18000);
 
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/slice-grid`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/slice-grid`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -1576,7 +1659,7 @@ export async function extractLastFrameViaBackend(
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 14000);
 
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/extract-last-frame`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/extract-last-frame`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -1626,7 +1709,7 @@ export async function compileTimelineViaBackend(params: {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 35000);
 
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/compile-timeline`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/compile-timeline`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -1857,17 +1940,13 @@ export async function executeStudioGeneration(
 
   // 4. Explicit FFmpeg 8.0 · Local Camera ($0.00 Offline Deterministic Engine)
   if (req.mode === 'video' || req.mode === 'multiframe') {
-    const lower = req.prompt.toLowerCase();
     const inputImg =
       req.firstFrameDataUrl ||
       req.referenceImages?.[0] ||
-      (lower.includes('atelier') || lower.includes('studio') || lower.includes('kyoto')
-        ? '/media/real_atelier_interior.jpg'
-        : lower.includes('cliff') || lower.includes('ocean') || lower.includes('coast')
-        ? '/media/real_coastal_cliffs.jpg'
-        : lower.includes('alpine') || lower.includes('mountain')
-        ? '/media/real_alpine_road.jpg'
-        : '/media/real_courtyard_sun.jpg');
+      renderShotDataUrl(req.aspectRatio || '16:9', {
+        prompt: req.prompt || 'Studio Frame',
+        seed: 101,
+      });
 
     const ffmpegRes = await renderVideoViaBackend({
       prompt: req.prompt,
@@ -2206,7 +2285,7 @@ export async function uploadMediaViaBackend(params: {
   dataBase64: string;
 }): Promise<{ ok: boolean; mediaUrl?: string; fullUrl?: string; bytes?: number }> {
   try {
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/upload-media`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/upload-media`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -2244,7 +2323,7 @@ export async function inpaintViaBackend(params: {
   try {
     const cleanSource = toBackendRelativeMediaPath(params.imageUrl) || params.imageUrl;
     const backendProvider = toBackendProviderSlug(params.provider);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/inpaint`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/inpaint`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2297,7 +2376,7 @@ export async function outpaintViaBackend(params: {
   try {
     const cleanSource = toBackendRelativeMediaPath(params.imageUrl) || params.imageUrl;
     const backendProvider = toBackendProviderSlug(params.provider);
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/outpaint`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/outpaint`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2339,7 +2418,7 @@ export async function removeBgViaBackend(
 ): Promise<{ ok: boolean; imageUrl?: string; fullUrl?: string }> {
   try {
     const cleanSource = toBackendRelativeMediaPath(imageUrl) || imageUrl;
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/remove-bg`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/remove-bg`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ imageUrl: cleanSource }),
@@ -2367,7 +2446,7 @@ export async function upscaleViaBackend(
 ): Promise<{ ok: boolean; imageUrl?: string; fullUrl?: string; width?: number }> {
   try {
     const cleanSource = toBackendRelativeMediaPath(imageUrl) || imageUrl;
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/upscale`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/upscale`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ imageUrl: cleanSource }),
@@ -2397,7 +2476,7 @@ export async function listDiskProjects(): Promise<{
   projects: DiskProjectMeta[];
 }> {
   try {
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/projects`);
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/projects`);
     if (!res.ok) return { ok: false, projects: [] };
     const json = (await res.json()) as {
       ok?: boolean;
@@ -2416,7 +2495,7 @@ export async function getDiskProject(
   id: string
 ): Promise<{ ok: boolean; project?: DiskProjectRecord }> {
   try {
-    const res = await fetch(
+    const res = await authFetch(
       `${LOCAL_MCP_BASE}/api/projects/${encodeURIComponent(id)}`
     );
     if (!res.ok) return { ok: false };
@@ -2436,9 +2515,10 @@ export async function saveDiskProject(params: {
   state: Record<string, unknown>;
   createSnapshot?: boolean;
   snapshotLabel?: string;
+  isSharedWithTeam?: boolean;
 }): Promise<{ ok: boolean; updatedAt?: number; snapshotCount?: number }> {
   try {
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/projects`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/projects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -2461,7 +2541,7 @@ export async function saveDiskProject(params: {
 
 export async function deleteDiskProject(id: string): Promise<boolean> {
   try {
-    const res = await fetch(
+    const res = await authFetch(
       `${LOCAL_MCP_BASE}/api/projects/${encodeURIComponent(id)}`,
       { method: 'DELETE' }
     );
@@ -2475,7 +2555,7 @@ export async function exportDiskProjectBundle(
   id: string
 ): Promise<Record<string, unknown> | null> {
   try {
-    const res = await fetch(
+    const res = await authFetch(
       `${LOCAL_MCP_BASE}/api/projects/${encodeURIComponent(id)}/export`
     );
     if (!res.ok) return null;
@@ -2489,7 +2569,7 @@ export async function importDiskProjectBundle(
   bundle: Record<string, unknown>
 ): Promise<{ ok: boolean; project?: DiskProjectRecord }> {
   try {
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/projects/import`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/projects/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bundle }),
@@ -2509,7 +2589,7 @@ export async function pushBridgeEventViaBackend(
   event: BridgeIncomingEvent
 ): Promise<{ ok: boolean }> {
   try {
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/bridge/push`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/bridge/push`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(event),
@@ -2551,7 +2631,7 @@ export async function keyframeBridgeViaBackend(params: {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), isCloud ? 240000 : 35000);
 
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/keyframe-bridge`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/keyframe-bridge`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -2628,7 +2708,7 @@ export async function generateAudioViaBackend(params: {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 28000);
 
-    const res = await fetch(`${LOCAL_MCP_BASE}/api/generate-audio`, {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/generate-audio`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
@@ -2667,5 +2747,321 @@ export async function generateAudioViaBackend(params: {
     };
   } catch {
     return { ok: false };
+  }
+}
+
+// ============================================================================
+// Stage 11: Multi-User Invite Auth, Team Shared Credits, Credit Summary & Assets
+// ============================================================================
+
+export async function fetchAuthBootstrapInfo(): Promise<AuthBootstrapInfo> {
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/auth/bootstrap-info`);
+    const json = (await res.json().catch(() => ({}))) as Partial<AuthBootstrapInfo>;
+    return {
+      ok: Boolean(res.ok && (json.ok ?? true)),
+      authEnabled: Boolean(json.authEnabled ?? true),
+      isLocalhost: Boolean(json.isLocalhost ?? (typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname))),
+      ownerDefaultEmail: json.ownerDefaultEmail || 'owner@dreamflow.studio',
+      r2Configured: Boolean(json.r2Configured),
+    };
+  } catch {
+    return {
+      ok: false,
+      authEnabled: false,
+      isLocalhost:
+        typeof window !== 'undefined' &&
+        /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname),
+      ownerDefaultEmail: 'owner@dreamflow.studio',
+      r2Configured: false,
+    };
+  }
+}
+
+export async function loginViaBackend(
+  email: string,
+  passcode: string
+): Promise<{
+  ok: boolean;
+  token?: string;
+  user?: StudioAuthUser;
+  sharedGrants?: Record<string, { enabled: boolean; capCredits: number | null; usedCredits?: number }>;
+  error?: string;
+}> {
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, passcode }),
+    });
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok || json.ok === false || typeof json.token !== 'string') {
+      return {
+        ok: false,
+        error:
+          (typeof json.error === 'string' && json.error) ||
+          'Invalid email or passcode',
+      };
+    }
+    setStoredAuthToken(json.token);
+    setAuthModeActive(true);
+    return {
+      ok: true,
+      token: json.token,
+      user: json.user as StudioAuthUser,
+      sharedGrants: json.sharedGrants as Record<string, { enabled: boolean; capCredits: number | null; usedCredits?: number }>,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Login request failed',
+    };
+  }
+}
+
+export async function logoutViaBackend(): Promise<void> {
+  try {
+    await authFetch(`${LOCAL_MCP_BASE}/api/auth/logout`, { method: 'POST' });
+  } catch {
+    // ignore network failure on sign out
+  } finally {
+    setStoredAuthToken(null);
+  }
+}
+
+export async function fetchAuthMe(): Promise<AuthMePayload | null> {
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/auth/me`);
+    if (!res.ok) return null;
+    const json = (await res.json().catch(() => null)) as AuthMePayload | null;
+    if (!json || json.ok === false || !json.user) return null;
+    return json;
+  } catch {
+    return null;
+  }
+}
+
+export async function updateAuthProfileViaBackend(payload: {
+  displayName?: string;
+  email?: string;
+  passcode?: string;
+}): Promise<{ ok: boolean; user?: StudioAuthUser; error?: string }> {
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/auth/profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      user?: StudioAuthUser;
+      error?: string;
+    };
+    return {
+      ok: Boolean(res.ok && json.ok !== false),
+      user: json.user,
+      error: json.error,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Profile update failed' };
+  }
+}
+
+export async function updateUserVaultViaBackend(payload: {
+  byok?: Partial<BYOKCredentials>;
+  billingMeta?: Record<string, BillingMetaEntry>;
+}): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/user/vault`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    return { ok: Boolean(res.ok && json.ok !== false), error: json.error };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Vault save failed' };
+  }
+}
+
+export async function inviteTeamMemberViaBackend(payload: {
+  email: string;
+  displayName: string;
+  passcode: string;
+  sharedGrants?: Record<string, { enabled: boolean; capCredits: number | null }>;
+}): Promise<{ ok: boolean; member?: TeamMemberSummary; error?: string }> {
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/team/invites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      member?: TeamMemberSummary;
+      error?: string;
+    };
+    return {
+      ok: Boolean(res.ok && json.ok !== false),
+      member: json.member,
+      error: json.error,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Invite creation failed' };
+  }
+}
+
+export async function updateMemberGrantsViaBackend(
+  userId: string,
+  payload: {
+    grants: Record<string, { enabled: boolean; capCredits: number | null }>;
+    resetUsagePlatformId?: string;
+    passcode?: string;
+    displayName?: string;
+  }
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await authFetch(
+      `${LOCAL_MCP_BASE}/api/team/members/${encodeURIComponent(userId)}/grants`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    return { ok: Boolean(res.ok && json.ok !== false), error: json.error };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Failed to update grants' };
+  }
+}
+
+export async function deleteTeamMemberViaBackend(userId: string): Promise<boolean> {
+  try {
+    const res = await authFetch(
+      `${LOCAL_MCP_BASE}/api/team/members/${encodeURIComponent(userId)}`,
+      { method: 'DELETE' }
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchCreditsSummaryViaBackend(
+  refresh = false
+): Promise<CreditsSummaryResponse> {
+  try {
+    const res = await authFetch(
+      `${LOCAL_MCP_BASE}/api/credits/summary?refresh=${refresh ? '1' : '0'}`
+    );
+    const json = (await res.json().catch(() => ({}))) as Partial<CreditsSummaryResponse>;
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        platforms: [],
+        sharedPools: [],
+        expiringSoonAlerts: [],
+        error: json.error || `HTTP ${res.status}`,
+      };
+    }
+    return {
+      ok: true,
+      updatedAt: json.updatedAt,
+      platforms: Array.isArray(json.platforms) ? json.platforms : [],
+      sharedPools: Array.isArray(json.sharedPools) ? json.sharedPools : [],
+      expiringSoonAlerts: Array.isArray(json.expiringSoonAlerts) ? json.expiringSoonAlerts : [],
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      platforms: [],
+      sharedPools: [],
+      expiringSoonAlerts: [],
+      error: err instanceof Error ? err.message : 'Failed to load credits summary',
+    };
+  }
+}
+
+export async function fetchCreditQuoteViaBackend(payload: {
+  platformId: PlatformId | string;
+  modelId: string;
+  modality?: ModelModality;
+  resolution?: string;
+  durationSec?: number;
+  aspectRatio?: string;
+  batchCount?: number;
+  quality?: string;
+  useUnlim?: boolean;
+  prompt?: string;
+  live?: boolean;
+}): Promise<CreditQuoteResponse | null> {
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/credits/quote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return null;
+    const json = (await res.json().catch(() => null)) as CreditQuoteResponse | null;
+    if (!json || json.ok === false) return null;
+    return json;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchAssetsViaBackend(
+  source: 'all' | 'storage' | 'dreamina' | 'higgsfield' = 'all',
+  refresh = false
+): Promise<{ ok: boolean; items: CloudAssetItem[]; error?: string }> {
+  try {
+    const res = await authFetch(
+      `${LOCAL_MCP_BASE}/api/assets?source=${encodeURIComponent(source)}&refresh=${refresh ? '1' : '0'}`
+    );
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      items?: CloudAssetItem[];
+      error?: string;
+    };
+    if (!res.ok || json.ok === false) {
+      return { ok: false, items: [], error: json.error || `HTTP ${res.status}` };
+    }
+    return {
+      ok: true,
+      items: Array.isArray(json.items) ? json.items : [],
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      items: [],
+      error: err instanceof Error ? err.message : 'Failed to load assets',
+    };
+  }
+}
+
+export async function importAssetViaBackend(payload: {
+  url: string;
+  kind?: 'image' | 'video' | 'audio';
+  title?: string;
+  platformId?: string;
+}): Promise<{ ok: boolean; item?: CloudAssetItem; error?: string }> {
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/assets/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      item?: CloudAssetItem;
+      error?: string;
+    };
+    if (!res.ok || json.ok === false || !json.item) {
+      return { ok: false, error: json.error || `Asset import failed (HTTP ${res.status})` };
+    }
+    return { ok: true, item: json.item };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Asset import failed' };
   }
 }

@@ -264,11 +264,12 @@ export type KeyframeBridgeCurve =
   | 'whip-pan';
 
 export type StudioPresetId =
-  | 'salt-terracotta'
   | 'kyoto-joinery'
   | 'alpine-pass'
   | 'cross-platform-blueprint'
   | 'blank';
+
+export type CreditSourcePreference = 'auto' | 'own' | 'shared';
 
 export interface CanvasNode {
   id: string;
@@ -287,6 +288,7 @@ export interface CanvasNode {
   audioUrl?: string;
   platformId?: PlatformId;
   connectionMode?: ConnectionTransport;
+  creditSource?: CreditSourcePreference;
   modelId?: string;
   batchCount?: 1 | 2 | 4;
   negativePrompt?: string;
@@ -479,6 +481,9 @@ export interface ConnectionsStatusSnapshot {
   mcpServers?: ExternalMcpServerRecord[];
   mcpBalance?: McpBalanceInfo;
   mcpBalances?: Record<string, McpBalanceInfo>;
+  ownConnected?: string[];
+  sharedAvailable?: SharedCreditGrant[];
+  connectedPlatforms?: string[];
   browserSessionOpen?: boolean;
   activeBrowserProfileDir?: string;
 }
@@ -551,6 +556,8 @@ export interface DiskProjectMeta {
   edgeCount: number;
   snapshotCount: number;
   updatedAt: number;
+  ownerId?: string;
+  isSharedWithTeam?: boolean;
 }
 
 export interface DiskSnapshotItem {
@@ -566,6 +573,8 @@ export interface DiskProjectRecord {
   state: Record<string, unknown>;
   snapshots?: DiskSnapshotItem[];
   updatedAt: number;
+  ownerId?: string;
+  isSharedWithTeam?: boolean;
 }
 
 export interface BridgeIncomingEvent {
@@ -578,7 +587,8 @@ export interface BridgeIncomingEvent {
     | 'bridge_job_complete'
     | 'dispatch_bridge_job'
     | 'mcp_oauth_update'
-    | 'dreamflow_mcp_oauth_complete';
+    | 'dreamflow_mcp_oauth_complete'
+    | 'canvas_sync_update';
   source?: BrowserPlatformTarget | 'flow' | 'manual' | string;
   jobId?: string;
   target?: BrowserPlatformTarget | string;
@@ -593,6 +603,11 @@ export interface BridgeIncomingEvent {
   error?: string;
   title?: string;
   prompt?: string;
+  projectId?: string;
+  updatedBy?: string;
+  name?: string;
+  state?: Record<string, unknown>;
+  updatedAt?: number;
   job?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
@@ -603,4 +618,148 @@ export interface StudioHistorySnapshot {
   multiframes: MultiframeCard[];
   bridges: MultiframeBridge[];
   timelineClips: TimelineClip[];
+}
+
+export interface StudioAuthUser {
+  id: string;
+  email: string;
+  displayName: string;
+  role: 'owner' | 'member';
+}
+
+export interface BillingMetaEntry {
+  resetDay?: number;
+  manualExpiresAt?: string;
+  manualBudgetCredits?: number;
+}
+
+export interface SharedCreditGrant {
+  platformId: string;
+  enabled: boolean;
+  capCredits: number | null;
+  usedCredits?: number;
+  remainingCredits?: number | null;
+  ownerName?: string;
+}
+
+export interface TeamMemberSummary {
+  id: string;
+  email: string;
+  displayName: string;
+  role: 'owner' | 'member';
+  invitePasscodePreview?: string;
+  sharedGrants: Record<string, { enabled: boolean; capCredits: number | null; usedCredits?: number }>;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface CreditUsageLedgerItem {
+  id: string;
+  userId: string;
+  userName?: string;
+  platformId: string;
+  modelId: string;
+  creditSource?: 'own' | 'shared';
+  creditsUsed: number;
+  estimatedUsd?: number | null;
+  timestamp: number;
+  status?: string;
+}
+
+export interface AuthBootstrapInfo {
+  ok: boolean;
+  authEnabled: boolean;
+  isLocalhost: boolean;
+  ownerDefaultEmail: string;
+  r2Configured: boolean;
+}
+
+export interface AuthMePayload {
+  ok: boolean;
+  user: StudioAuthUser;
+  sharedGrants: Record<string, { enabled: boolean; capCredits: number | null; usedCredits?: number }>;
+  ownByok?: Partial<BYOKCredentials>;
+  billingMeta?: Record<string, BillingMetaEntry>;
+  teamMembers?: TeamMemberSummary[];
+  usageLedger?: CreditUsageLedgerItem[];
+}
+
+export interface CreditExpiryBucket {
+  credits: number;
+  expiresAt: string;
+  daysRemaining: number;
+}
+
+export interface PlatformCreditSummary {
+  platformId: string;
+  name?: string;
+  connected?: boolean;
+  configured?: boolean;
+  credits?: number | null;
+  limit?: number | null;
+  unit?: string;
+  plan?: string;
+  vipLevel?: string;
+  vipLevelExpiresAt?: string;
+  tokenExpiresAt?: string;
+  expiresAt?: string;
+  nextResetAt?: string;
+  supportsUnlimited?: boolean;
+  buckets?: CreditExpiryBucket[];
+  billingMeta?: BillingMetaEntry;
+  calibratedRates?: Record<string, number>;
+  account?: string;
+  spentCredits?: number;
+}
+
+export interface SharedPoolSummary {
+  platformId: string;
+  enabled: boolean;
+  capCredits: number | null;
+  usedCredits: number;
+  remainingCredits: number | null;
+  ownerName?: string;
+}
+
+export interface CreditExpiryAlert {
+  platformId: string;
+  credits: number;
+  expiresAt: string;
+  daysRemaining: number;
+  severity?: 'warning' | 'urgent' | 'info';
+}
+
+export interface CreditsSummaryResponse {
+  ok: boolean;
+  updatedAt?: number;
+  platforms: PlatformCreditSummary[];
+  sharedPools: SharedPoolSummary[];
+  expiringSoonAlerts: CreditExpiryAlert[];
+  error?: string;
+}
+
+export interface CreditQuoteResponse {
+  ok: boolean;
+  platformId: string;
+  modelId: string;
+  estimatedCredits: number | null;
+  estimatedUsd: number | null;
+  unit: 'credits' | 'chars' | 'usd' | 'unlimited';
+  isUnlimitedEligible: boolean;
+  source: 'dreamina-cli-quote' | 'calibrated-delta' | 'rate-table';
+  label: string;
+  error?: string;
+}
+
+export interface CloudAssetItem {
+  id: string;
+  title: string;
+  kind: 'image' | 'video' | 'audio';
+  url: string;
+  thumbnailUrl?: string;
+  source: 'storage' | 'r2' | 'dreamina' | 'higgsfield';
+  platformId?: string;
+  createdAt: string;
+  sizeBytes?: number;
+  prompt?: string;
 }

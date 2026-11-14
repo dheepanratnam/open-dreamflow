@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import type {
   AspectRatio,
+  AuthBootstrapInfo,
+  AuthMePayload,
+  BillingMetaEntry,
   BridgeIncomingEvent,
   BrowserPlatformTarget,
   BYOKCredentials,
@@ -9,7 +12,11 @@ import type {
   CanvasNode,
   ChatMessageItem,
   ChromeBridgeState,
+  CloudAssetItem,
+  CreditsSummaryResponse,
+  CreditUsageLedgerItem,
   DiskProjectMeta,
+  DiskProjectRecord,
   DiskSnapshotItem,
   DreaminaSkill,
   DreaminaToolId,
@@ -30,9 +37,12 @@ import type {
   ProviderId,
   ProviderVerificationResult,
   ResolutionTier,
+  SharedCreditGrant,
+  StudioAuthUser,
   StudioHistorySnapshot,
   StudioPresetId,
   StyleDNAPayload,
+  TeamMemberSummary,
   TimelineClip,
 } from '../types/studio';
 import {
@@ -74,13 +84,18 @@ import {
   compileTimelineViaBackend,
   deleteDiskProject,
   deleteExternalMcpServer,
+  deleteTeamMemberViaBackend,
   disconnectDreaminaMcpViaBackend,
   discoverMcpTools,
   enqueueLiveBridgeJobViaBackend,
   executeStudioGeneration,
   exportDiskProjectBundle,
   extractLastFrameViaBackend,
+  fetchAssetsViaBackend,
+  fetchAuthBootstrapInfo,
+  fetchAuthMe,
   fetchConnectionsStatusViaBackend,
+  fetchCreditsSummaryViaBackend,
   fetchPlatformCatalogViaBackend,
   generateAudioViaBackend,
   generateNodeViaBackend,
@@ -90,13 +105,18 @@ import {
   getDreaminaMcpStatusViaBackend,
   getMcpOAuthStatusViaBackend,
   getProviderDisplayLabel,
+  getStoredAuthToken,
+  importAssetViaBackend,
   importDiskProjectBundle,
   inpaintViaBackend,
+  inviteTeamMemberViaBackend,
   isCloudOrBridgeProvider,
   keyframeBridgeViaBackend,
   launchConnectedBrowserViaBackend,
   listDiskProjects,
   listExternalMcpServers,
+  loginViaBackend,
+  logoutViaBackend,
   normalizeBackendMediaUrl,
   outpaintViaBackend,
   pingChromeBridge,
@@ -107,9 +127,14 @@ import {
   removeBgViaBackend,
   renderVideoViaBackend,
   saveDiskProject,
+  setAuthModeActive,
+  setStoredAuthToken,
   sliceGridViaBackend,
   startDreaminaMcpConnectViaBackend,
   startMcpOAuthViaBackend,
+  updateAuthProfileViaBackend,
+  updateMemberGrantsViaBackend,
+  updateUserVaultViaBackend,
   uploadMediaViaBackend,
   upscaleViaBackend,
   verifyProviderViaBackend,
@@ -348,6 +373,26 @@ export interface StudioState {
   lastVideoPlatformId: PlatformId;
   lastAudioPlatformId: PlatformId;
   lastFailedPlatformId: PlatformId | null;
+
+  // Stage 11: Invite Auth, Shared Credits, Intelligence, Asset Sync & Cache
+  authBootChecked: boolean;
+  authUser: StudioAuthUser | null;
+  authBootstrapInfo: AuthBootstrapInfo | null;
+  sharedGrants: Record<string, { enabled: boolean; capCredits: number | null; usedCredits?: number }>;
+  billingMeta: Record<string, BillingMetaEntry>;
+  teamMembers: TeamMemberSummary[];
+  usageLedger: CreditUsageLedgerItem[];
+  ownConnectedPlatforms: string[];
+  sharedAvailablePools: SharedCreditGrant[];
+  creditsSummary: CreditsSummaryResponse | null;
+  creditsSummaryLoading: boolean;
+  teamCreditsModalOpen: boolean;
+  teamCreditsModalTab: 'credits' | 'team' | 'account';
+  projectCache: Record<string, DiskProjectRecord>;
+  activeProjectSharedWithTeam: boolean;
+  assetsCatalog: CloudAssetItem[];
+  assetsLoading: boolean;
+  assetsSourceFilter: 'all' | 'storage' | 'dreamina' | 'higgsfield';
   workflowRunning: boolean;
   workflowProgressText: string | null;
   directorModalOpen: boolean;
@@ -674,6 +719,37 @@ export interface StudioState {
   }) => Promise<string | null>;
   sendChatAssistantPrompt: (userText: string) => Promise<void>;
   runAutonomousDirectorAgent: (creativeBrief: string) => Promise<void>;
+
+  // Stage 11 actions
+  initAuthAndBoot: () => Promise<void>;
+  loginStudioUser: (email: string, passcode: string) => Promise<{ ok: boolean; error?: string }>;
+  logoutStudioUser: () => Promise<void>;
+  refreshAuthMe: () => Promise<AuthMePayload | null>;
+  updateOwnProfile: (payload: { displayName?: string; email?: string; passcode?: string }) => Promise<{ ok: boolean; error?: string }>;
+  updateBillingMetaEntry: (platformId: string, entry: BillingMetaEntry) => Promise<void>;
+  inviteTeamMember: (payload: {
+    email: string;
+    displayName: string;
+    passcode: string;
+    sharedGrants?: Record<string, { enabled: boolean; capCredits: number | null }>;
+  }) => Promise<{ ok: boolean; member?: TeamMemberSummary; error?: string }>;
+  updateTeamMemberGrants: (
+    userId: string,
+    payload: {
+      grants: Record<string, { enabled: boolean; capCredits: number | null }>;
+      resetUsagePlatformId?: string;
+      passcode?: string;
+      displayName?: string;
+    }
+  ) => Promise<boolean>;
+  removeTeamMember: (userId: string) => Promise<boolean>;
+  refreshCreditsSummary: (refresh?: boolean) => Promise<void>;
+  openTeamCreditsModal: (tab?: 'credits' | 'team' | 'account') => void;
+  closeTeamCreditsModal: () => void;
+  toggleShareActiveProjectWithTeam: (shared: boolean) => Promise<void>;
+  refreshAssetsCatalog: (source?: 'all' | 'storage' | 'dreamina' | 'higgsfield', forceRefresh?: boolean) => Promise<void>;
+  placeCloudAssetOnCanvas: (item: CloudAssetItem) => Promise<void>;
+  handleCanvasSyncWsEvent: (ev: BridgeIncomingEvent) => void;
 }
 
 const initialGraph = buildInitialStudioGraph();
@@ -685,8 +761,8 @@ const defaultMcpTools = getDefaultDiscoveredMcpTools(
 );
 
 export const useStudioStore = create<StudioState>((set, get) => ({
-  activeProjectId: 'salt-terracotta',
-  projectTitle: 'Salt & Terracotta — Coastal Short',
+  activeProjectId: 'canvas_default',
+  projectTitle: 'Untitled Canvas',
   saveStatus: 'saved',
   diskProjects: [],
   projectSnapshots: [],
@@ -730,6 +806,24 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   lastVideoPlatformId: 'higgsfield',
   lastAudioPlatformId: 'elevenlabs',
   lastFailedPlatformId: null,
+  authBootChecked: false,
+  authUser: null,
+  authBootstrapInfo: null,
+  sharedGrants: {},
+  billingMeta: {},
+  teamMembers: [],
+  usageLedger: [],
+  ownConnectedPlatforms: [],
+  sharedAvailablePools: [],
+  creditsSummary: null,
+  creditsSummaryLoading: false,
+  teamCreditsModalOpen: false,
+  teamCreditsModalTab: 'credits',
+  projectCache: {},
+  activeProjectSharedWithTeam: false,
+  assetsCatalog: [],
+  assetsLoading: false,
+  assetsSourceFilter: 'all',
   workflowRunning: false,
   workflowProgressText: null,
   directorModalOpen: false,
@@ -799,18 +893,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   playheadSec: 0,
   isPlayingTimeline: false,
   timelineMuted: true,
-  masterRenderUrl: '/media/real_salt_terracotta_master.mp4',
+  masterRenderUrl: null,
   isRenderingMasterMp4: false,
   appSynthesizing: false,
   appRenderLog: [],
-  chatMessages: [
-    {
-      id: 'chat-welcome',
-      role: 'assistant',
-      text: 'Dreamina Director Chat ready. Describe a multi-shot scene to build on the canvas, or select a video node and describe a multi-turn edit.',
-      timestamp: Date.now(),
-    },
-  ],
+  chatMessages: [],
 
   setProjectTitle: (projectTitle) => set({ projectTitle }),
   setActiveView: (activeView) => set({ activeView }),
@@ -1017,7 +1104,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         timelineClips: built.timelineClips,
         selectedNodeIds: [],
         promptText: built.nodes.find((n) => n.kind === 'video')?.prompt || '',
-        masterRenderUrl: '/media/real_salt_terracotta_master.mp4',
+        masterRenderUrl: null,
         panX: 84,
         panY: 54,
         zoom: 0.68,
@@ -2321,8 +2408,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const seed = Math.floor(Math.random() * 9000) + 100;
     const liveBadge = getLiveStatusBadgeForProvider(activeProvider);
     const defaultSourceImg = isGrid9
-      ? '/media/real_contact_9grid.jpg'
-      : anchorNode?.imageUrl || refImages[0] || '/media/real_courtyard_sun.jpg';
+      ? renderContactSheetDataUrl(3, 3, effectivePrompt || '9-Grid Shot Sheet', seed).dataUrl
+      : anchorNode?.imageUrl ||
+        refImages[0] ||
+        renderShotDataUrl(promptAspect, {
+          prompt: effectivePrompt || 'Studio Frame',
+          seed,
+        });
 
     const updateInPlace = Boolean(anchorNode && anchorNode.kind === targetKind);
     const targetNodeId = updateInPlace && anchorNode ? anchorNode.id : `node_gen_${Date.now()}`;
@@ -2464,7 +2556,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     if (!imageUrl && !isCloudOrBridgeProvider(activeProvider)) {
       if (isGrid9) {
-        imageUrl = '/media/real_contact_9grid.jpg';
+        const sheet = renderContactSheetDataUrl(3, 3, effectivePrompt, seed);
+        imageUrl = sheet.dataUrl;
         gridSpec = { rows: 3, cols: 3, labels: NINE_GRID_LABELS };
       } else if (isGrid4) {
         const sheet = renderContactSheetDataUrl(2, 2, effectivePrompt, seed);
@@ -2551,7 +2644,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       return;
     }
 
-    const sourceImage = node.imageUrl || '/media/real_courtyard_sun.jpg';
+    const sourceImage =
+      node.imageUrl ||
+      renderShotDataUrl(node.aspectRatio, {
+        prompt: node.prompt || 'Inpaint Source',
+        seed: node.seed,
+      });
     get().pushHistory();
 
     const apiKey = getActiveApiKeyForProvider(activeProvider, byok);
@@ -2672,7 +2770,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       return;
     }
 
-    const sourceImage = node.imageUrl || '/media/real_courtyard_sun.jpg';
+    const sourceImage =
+      node.imageUrl ||
+      renderShotDataUrl(node.aspectRatio, {
+        prompt: node.prompt || 'Inpaint Source',
+        seed: node.seed,
+      });
     get().pushHistory();
 
     const apiKey = getActiveApiKeyForProvider(activeProvider, byok);
@@ -2781,7 +2884,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (!node) return;
     get().pushHistory();
 
-    const sourceImage = node.imageUrl || '/media/real_portrait_clara.jpg';
+    const sourceImage =
+      node.imageUrl ||
+      renderShotDataUrl(node.aspectRatio, {
+        prompt: node.prompt || 'Cutout Subject',
+        seed: node.seed,
+      });
     get().updateNodeFields(nodeId, { editBadge: 'Removing BG…' });
 
     const live = await removeBgViaBackend(sourceImage);
@@ -2854,7 +2962,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (!node) return;
     get().pushHistory();
 
-    const sourceImage = node.imageUrl || '/media/real_courtyard_sun.jpg';
+    const sourceImage =
+      node.imageUrl ||
+      renderShotDataUrl(node.aspectRatio, {
+        prompt: node.prompt || 'Inpaint Source',
+        seed: node.seed,
+      });
     get().updateNodeFields(nodeId, { editBadge: `Upscaling ${targetRes}…` });
 
     const live = await upscaleViaBackend(sourceImage);
@@ -2912,7 +3025,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (node.kind === 'video') {
       const ff = await renderVideoViaBackend({
         prompt: `${node.prompt} (seed ${nextSeed})`,
-        imageUrl: node.imageUrl || '/media/real_courtyard_sun.jpg',
+        imageUrl:
+          node.imageUrl ||
+          renderShotDataUrl(node.aspectRatio, { prompt: node.prompt, seed: nextSeed }),
         durationSec: node.durationSec || 6,
         aspectRatio: node.aspectRatio,
         mood: inferMoodFromPrompt(node.prompt),
@@ -2965,7 +3080,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       node.kind === 'contact-sheet' && node.imageUrl
         ? node.imageUrl
         : rows === 3 && cols === 3
-        ? '/media/real_contact_9grid.jpg'
+        ? renderContactSheetDataUrl(3, 3, node.prompt || '9-Grid Shot Sheet', node.seed).dataUrl
         : node.imageUrl;
 
     get().showToast(`Slicing ${rows}×${cols} sheet via :3001 FFmpeg...`);
@@ -3076,7 +3191,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       resolution: node.resolution,
       mode: 'video',
       referenceImages: node.imageUrl ? [node.imageUrl] : [],
-      firstFrameDataUrl: node.imageUrl || '/media/real_courtyard_sun.jpg',
+      firstFrameDataUrl:
+        node.imageUrl ||
+        renderShotDataUrl(node.aspectRatio, {
+          prompt: node.prompt || 'Video First Frame',
+          seed: node.seed,
+        }),
       cameraMotion: 'Dolly In',
       mood: inferMoodFromPrompt(node.prompt),
       byok,
@@ -3105,10 +3225,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       height: 320,
       aspectRatio: '16:9',
       status: 'ready',
-      imageUrl: node.imageUrl || '/media/real_courtyard_sun.jpg',
-      videoUrl:
-        exec.videoUrl ||
-        (!isCloudOrBridgeProvider(activeProvider) ? '/media/real_shot01_courtyard.mp4' : undefined),
+      imageUrl:
+        node.imageUrl ||
+        renderShotDataUrl(node.aspectRatio, {
+          prompt: node.prompt || 'Video Frame',
+          seed: node.seed,
+        }),
+      videoUrl: exec.videoUrl,
       seed: node.seed,
       resolution: node.resolution,
       durationSec,
@@ -3160,9 +3283,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     const mood = inferMoodFromPrompt(deltaPrompt);
     const branchKeyframe =
-      mood === 'golden'
-        ? '/media/real_atelier_interior.jpg'
-        : parent.imageUrl || '/media/real_coastal_cliffs.jpg';
+      parent.imageUrl ||
+      renderShotDataUrl('16:9', {
+        prompt: deltaPrompt || 'Multi-Turn Branch Keyframe',
+        seed: parent.seed + 211,
+        cameraLabel: mood === 'golden' ? 'Golden Hour' : 'Daylight',
+      });
 
     const liveBadge = getLiveStatusBadgeForProvider(
       activeProvider,
@@ -3209,9 +3335,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       aspectRatio: '16:9',
       status: 'ready',
       imageUrl: branchKeyframe,
-      videoUrl:
-        exec.videoUrl ||
-        (!isCloudOrBridgeProvider(activeProvider) ? '/media/real_shot03_atelier.mp4' : undefined),
+      videoUrl: exec.videoUrl,
       seed: parent.seed + 211,
       resolution: parent.resolution,
       durationSec: parent.durationSec || 6,
@@ -3294,13 +3418,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       (startNodeId ? nodes.find((nn) => nn.id === startNodeId)?.imageUrl : undefined) ||
       node.startImageUrl ||
       node.imageUrl ||
-      '/media/real_courtyard_sun.jpg';
+      renderShotDataUrl('16:9', { prompt: node.prompt || 'Start Keyframe', seed: node.seed });
 
     const endImageUrl =
       opts?.endImageUrl ||
       (endNodeId ? nodes.find((nn) => nn.id === endNodeId)?.imageUrl : undefined) ||
       node.endImageUrl ||
-      '/media/real_coastal_cliffs.jpg';
+      renderShotDataUrl('16:9', { prompt: node.prompt || 'End Keyframe', seed: node.seed + 11 });
 
     const motionCurve: KeyframeBridgeCurve =
       opts?.motionCurve || node.motionCurve || 'ease-in-out';
@@ -3375,8 +3499,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
       finalVideoUrl =
         live.fullUrl ||
-        live.videoUrl ||
-        (!isCloudOrBridgeProvider(activeProvider) ? '/media/real_shot02_bridge.mp4' : undefined);
+        live.videoUrl;
       finalDuration = live.durationSec || durationSec;
       providerLabelUsed = live.ok
         ? isCloudOrBridgeProvider(activeProvider)
@@ -3500,8 +3623,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       durationSec,
     });
 
-    const finalAudioUrl =
-      live.fullUrl || live.audioUrl || '/media/real_coastal_foley.mp3';
+    const finalAudioUrl = live.fullUrl || live.audioUrl;
     const nextSeed = node.seed + 23;
     const finalWaveform =
       live.waveform && live.waveform.length > 0
@@ -3557,19 +3679,23 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const isVidTool =
       mcpNode.mcpTool.name.includes('video') || mcpNode.mcpTool.name.includes('scene');
 
+    const firstFrame = renderShotDataUrl('16:9', {
+      prompt: mcpNode.prompt || mcpNode.mcpTool.name,
+      seed: mcpNode.seed,
+    });
     const exec = await executeStudioGeneration({
       provider: 'mcp-router',
       prompt: mcpNode.prompt,
       aspectRatio: '16:9',
       durationSec: 6,
       mode: isVidTool ? 'video' : 'image',
-      firstFrameDataUrl: '/media/real_courtyard_sun.jpg',
+      firstFrameDataUrl: firstFrame,
       mcpTool: mcpNode.mcpTool,
       byok: get().byok,
     });
 
     const outId = `node_mcp_out_${Date.now()}`;
-    const img = exec.imageUrl || '/media/real_courtyard_sun.jpg';
+    const img = exec.imageUrl || firstFrame;
 
     const outNode: CanvasNode = {
       id: outId,
@@ -3583,7 +3709,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       aspectRatio: isVidTool ? '16:9' : '1:1',
       status: 'ready',
       imageUrl: img,
-      videoUrl: exec.videoUrl || (isVidTool ? '/media/real_shot01_courtyard.mp4' : undefined),
+      videoUrl: exec.videoUrl,
       seed: mcpNode.seed + 83,
       resolution: '1080p',
       durationSec: isVidTool ? 6 : undefined,
@@ -3679,8 +3805,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const idx = multiframes.length + 1;
     const prompt =
       srcNode?.prompt ||
-      `Keyframe 0${idx} · @Clara_Vidal & @Leica_M6 natural daylight camera progression`;
-    const imageUrl = srcNode?.imageUrl || '/media/real_courtyard_sun.jpg';
+      `Keyframe 0${idx} · Natural daylight architectural camera progression`;
+    const imageUrl =
+      srcNode?.imageUrl ||
+      renderShotDataUrl('16:9', { prompt, seed: 300 + idx * 41 });
 
     const newCard: MultiframeCard = {
       id: `mf_${Date.now()}`,
@@ -3789,8 +3917,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         mood: inferMoodFromPrompt(toCard.prompt),
       });
 
-      const resolvedVideoUrl =
-        ff.videoUrl || fromCard.videoUrl || '/media/real_shot02_bridge.mp4';
+      const resolvedVideoUrl = ff.videoUrl || fromCard.videoUrl;
       const nodeId = `node_mf_seq_${Date.now()}_${idx}`;
       const interactionId = ff.interactionId || `int_mf_${idx + 1}`;
 
@@ -3883,9 +4010,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         mcpToolName: t.name,
       }));
 
-      const masterFile = health.mediaFiles.find(
-        (f) => f === 'real_salt_terracotta_master.mp4' || f.startsWith('master_cut_')
-      );
+      const masterFile = health.mediaFiles.find((f) => f.startsWith('master_cut_'));
       const nextMaster =
         s.masterRenderUrl === null
           ? null
@@ -3927,6 +4052,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       // ignore
     }
     set({ byok: next });
+    if (get().authUser) {
+      void updateUserVaultViaBackend({ byok: next });
+    }
   },
 
   clearByokKeys: () => {
@@ -4120,10 +4248,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         sourceNodeId: node.id,
         startSec: 0,
         durationSec: node.durationSec || 12,
-        audioUrl: node.audioUrl || '/media/real_coastal_foley.mp3',
+        audioUrl: node.audioUrl,
         waveform: node.waveform || createDefaultWaveform(node.seed, 64),
         promptOrDialogue: node.prompt,
-        lipSyncCharacter: track === 'voice' ? '@Clara_Vidal' : undefined,
+        lipSyncCharacter: track === 'voice' ? node.elementHandles[0] : undefined,
         sfxKind: track === 'sfx' ? 'coastal-surf' : undefined,
         color: '#252525',
       };
@@ -4249,9 +4377,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       startSec: endTrack,
       durationSec,
       promptOrDialogue: dialogueOrSfx,
-      audioUrl: track === 'sfx' ? '/media/real_coastal_foley.mp3' : undefined,
+      audioUrl: undefined,
       waveform: createDefaultWaveform(Math.floor(Math.random() * 900) + 100, 64),
-      lipSyncCharacter: track === 'voice' ? '@Clara_Vidal' : undefined,
+      lipSyncCharacter: undefined,
       audioFreqHz: track === 'voice' ? 196 : undefined,
       sfxKind: track === 'sfx' ? 'coastal-surf' : undefined,
       color: '#252525',
@@ -4286,7 +4414,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const sourceVideoUrl = directNode?.videoUrl || targetClip?.videoUrl;
     const sourceTitle = directNode?.title || targetClip?.title || 'Shot';
     const sourcePrompt =
-      directNode?.prompt || targetClip?.promptOrDialogue || '@Clara_Vidal sunlit courtyard';
+      directNode?.prompt || targetClip?.promptOrDialogue || 'Wide sunlit architectural establishing shot';
     const sourceNodeId = directNode?.id || targetClip?.sourceNodeId;
 
     get().pushHistory();
@@ -4303,7 +4431,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
 
     if (!lastFrameUrl) {
-      lastFrameUrl = '/media/real_coastal_cliffs.jpg';
+      lastFrameUrl = renderShotDataUrl('16:9', {
+        prompt: sourcePrompt,
+        seed: 888,
+        cameraLabel: 'Last Frame',
+      });
     }
 
     const parentNode = sourceNodeId ? nodes.find((n) => n.id === sourceNodeId) : undefined;
@@ -4375,7 +4507,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         } else {
           const rendered = await renderVideoViaBackend({
             prompt: clip.promptOrDialogue,
-            imageUrl: clip.thumbnailUrl || '/media/real_courtyard_sun.jpg',
+            imageUrl:
+              clip.thumbnailUrl ||
+              renderShotDataUrl('16:9', {
+                prompt: clip.promptOrDialogue || clip.title,
+                seed: clip.seed ?? 101,
+              }),
             durationSec: clip.durationSec,
           });
           if (rendered.ok && rendered.videoUrl) {
@@ -4456,7 +4593,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     set({
       projectTitle: title,
       appSynthesizing: true,
-      appRenderLog: [`Locking continuity (${selectedHandles.join(', ') || '@Clara_Vidal'})...`],
+      appRenderLog: [`Locking continuity (${selectedHandles.join(', ') || 'Scene Lock'})...`],
     });
 
     const renderedClipUrls: string[] = [];
@@ -4525,7 +4662,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
 
     if (!finalMasterUrl) {
-      finalMasterUrl = '/media/real_salt_terracotta_master.mp4';
+      finalMasterUrl = renderedClipUrls[0] || null;
     }
 
     set((s) => ({
@@ -4624,7 +4761,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   runChatQuickAction: async (action) => {
     if (action === 'sequence-3') {
       await get().sendChatAssistantPrompt(
-        'Build a 3-shot @Clara_Vidal & @Leica_M6 sunlit coastal courtyard documentary sequence'
+        'Build a 3-shot sunlit modern architectural documentary sequence'
       );
       return;
     }
@@ -4649,7 +4786,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const beforeIds = new Set(get().nodes.map((n) => n.id));
       await get().branchVideoMultiTurn(
         target.id,
-        'Shift midday daylight to warm late-afternoon amber dusk over @Clara_Vidal and limestone arches'
+        'Shift midday daylight to warm late-afternoon amber dusk across the scene'
       );
       const created = get().nodes.find((n) => !beforeIds.has(n.id));
       set((s) => ({
@@ -4660,7 +4797,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             role: 'assistant',
             text: `Rendered stateful Multi-Turn remix branch from "${target.title}":`,
             timestamp: Date.now(),
-            videoUrl: created?.videoUrl || '/media/real_shot03_atelier.mp4',
+            videoUrl: created?.videoUrl,
             nodeFocusPills: created
               ? [{ nodeId: created.id, title: created.title }]
               : undefined,
@@ -4723,7 +4860,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               ? 'Compiled H.264 + AAC Master .mp4 from Timelines 1:'
               : 'Add clips to Timelines 1 to compile a master cut.',
             timestamp: Date.now(),
-            videoUrl: masterUrl || '/media/real_salt_terracotta_master.mp4',
+            videoUrl: masterUrl || undefined,
           },
         ],
       }));
@@ -4735,7 +4872,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (params.get('recipe')) return;
 
     const isLegacySlopId = (id?: string | null) =>
-      !id || id.toLowerCase().startsWith('proto');
+      !id ||
+      id.startsWith('salt-') ||
+      id.startsWith('blueprint_') ||
+      id.toLowerCase().startsWith('proto');
 
     const listing = await listDiskProjects();
     if (!listing.ok) {
@@ -4752,17 +4892,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           };
           if (
             !isLegacySlopId(parsed.id) &&
-            Array.isArray(parsed.nodes) &&
-            parsed.nodes.length > 0
+            Array.isArray(parsed.nodes)
           ) {
             set({
-              activeProjectId: parsed.id || 'salt-terracotta',
-              projectTitle: parsed.name || 'Salt & Terracotta — Coastal Short',
+              activeProjectId: parsed.id || 'canvas_default',
+              projectTitle: parsed.name || 'Untitled Canvas',
               nodes: parsed.nodes,
-              edges: Array.isArray(parsed.edges) ? parsed.edges : get().edges,
+              edges: Array.isArray(parsed.edges) ? parsed.edges : [],
               timelineClips: Array.isArray(parsed.timelineClips)
                 ? parsed.timelineClips
-                : get().timelineClips,
+                : [],
               selectedNodeIds: [],
               saveStatus: 'local',
             });
@@ -4801,34 +4940,43 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           }
         | undefined;
       if (loaded.ok && loaded.project && st && Array.isArray(st.nodes)) {
-        set({
-          activeProjectId: loaded.project.id,
-          projectTitle: loaded.project.name || 'Untitled Canvas',
-          nodes: st.nodes,
+        const snapshots = Array.isArray(loaded.project.snapshots)
+          ? loaded.project.snapshots
+          : [];
+        set((s) => ({
+          activeProjectId: loaded.project!.id,
+          projectTitle: loaded.project!.name || 'Untitled Canvas',
+          activeProjectSharedWithTeam: Boolean(loaded.project!.isSharedWithTeam),
+          nodes: st.nodes!,
           edges: Array.isArray(st.edges) ? st.edges : [],
           elements: Array.isArray(st.elements) ? st.elements : [],
-          multiframes: Array.isArray(st.multiframes)
-            ? st.multiframes
-            : [],
+          multiframes: Array.isArray(st.multiframes) ? st.multiframes : [],
           bridges: Array.isArray(st.bridges) ? st.bridges : [],
-          timelineClips: Array.isArray(st.timelineClips)
-            ? st.timelineClips
-            : [],
-          projectSnapshots: Array.isArray(loaded.project.snapshots)
-            ? loaded.project.snapshots
-            : [],
+          timelineClips: Array.isArray(st.timelineClips) ? st.timelineClips : [],
+          projectSnapshots: snapshots,
+          projectCache: {
+            ...s.projectCache,
+            [loaded.project!.id]: {
+              id: loaded.project!.id,
+              name: loaded.project!.name || 'Untitled Canvas',
+              state: st,
+              snapshots,
+              updatedAt: Date.now(),
+              isSharedWithTeam: Boolean(loaded.project!.isSharedWithTeam),
+            },
+          },
           selectedNodeIds: [],
           promptText: '',
           saveStatus: 'saved',
-        });
+        }));
         return;
       }
     }
 
-    // Seed initial Salt & Terracotta project onto disk
+    // Seed clean blank canvas onto disk on first boot
     await get().persistActiveProjectToDisk({
       createSnapshot: true,
-      snapshotLabel: 'Initial Salt & Terracotta',
+      snapshotLabel: 'Initial Blank Canvas',
     });
   },
 
@@ -4836,6 +4984,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const {
       activeProjectId,
       projectTitle,
+      activeProjectSharedWithTeam,
       nodes,
       edges,
       elements,
@@ -4871,12 +5020,27 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       // ignore storage quota errors
     }
 
+    set((s) => ({
+      projectCache: {
+        ...s.projectCache,
+        [activeProjectId]: {
+          id: activeProjectId,
+          name: projectTitle,
+          state: payloadState,
+          snapshots: s.projectSnapshots,
+          updatedAt: Date.now(),
+          isSharedWithTeam: activeProjectSharedWithTeam,
+        },
+      },
+    }));
+
     const res = await saveDiskProject({
       id: activeProjectId,
       name: projectTitle,
       state: payloadState,
       createSnapshot: opts?.createSnapshot,
       snapshotLabel: opts?.snapshotLabel,
+      isSharedWithTeam: activeProjectSharedWithTeam,
     });
 
     if (res.ok) {
@@ -4888,67 +5052,120 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           nextSnaps = full.project!.snapshots!;
         }
       }
-      set({
+      set((s) => ({
         saveStatus: 'saved',
-        diskProjects: listing.ok ? listing.projects : get().diskProjects,
+        diskProjects: listing.ok ? listing.projects : s.diskProjects,
         projectSnapshots: nextSnaps,
-      });
+        projectCache: {
+          ...s.projectCache,
+          [activeProjectId]: {
+            id: activeProjectId,
+            name: projectTitle,
+            state: payloadState,
+            snapshots: nextSnaps,
+            updatedAt: Date.now(),
+            isSharedWithTeam: activeProjectSharedWithTeam,
+          },
+        },
+      }));
     } else {
       set({ saveStatus: 'local' });
     }
   },
 
   switchDiskProject: async (id) => {
+    const cached = get().projectCache[id];
+    const applyLoadedProject = (proj: {
+      id: string;
+      name: string;
+      state: Record<string, unknown>;
+      snapshots?: DiskSnapshotItem[];
+      isSharedWithTeam?: boolean;
+    }) => {
+      const st = (proj.state || {}) as {
+        nodes?: CanvasNode[];
+        edges?: CanvasEdge[];
+        elements?: ElementVault[];
+        multiframes?: MultiframeCard[];
+        bridges?: MultiframeBridge[];
+        timelineClips?: TimelineClip[];
+      };
+      try {
+        localStorage.setItem(ACTIVE_PROJECT_KEY, proj.id);
+      } catch {
+        // ignore
+      }
+      set((s) => ({
+        activeProjectId: proj.id,
+        projectTitle: proj.name || 'Untitled Canvas',
+        activeProjectSharedWithTeam: Boolean(proj.isSharedWithTeam),
+        nodes: Array.isArray(st.nodes) ? st.nodes : [],
+        edges: Array.isArray(st.edges) ? st.edges : [],
+        elements: Array.isArray(st.elements) ? st.elements : [],
+        multiframes: Array.isArray(st.multiframes) ? st.multiframes : [],
+        bridges: Array.isArray(st.bridges) ? st.bridges : [],
+        timelineClips: Array.isArray(st.timelineClips) ? st.timelineClips : [],
+        projectSnapshots: Array.isArray(proj.snapshots) ? proj.snapshots : [],
+        projectCache: {
+          ...s.projectCache,
+          [proj.id]: {
+            id: proj.id,
+            name: proj.name || 'Untitled Canvas',
+            state: st,
+            snapshots: Array.isArray(proj.snapshots) ? proj.snapshots : [],
+            updatedAt: Date.now(),
+            isSharedWithTeam: Boolean(proj.isSharedWithTeam),
+          },
+        },
+        selectedNodeIds: [],
+        promptText: '',
+        past: [],
+        future: [],
+        saveStatus: 'saved',
+      }));
+    };
+
+    if (cached) {
+      applyLoadedProject(cached);
+      get().showToast(`Switched to "${cached.name}"`);
+      // Refresh quietly in the background in case another team member updated a shared canvas
+      void getDiskProject(id).then((loaded) => {
+        if (loaded.ok && loaded.project && get().activeProjectId === id) {
+          applyLoadedProject(loaded.project);
+        }
+      });
+      return;
+    }
+
     const loaded = await getDiskProject(id);
     if (!loaded.ok || !loaded.project) {
       get().showToast('Could not load project from disk');
       return;
     }
-    const st = (loaded.project.state || {}) as {
-      nodes?: CanvasNode[];
-      edges?: CanvasEdge[];
-      elements?: ElementVault[];
-      multiframes?: MultiframeCard[];
-      bridges?: MultiframeBridge[];
-      timelineClips?: TimelineClip[];
-    };
-    try {
-      localStorage.setItem(ACTIVE_PROJECT_KEY, id);
-    } catch {
-      // ignore
-    }
-    set({
-      activeProjectId: loaded.project.id,
-      projectTitle: loaded.project.name,
-      nodes: Array.isArray(st.nodes) ? st.nodes : [],
-      edges: Array.isArray(st.edges) ? st.edges : [],
-      elements: Array.isArray(st.elements) ? st.elements : [],
-      multiframes: Array.isArray(st.multiframes) ? st.multiframes : [],
-      bridges: Array.isArray(st.bridges) ? st.bridges : [],
-      timelineClips: Array.isArray(st.timelineClips) ? st.timelineClips : [],
-      projectSnapshots: Array.isArray(loaded.project.snapshots)
-        ? loaded.project.snapshots
-        : [],
-      selectedNodeIds: [],
-      promptText: '',
-      past: [],
-      future: [],
-      saveStatus: 'saved',
-    });
+    applyLoadedProject(loaded.project);
     get().showToast(`Switched to "${loaded.project.name}"`);
   },
 
-  createNewBlankProject: async (name = 'Untitled canvas') => {
+  createNewBlankProject: async (name = 'Untitled Canvas') => {
     const blank = buildBlankStudioGraph();
     const newId = `canvas_${Date.now().toString(36)}`;
+    const blankState = {
+      nodes: blank.nodes,
+      edges: blank.edges,
+      elements: [] as ElementVault[],
+      multiframes: blank.multiframes,
+      bridges: blank.bridges,
+      timelineClips: blank.timelineClips,
+    };
     try {
       localStorage.setItem(ACTIVE_PROJECT_KEY, newId);
     } catch {
       // ignore
     }
-    set({
+    set((s) => ({
       activeProjectId: newId,
       projectTitle: name,
+      activeProjectSharedWithTeam: false,
       nodes: blank.nodes,
       edges: blank.edges,
       elements: [],
@@ -4956,6 +5173,17 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       bridges: blank.bridges,
       timelineClips: blank.timelineClips,
       projectSnapshots: [],
+      projectCache: {
+        ...s.projectCache,
+        [newId]: {
+          id: newId,
+          name,
+          state: blankState,
+          snapshots: [],
+          updatedAt: Date.now(),
+          isSharedWithTeam: false,
+        },
+      },
       selectedNodeIds: [],
       promptText: '',
       masterRenderUrl: null,
@@ -4964,12 +5192,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       panX: 120,
       panY: 80,
       zoom: 0.85,
-    });
-    await get().persistActiveProjectToDisk({
+    }));
+    get().showToast(`Created "${name}"`);
+    void get().persistActiveProjectToDisk({
       createSnapshot: true,
       snapshotLabel: 'Created blank canvas',
     });
-    get().showToast(`Created "${name}"`);
   },
 
   deleteSavedProject: async (id) => {
@@ -4979,14 +5207,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       return;
     }
     const listing = await listDiskProjects();
-    set({ diskProjects: listing.projects });
+    set((s) => {
+      const nextCache = { ...s.projectCache };
+      delete nextCache[id];
+      return { diskProjects: listing.projects, projectCache: nextCache };
+    });
     if (get().activeProjectId === id) {
       if (listing.projects.length > 0) {
         await get().switchDiskProject(listing.projects[0].id);
       } else {
-        get().loadPresetProject('salt-terracotta');
-        set({ activeProjectId: 'salt-terracotta' });
-        await get().persistActiveProjectToDisk();
+        await get().createNewBlankProject('Untitled Canvas');
       }
     } else {
       get().showToast('Deleted project from disk');
@@ -5637,10 +5867,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       type: 'bridge_asset',
       source,
       title: `Bridge · ${source === 'flow' || source === 'google-flow' ? 'Google Flow' : source} Frame`,
-      mediaUrl:
-        source === 'flow' || source === 'google-flow'
-          ? '/media/real_shot02_bridge.mp4'
-          : '/media/real_alpine_road.jpg',
+      mediaUrl: renderShotDataUrl('16:9', {
+        prompt: 'Natural daylight architectural composition captured via Browser Credit Bridge',
+        seed: 551,
+      }),
       prompt: 'Natural daylight architectural composition captured via Browser Credit Bridge',
     };
 
@@ -6220,6 +6450,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       ...(node.referenceFrameMode ? { referenceFrameMode: node.referenceFrameMode } : {}),
       ...(effectiveStartImg ? { startImageUrl: effectiveStartImg } : {}),
       ...(effectiveEndImg ? { endImageUrl: effectiveEndImg } : {}),
+      ...(node.creditSource ? { creditSource: node.creditSource } : {}),
       mcpServerId,
       mcpToolName,
       credentials,
@@ -6351,6 +6582,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     });
 
     void get().persistActiveProjectToDisk();
+    void get().refreshCreditsSummary(true);
     get().showToast(`Generated "${node.title}" via ${res.providerUsed || badge}`);
     return true;
   },
@@ -6559,6 +6791,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         connectedBrowserPlatforms: snap.connectedBrowserPlatforms,
         connectedMcpPlatforms: snap.connectedMcpPlatforms,
         configuredApiPlatforms: snap.configuredApiPlatforms,
+        ownConnectedPlatforms: snap.ownConnected || [],
+        sharedAvailablePools: snap.sharedAvailable || [],
         externalMcpServers: mergedExternalMcp,
         mcpBalances: nextBalances,
         lastImagePlatformId: pickForModality('image', s.lastImagePlatformId),
@@ -6888,28 +7122,25 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     await sleep(180);
     const beatDefs = [
       {
-        title: 'Videos · Beat 01 Courtyard',
-        prompt: `${creativeBrief} — Wide 35mm daylight establishing frame, @Clara_Vidal & @Leica_M6`,
+        title: 'Videos · Beat 01 Establishing',
+        prompt: `${creativeBrief} — Wide 35mm daylight establishing architectural frame`,
         dur: 6,
         curve: 'Dolly In',
-        img: '/media/real_courtyard_sun.jpg',
-        vid: '/media/real_shot01_courtyard.mp4',
+        img: renderShotDataUrl('16:9', { prompt: `${creativeBrief} Beat 01`, seed: 4201 }),
       },
       {
-        title: 'Videos · Beat 02 Headland Bridge',
-        prompt: `${creativeBrief} — Optical camera glide out toward sunlit Atlantic limestone cliffs`,
+        title: 'Videos · Beat 02 Midground Glide',
+        prompt: `${creativeBrief} — Optical camera glide across primary horizon line`,
         dur: 6,
         curve: 'Orbit 180°',
-        img: '/media/real_coastal_cliffs.jpg',
-        vid: '/media/real_shot02_bridge.mp4',
+        img: renderShotDataUrl('16:9', { prompt: `${creativeBrief} Beat 02`, seed: 4202 }),
       },
       {
-        title: 'Videos · Beat 03 Sunlit Atelier',
-        prompt: `${creativeBrief} — Quiet architectural studio table reveal in north window light`,
+        title: 'Videos · Beat 03 Studio Close',
+        prompt: `${creativeBrief} — Quiet detail reveal in soft directional window light`,
         dur: 6,
         curve: 'Crane Up',
-        img: '/media/real_atelier_interior.jpg',
-        vid: '/media/real_shot03_atelier.mp4',
+        img: renderShotDataUrl('16:9', { prompt: `${creativeBrief} Beat 03`, seed: 4203 }),
       },
     ];
 
@@ -6933,7 +7164,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       });
 
       const interactionId = ff.interactionId || `int_dir_${i + 1}_${Date.now().toString(36)}`;
-      const videoUrl = ff.videoUrl || beat.vid;
+      const videoUrl = ff.videoUrl;
 
       const sNode: CanvasNode = {
         id: `node_dir_shot_${Date.now()}_${i}`,
@@ -7001,5 +7232,348 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }));
 
     get().showToast('Built 3-shot sequence on canvas');
+  },
+
+  initAuthAndBoot: async () => {
+    const boot = await fetchAuthBootstrapInfo();
+    const isLocalhost =
+      boot.isLocalhost ||
+      (typeof window !== 'undefined' &&
+        (window.location.hostname === 'localhost' ||
+          window.location.hostname === '127.0.0.1'));
+
+    set({
+      authBootstrapInfo: boot,
+    });
+
+    const token = getStoredAuthToken();
+    const applyAuthenticatedHydration = async (me: AuthMePayload) => {
+      const mergedByok: BYOKCredentials = {
+        ...defaultByok(),
+        ...(me.ownByok || {}),
+      };
+      try {
+        localStorage.setItem(BYOK_STORAGE_KEY, JSON.stringify(mergedByok));
+      } catch {
+        // ignore
+      }
+      set({
+        authBootChecked: true,
+        authUser: me.user,
+        byok: mergedByok,
+        billingMeta: me.billingMeta || {},
+        sharedGrants: me.sharedGrants || {},
+        teamMembers: Array.isArray(me.teamMembers) ? me.teamMembers : [],
+        usageLedger: Array.isArray(me.usageLedger) ? me.usageLedger : [],
+      });
+      await Promise.all([
+        get().bootDiskPersistence(),
+        get().autoConnectLocalMcpBackend(),
+        get().refreshConnectionsStatus(),
+        get().refreshCreditsSummary(true),
+      ]);
+    };
+
+    if (token) {
+      setAuthModeActive(boot.authEnabled);
+      const me = await fetchAuthMe();
+      if (me && me.user) {
+        await applyAuthenticatedHydration(me);
+        return;
+      }
+      setStoredAuthToken(null);
+    }
+
+    if (boot.authEnabled) {
+      set({
+        authBootChecked: true,
+        authUser: null,
+      });
+      return;
+    }
+
+    setAuthModeActive(false);
+    const me = await fetchAuthMe();
+    if (me && me.user) {
+      await applyAuthenticatedHydration(me);
+      return;
+    }
+
+    if (isLocalhost) {
+      set({ authBootChecked: true });
+      await Promise.all([
+        get().bootDiskPersistence(),
+        get().autoConnectLocalMcpBackend(),
+        get().refreshConnectionsStatus(),
+        get().refreshCreditsSummary(false),
+      ]);
+    } else {
+      set({ authBootChecked: true });
+    }
+  },
+
+  loginStudioUser: async (email, passcode) => {
+    const res = await loginViaBackend(email, passcode);
+    if (!res.ok || !res.token || !res.user) {
+      return { ok: false, error: res.error || 'Invalid email or passcode' };
+    }
+    setStoredAuthToken(res.token);
+    setAuthModeActive(true);
+    set({
+      authBootChecked: true,
+      authUser: res.user,
+      sharedGrants: res.sharedGrants || {},
+      projectCache: {},
+    });
+    await get().refreshAuthMe();
+    await Promise.all([
+      get().bootDiskPersistence(),
+      get().refreshPlatformsAndExternalMcp(),
+      get().refreshConnectionsStatus(),
+      get().refreshCreditsSummary(true),
+    ]);
+    get().showToast(`Signed in as ${res.user.displayName || res.user.email}`, 'ok');
+    return { ok: true };
+  },
+
+  logoutStudioUser: async () => {
+    await logoutViaBackend();
+    setStoredAuthToken(null);
+    setAuthModeActive(true);
+    const blank = buildBlankStudioGraph();
+    set((s) => ({
+      authUser: null,
+      authBootstrapInfo: s.authBootstrapInfo
+        ? { ...s.authBootstrapInfo, authEnabled: true }
+        : {
+            ok: true,
+            authEnabled: true,
+            isLocalhost: true,
+            ownerDefaultEmail: 'owner@dreamflow.studio',
+            r2Configured: false,
+          },
+      teamCreditsModalOpen: false,
+      sharedGrants: {},
+      teamMembers: [],
+      usageLedger: [],
+      creditsSummary: null,
+      projectCache: {},
+      diskProjects: [],
+      activeProjectId: 'canvas_default',
+      projectTitle: 'Untitled Canvas',
+      activeProjectSharedWithTeam: false,
+      nodes: blank.nodes,
+      edges: blank.edges,
+      elements: [],
+      multiframes: blank.multiframes,
+      bridges: blank.bridges,
+      timelineClips: blank.timelineClips,
+      selectedNodeIds: [],
+      masterRenderUrl: null,
+    }));
+    get().showToast('Signed out');
+  },
+
+  refreshAuthMe: async () => {
+    const me = await fetchAuthMe();
+    if (!me || !me.user) return null;
+    const mergedByok: BYOKCredentials = {
+      ...defaultByok(),
+      ...(me.ownByok || {}),
+    };
+    set({
+      authUser: me.user,
+      byok: mergedByok,
+      billingMeta: me.billingMeta || {},
+      sharedGrants: me.sharedGrants || {},
+      teamMembers: Array.isArray(me.teamMembers) ? me.teamMembers : [],
+      usageLedger: Array.isArray(me.usageLedger) ? me.usageLedger : [],
+    });
+    return me;
+  },
+
+  updateOwnProfile: async (payload) => {
+    const res = await updateAuthProfileViaBackend(payload);
+    if (!res.ok) {
+      return { ok: false, error: res.error || 'Could not update profile' };
+    }
+    if (res.user) {
+      set({ authUser: res.user });
+    } else {
+      await get().refreshAuthMe();
+    }
+    get().showToast('Updated account profile', 'ok');
+    return { ok: true };
+  },
+
+  updateBillingMetaEntry: async (platformId, entry) => {
+    const nextMeta = {
+      ...get().billingMeta,
+      [platformId]: entry,
+    };
+    set({ billingMeta: nextMeta });
+    const res = await updateUserVaultViaBackend({ billingMeta: nextMeta });
+    if (res.ok) {
+      await get().refreshCreditsSummary(true);
+      get().showToast('Saved credit reset schedule', 'ok');
+    } else {
+      get().showToast(res.error || 'Failed to save billing settings', 'error');
+    }
+  },
+
+  inviteTeamMember: async (payload) => {
+    const res = await inviteTeamMemberViaBackend(payload);
+    if (!res.ok) {
+      return { ok: false, error: res.error || 'Failed to invite friend' };
+    }
+    await get().refreshAuthMe();
+    get().showToast(`Created account for ${payload.displayName}`, 'ok');
+    return { ok: true, member: res.member };
+  },
+
+  updateTeamMemberGrants: async (userId, payload) => {
+    const res = await updateMemberGrantsViaBackend(userId, payload);
+    if (!res.ok) {
+      get().showToast(res.error || 'Failed to update shared grants', 'error');
+      return false;
+    }
+    await get().refreshAuthMe();
+    await get().refreshCreditsSummary(true);
+    get().showToast('Updated shared credit permissions', 'ok');
+    return true;
+  },
+
+  removeTeamMember: async (userId) => {
+    const ok = await deleteTeamMemberViaBackend(userId);
+    if (!ok) {
+      get().showToast('Could not remove member', 'error');
+      return false;
+    }
+    await get().refreshAuthMe();
+    get().showToast('Removed team member');
+    return true;
+  },
+
+  refreshCreditsSummary: async (refresh = false) => {
+    const summary = await fetchCreditsSummaryViaBackend(refresh);
+    if (summary.ok) {
+      set({ creditsSummary: summary });
+    }
+  },
+
+  openTeamCreditsModal: (tab = 'credits') => {
+    set({ teamCreditsModalOpen: true, teamCreditsModalTab: tab });
+    void get().refreshCreditsSummary(true);
+    if (get().authUser) {
+      void get().refreshAuthMe();
+    }
+  },
+
+  closeTeamCreditsModal: () => set({ teamCreditsModalOpen: false }),
+
+  toggleShareActiveProjectWithTeam: async (shared) => {
+    set({ activeProjectSharedWithTeam: shared });
+    await get().persistActiveProjectToDisk();
+    get().showToast(
+      shared ? 'Canvas shared live with workspace members' : 'Canvas set to private',
+      'ok'
+    );
+  },
+
+  refreshAssetsCatalog: async (source, forceRefresh = false) => {
+    const targetSource = source || get().assetsSourceFilter || 'all';
+    set({ assetsLoading: true, assetsSourceFilter: targetSource });
+    const res = await fetchAssetsViaBackend(targetSource, forceRefresh);
+    set({
+      assetsCatalog: res.items || [],
+      assetsLoading: false,
+    });
+  },
+
+  placeCloudAssetOnCanvas: async (item) => {
+    let localUrl = item.url;
+    if (!localUrl.startsWith('/media/') && /^https?:\/\//i.test(item.url)) {
+      const imp = await importAssetViaBackend({
+        url: item.url,
+        kind: item.kind === 'video' ? 'video' : item.kind === 'audio' ? 'audio' : 'image',
+        title: item.title,
+        platformId: item.platformId || item.source,
+      });
+      if (imp.ok && imp.item?.url) {
+        localUrl = imp.item.url;
+      }
+    }
+
+    get().pushHistory();
+    const isVideo = item.kind === 'video';
+    const maxRight = get().nodes.reduce((acc, n) => Math.max(acc, n.x + n.width), 320);
+    const id = `node_asset_${Date.now().toString(36)}`;
+    const newNode: CanvasNode = {
+      id,
+      kind: isVideo ? 'video' : 'image',
+      title: item.title || (isVideo ? 'Imported Video' : 'Imported Image'),
+      prompt: item.prompt || item.title || '',
+      x: maxRight + 80,
+      y: 200,
+      width: isVideo ? 568 : 340,
+      height: isVideo ? 320 : 260,
+      aspectRatio: '16:9',
+      status: 'ready',
+      imageUrl: isVideo ? item.thumbnailUrl : localUrl,
+      videoUrl: isVideo ? localUrl : undefined,
+      seed: Math.floor(Math.random() * 9000) + 100,
+      resolution: '1080p',
+      platformId: item.platformId as PlatformId | undefined,
+      elementHandles: extractHandles(item.prompt || ''),
+      layers: isVideo ? [] : createDefaultLayers(localUrl),
+      providerUsed:
+        item.source === 'dreamina'
+          ? 'Dreamina Library'
+          : item.source === 'higgsfield'
+          ? 'Higgsfield Library'
+          : 'Cloud Storage',
+      createdAt: Date.now(),
+    };
+    set((s) => ({
+      nodes: [...s.nodes, newNode],
+      selectedNodeIds: [id],
+      activeView: 'canvas',
+    }));
+    void get().persistActiveProjectToDisk();
+    get().showToast(`Placed "${newNode.title}" onto canvas`, 'ok');
+  },
+
+  handleCanvasSyncWsEvent: (ev) => {
+    const projectId = ev.projectId;
+    if (!projectId) return;
+    if (projectId !== get().activeProjectId) {
+      set((s) => {
+        const nextCache = { ...s.projectCache };
+        delete nextCache[projectId];
+        return { projectCache: nextCache };
+      });
+      return;
+    }
+    const st = ev.state as
+      | {
+          nodes?: CanvasNode[];
+          edges?: CanvasEdge[];
+          elements?: ElementVault[];
+          multiframes?: MultiframeCard[];
+          bridges?: MultiframeBridge[];
+          timelineClips?: TimelineClip[];
+        }
+      | undefined;
+    if (!st || !Array.isArray(st.nodes)) return;
+    set((s) => ({
+      projectTitle: ev.name || s.projectTitle,
+      nodes: st.nodes!,
+      edges: Array.isArray(st.edges) ? st.edges : s.edges,
+      elements: Array.isArray(st.elements) ? st.elements : s.elements,
+      multiframes: Array.isArray(st.multiframes) ? st.multiframes : s.multiframes,
+      bridges: Array.isArray(st.bridges) ? st.bridges : s.bridges,
+      timelineClips: Array.isArray(st.timelineClips) ? st.timelineClips : s.timelineClips,
+      saveStatus: 'saved',
+    }));
   },
 }));

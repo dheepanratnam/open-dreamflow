@@ -10,9 +10,7 @@ import {
 const BACKEND_ORIGIN = LOCAL_MCP_BASE;
 
 export function isRuntimeGeneratedMediaPath(relPath: string): boolean {
-  if (!relPath.startsWith('/media/')) return false;
-  if (relPath.startsWith('/media/real_')) return false;
-  return true;
+  return relPath.startsWith('/media/');
 }
 
 export function buildCandidateUrls(src?: string): string[] {

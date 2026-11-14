@@ -26,6 +26,7 @@ import {
   Palette,
   Play,
   Plus,
+  RefreshCw,
   RotateCcw,
   Search,
   Share2,
@@ -37,14 +38,15 @@ import {
   Redo2,
   Upload,
   UserSquare2,
+  Users,
   Wand2,
   X,
   type LucideIcon,
 } from 'lucide-react';
-import type { DreaminaToolId } from '../types/studio';
-import { MEDIA_ASSET_CATALOG, STUDIO_PRESETS } from '../presets/studioPresets';
+import type { DreaminaToolId, PlatformId } from '../types/studio';
 import { useStudioStore } from '../store/useStudioStore';
 import { SmartMediaImage } from './SmartMedia';
+import { PlatformBrandIcon } from './PlatformBrandIcon';
 import { downloadTextFile, generateFcpxmlDocument } from '../utils/exporters';
 
 interface DockToolItem {
@@ -106,6 +108,12 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const past = useStudioStore((s) => s.past);
   const future = useStudioStore((s) => s.future);
   const chatMessages = useStudioStore((s) => s.chatMessages);
+  const authUser = useStudioStore((s) => s.authUser);
+  const creditsSummary = useStudioStore((s) => s.creditsSummary);
+  const activeProjectSharedWithTeam = useStudioStore((s) => s.activeProjectSharedWithTeam);
+  const assetsCatalog = useStudioStore((s) => s.assetsCatalog);
+  const assetsLoading = useStudioStore((s) => s.assetsLoading);
+  const assetsSourceFilter = useStudioStore((s) => s.assetsSourceFilter);
 
   const setProjectTitle = useStudioStore((s) => s.setProjectTitle);
   const setActiveView = useStudioStore((s) => s.setActiveView);
@@ -115,7 +123,6 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const setViewport = useStudioStore((s) => s.setViewport);
   const fitAllNodesInViewport = useStudioStore((s) => s.fitAllNodesInViewport);
   const tidyUpNodes = useStudioStore((s) => s.tidyUpNodes);
-  const loadPresetProject = useStudioStore((s) => s.loadPresetProject);
   const spawnDreaminaNodeAt = useStudioStore((s) => s.spawnDreaminaNodeAt);
   const uploadLocalMediaNode = useStudioStore((s) => s.uploadLocalMediaNode);
   const selectNodes = useStudioStore((s) => s.selectNodes);
@@ -129,6 +136,12 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const setHistoryPanelOpen = useStudioStore((s) => s.setHistoryPanelOpen);
   const setDirectorModalOpen = useStudioStore((s) => s.setDirectorModalOpen);
   const openProviderModal = useStudioStore((s) => s.openProviderModal);
+  const openTeamCreditsModal = useStudioStore((s) => s.openTeamCreditsModal);
+  const toggleShareActiveProjectWithTeam = useStudioStore(
+    (s) => s.toggleShareActiveProjectWithTeam
+  );
+  const refreshAssetsCatalog = useStudioStore((s) => s.refreshAssetsCatalog);
+  const placeCloudAssetOnCanvas = useStudioStore((s) => s.placeCloudAssetOnCanvas);
   const copyShareableRecipeUrl = useStudioStore((s) => s.copyShareableRecipeUrl);
   const sendChatAssistantPrompt = useStudioStore((s) => s.sendChatAssistantPrompt);
   const runChatQuickAction = useStudioStore((s) => s.runChatQuickAction);
@@ -164,10 +177,18 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [assetSearch, setAssetSearch] = useState('');
+  const [assetModality, setAssetModality] = useState<'all' | 'image' | 'video'>('all');
   const [chatInput, setChatInput] = useState('');
   const [directorBrief, setDirectorBrief] = useState(
-    '35mm natural daylight architectural portrait sequence in a warm travertine courtyard transitioning to sunlit coastal cliffs.'
+    '35mm natural daylight architectural portrait sequence in a warm travertine courtyard.'
   );
+
+  useEffect(() => {
+    if (assetDrawerOpen && assetsCatalog.length === 0 && !assetsLoading) {
+      void refreshAssetsCatalog(assetsSourceFilter, false);
+    }
+  }, [assetDrawerOpen, assetsCatalog.length, assetsLoading, assetsSourceFilter, refreshAssetsCatalog]);
 
   const connectedSet = new Set<string>(connectedBrowserPlatforms);
   for (const [k, v] of Object.entries(chromeBridge.connectedPlatforms || {})) {
@@ -380,36 +401,17 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 <span>+ New Blank Canvas</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  loadPresetProject('cross-platform-blueprint');
-                  setProjectMenuOpen(false);
-                }}
-                className="w-full px-2.5 py-1.5 rounded-[8px] hover:bg-white/[0.08] text-left flex items-center justify-between gap-2 transition-colors"
-              >
-                <div className="min-w-0">
-                  <div className="text-[11.5px] font-medium text-white truncate">
-                    Workflow Blueprint · Multi-Credit
-                  </div>
-                  <div className="text-[10px] text-[#20D5EC] truncate">
-                    Higgsfield ChatGPT 2.6 → Kling 4.0 → ElevenLabs
-                  </div>
-                </div>
-                <GitBranch className="w-3.5 h-3.5 text-[#20D5EC] shrink-0" strokeWidth={1.6} />
-              </button>
-
               <div className="my-1 h-px bg-white/[0.07]" />
 
               <div className="px-2.5 py-1 text-[11px] text-white/45 font-medium flex items-center justify-between">
-                <span>Saved Projects (Disk)</span>
-                <span className="font-mono text-[10px] text-white/35">
+                <span>Saved Canvases</span>
+                <span className="tabular-nums text-[10px] text-white/35">
                   {diskProjects.length}
                 </span>
               </div>
 
               {diskProjects.length > 0 && (
-                <div className="max-h-[152px] overflow-y-auto space-y-0.5 pb-0.5">
+                <div className="max-h-[180px] overflow-y-auto space-y-0.5 pb-0.5">
                   {diskProjects.map((proj) => {
                     const isCurrent = proj.id === activeProjectId;
                     return (
@@ -438,7 +440,12 @@ export const DreaminaFloatingChrome: React.FC = () => {
                             <span className="w-3.5 shrink-0" />
                           )}
                           <span className="truncate">{proj.name}</span>
-                          <span className="text-[10px] font-mono text-white/40 shrink-0">
+                          {proj.isSharedWithTeam && (
+                            <span className="px-1 py-0.2 rounded bg-[#20D5EC]/15 text-[#20D5EC] text-[9px] font-medium shrink-0">
+                              Shared
+                            </span>
+                          )}
+                          <span className="text-[10px] tabular-nums text-white/40 shrink-0">
                             {proj.nodeCount}n
                           </span>
                         </button>
@@ -460,58 +467,6 @@ export const DreaminaFloatingChrome: React.FC = () => {
                   })}
                 </div>
               )}
-
-              <div className="my-1 h-px bg-white/[0.07]" />
-
-              <div className="px-2.5 py-1 text-[11px] text-white/45 font-medium flex items-center justify-between">
-                <span>Demo Showcases (35mm)</span>
-                <span className="font-mono text-[10px] text-white/35">
-                  {
-                    STUDIO_PRESETS.filter(
-                      (p) => p.id !== 'blank' && p.id !== 'cross-platform-blueprint'
-                    ).length
-                  }
-                </span>
-              </div>
-
-              {STUDIO_PRESETS.filter(
-                (p) => p.id !== 'blank' && p.id !== 'cross-platform-blueprint'
-              ).map((preset) => {
-                const isPresetActive = activeProjectId.startsWith(preset.id);
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    onClick={() => {
-                      loadPresetProject(preset.id);
-                      setProjectMenuOpen(false);
-                    }}
-                    className={`w-full px-2 py-1.5 rounded-[8px] text-left flex items-center gap-2.5 transition-colors ${
-                      isPresetActive
-                        ? 'bg-white/[0.1] text-white'
-                        : 'hover:bg-white/[0.07] text-white/85'
-                    }`}
-                  >
-                    {preset.thumbnailUrl ? (
-                      <div className="w-8 h-6 rounded-[5px] overflow-hidden bg-[#222222] border border-white/[0.08] shrink-0">
-                        <SmartMediaImage
-                          src={preset.thumbnailUrl}
-                          alt={preset.title}
-                          className="w-full h-full object-cover"
-                        />
-                      </div>
-                    ) : null}
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[11.5px] font-medium truncate">
-                        {preset.title}
-                      </div>
-                      <div className="text-[10px] text-white/42 truncate">
-                        {preset.subtitle}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
 
               <div className="my-1 h-px bg-white/[0.07]" />
 
@@ -584,7 +539,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
               <div className="absolute right-0 top-[40px] w-[288px] p-2.5 rounded-[12px] dreamina-menu z-50 space-y-2">
                 <div className="px-1 text-[11px] font-medium text-white/50 flex items-center justify-between">
                   <span>Canvas History & Snapshots</span>
-                  <span className="font-mono">{past.length} steps</span>
+                  <span className="tabular-nums">{past.length} steps</span>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5">
                   <button
@@ -631,7 +586,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
                           <div className="text-[11.5px] font-medium text-white/90 truncate">
                             {snap.label}
                           </div>
-                          <div className="text-[10px] font-mono text-white/40">
+                          <div className="text-[10px] tabular-nums text-white/40">
                             {new Date(snap.createdAt).toLocaleTimeString([], {
                               hour: '2-digit',
                               minute: '2-digit',
@@ -669,9 +624,36 @@ export const DreaminaFloatingChrome: React.FC = () => {
             >
               <Share2 className="w-3.5 h-3.5 text-white/75" strokeWidth={1.5} />
               <span>Share</span>
+              {activeProjectSharedWithTeam && (
+                <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
+              )}
             </button>
             {shareMenuOpen && (
-              <div className="absolute right-0 top-[40px] w-[236px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
+              <div className="absolute right-0 top-[40px] w-[256px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void toggleShareActiveProjectWithTeam(!activeProjectSharedWithTeam);
+                  }}
+                  className="w-full px-2.5 py-2 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/90 flex items-center justify-between gap-2"
+                >
+                  <div>
+                    <div className="font-medium">Share Canvas with Team</div>
+                    <div className="text-[10px] text-white/45">
+                      Live sync edits across members
+                    </div>
+                  </div>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                      activeProjectSharedWithTeam
+                        ? 'bg-[#20D5EC]/20 text-[#20D5EC]'
+                        : 'bg-white/[0.08] text-white/55'
+                    }`}
+                  >
+                    {activeProjectSharedWithTeam ? 'ON' : 'OFF'}
+                  </span>
+                </button>
+                <div className="my-1 h-px bg-white/[0.07]" />
                 <button
                   type="button"
                   onClick={() => {
@@ -760,13 +742,13 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    loadPresetProject('salt-terracotta');
+                    void createNewBlankProject('Untitled Canvas');
                     setMoreMenuOpen(false);
                   }}
                   className="w-full h-8 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/75 flex items-center gap-2"
                 >
                   <RotateCcw className="w-3.5 h-3.5 text-white/50" strokeWidth={1.5} />
-                  <span>Reset Salt & Terracotta</span>
+                  <span>New Blank Canvas</span>
                 </button>
               </div>
             )}
@@ -810,12 +792,36 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 connectedCreditSourcesCount > 0 ? 'bg-[#10b981]' : 'bg-white/35'
               }`}
             />
-            <span>{formattedBalancePill || 'Connections · Credits'}</span>
+            <span className="tabular-nums">
+              {formattedBalancePill || 'Connections · Credits'}
+            </span>
             {connectedCreditSourcesCount > 0 && (
-              <span className="px-1.5 py-[1px] rounded-[5px] bg-[#10b981]/15 text-[#34d399] font-mono text-[10px]">
+              <span className="px-1.5 py-[1px] rounded-[5px] bg-[#10b981]/15 text-[#34d399] tabular-nums text-[10px]">
                 {connectedCreditSourcesCount}
               </span>
             )}
+          </button>
+
+          {/* Team · Credit Intelligence · Account Pill */}
+          <button
+            type="button"
+            onClick={() => openTeamCreditsModal('credits')}
+            title="Credit Intelligence, Expiry Alerts, Team Sharing & Account"
+            className="h-[34px] px-3 rounded-[10px] dreamina-levitation hover:bg-[#222222] text-[12px] font-medium text-white/90 hover:text-white flex items-center gap-1.5 transition-colors"
+          >
+            {creditsSummary?.expiringSoonAlerts &&
+            creditsSummary.expiringSoonAlerts.length > 0 ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+            ) : (
+              <Users className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+            )}
+            <span>{authUser?.displayName || 'Team & Credits'}</span>
+            {creditsSummary?.expiringSoonAlerts &&
+              creditsSummary.expiringSoonAlerts.length > 0 && (
+                <span className="px-1.5 py-[1px] rounded-[5px] bg-amber-500/20 text-amber-300 tabular-nums text-[10px]">
+                  {creditsSummary.expiringSoonAlerts.length}
+                </span>
+              )}
           </button>
 
           {/* Live Engine / MCP Server Status Pill */}
@@ -839,7 +845,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 : 'Offline'}
             </span>
             <span className="text-white/35">·</span>
-            <span className="font-mono text-[11px] text-white/80">$0 Markup</span>
+            <span className="tabular-nums text-[11px] text-white/80">$0 Markup</span>
           </button>
         </div>
       </header>
@@ -893,7 +899,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 <div className="fixed ml-[50px] -mt-[32px] px-2.5 py-1 rounded-[8px] bg-[#252525] border border-white/[0.1] shadow-[0_8px_24px_rgba(0,0,0,0.65)] text-[12px] text-white/95 whitespace-nowrap pointer-events-none flex items-center gap-2 z-50">
                   <span>{tool.label}</span>
                   {tool.shortcut && (
-                    <span className="font-mono text-[10.5px] text-white/45">
+                    <span className="tabular-nums text-[10.5px] text-white/45">
                       {tool.shortcut}
                     </span>
                   )}
@@ -904,55 +910,172 @@ export const DreaminaFloatingChrome: React.FC = () => {
         })}
       </aside>
 
-      {/* Select from Assets Slide-Out Popover */}
+      {/* Select from Assets Slide-Out Popover (Cloud Storage + Dreamina + Higgsfield) */}
       {assetDrawerOpen && (
-        <div className="fixed left-[68px] top-1/2 -translate-y-1/2 w-[328px] max-h-[520px] rounded-[16px] dreamina-menu z-40 flex flex-col overflow-hidden select-none">
+        <div className="fixed left-[68px] top-1/2 -translate-y-1/2 w-[380px] max-h-[580px] rounded-[16px] dreamina-menu z-40 flex flex-col overflow-hidden select-none">
           <div className="h-[42px] px-3.5 border-b border-white/[0.08] flex items-center justify-between shrink-0">
-            <span className="text-[12.5px] font-medium text-white/90">
-              Select from Studio Assets
-            </span>
-            <button
-              type="button"
-              onClick={() => setAssetDrawerOpen(false)}
-              className="w-6 h-6 rounded-[6px] hover:bg-white/[0.08] flex items-center justify-center text-white/60 hover:text-white"
-            >
-              <X className="w-3.5 h-3.5" strokeWidth={1.5} />
-            </button>
-          </div>
-          <div className="p-3 overflow-y-auto grid grid-cols-2 gap-2">
-            {MEDIA_ASSET_CATALOG.map((asset) => (
+            <div className="flex items-center gap-2">
+              <span className="text-[12.5px] font-medium text-white/90">
+                Studio &amp; Cloud Assets
+              </span>
+              <span className="text-[10px] tabular-nums text-white/45">
+                {assetsCatalog.length}
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
               <button
-                key={asset.id}
                 type="button"
-                onClick={() => {
-                  const { worldX, worldY } = getViewportCenterWorld();
-                  spawnDreaminaNodeAt('assets', worldX, worldY, { asset });
-                  setAssetDrawerOpen(false);
-                }}
-                className="group rounded-[10px] overflow-hidden bg-[#141414] border border-white/[0.08] hover:border-white/[0.28] text-left transition-all"
+                title="Refresh assets from Cloud Storage, Dreamina & Higgsfield"
+                onClick={() => void refreshAssetsCatalog(assetsSourceFilter, true)}
+                className="w-6 h-6 rounded-[6px] hover:bg-white/[0.08] flex items-center justify-center text-white/60 hover:text-white"
               >
-                <div className="aspect-video bg-[#191919] relative overflow-hidden">
-                  <SmartMediaImage
-                    src={asset.posterUrl || asset.url}
-                    alt={asset.title}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
-                  />
-                  {asset.durationSec && (
-                    <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded-[4px] bg-black/70 font-mono text-[9.5px] text-white/85">
-                      00:0{asset.durationSec}
-                    </span>
-                  )}
-                </div>
-                <div className="p-2">
-                  <div className="text-[11.5px] font-medium text-white/90 truncate">
-                    {asset.title}
-                  </div>
-                  <div className="text-[10px] text-white/45 uppercase mt-0.5">
-                    {asset.kind} · {asset.resolution}
-                  </div>
-                </div>
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${assetsLoading ? 'animate-spin text-[#20D5EC]' : ''}`}
+                  strokeWidth={1.5}
+                />
               </button>
-            ))}
+              <button
+                type="button"
+                onClick={() => setAssetDrawerOpen(false)}
+                className="w-6 h-6 rounded-[6px] hover:bg-white/[0.08] flex items-center justify-center text-white/60 hover:text-white"
+              >
+                <X className="w-3.5 h-3.5" strokeWidth={1.5} />
+              </button>
+            </div>
+          </div>
+
+          {/* Source Tabs + Search + Kind Filter */}
+          <div className="px-3 py-2 border-b border-white/[0.07] space-y-2 shrink-0 bg-black/25">
+            <div className="flex items-center gap-1">
+              {(
+                [
+                  { id: 'all', label: 'All' },
+                  { id: 'storage', label: 'Storage' },
+                  { id: 'dreamina', label: 'Dreamina' },
+                  { id: 'higgsfield', label: 'Higgsfield' },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => void refreshAssetsCatalog(tab.id, false)}
+                  className={`px-2.5 py-1 rounded-[7px] text-[11px] font-medium transition-colors ${
+                    assetsSourceFilter === tab.id
+                      ? 'bg-[#20D5EC]/20 text-[#20D5EC] border border-[#20D5EC]/30'
+                      : 'text-white/60 hover:text-white hover:bg-white/[0.06]'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <div className="relative flex-1">
+                <Search
+                  size={12}
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/35"
+                />
+                <input
+                  type="text"
+                  placeholder="Search assets…"
+                  value={assetSearch}
+                  onChange={(e) => setAssetSearch(e.target.value)}
+                  className="w-full h-7 rounded-[7px] bg-black/45 border border-white/[0.08] pl-7 pr-2 text-[11px] text-white placeholder:text-white/30 outline-none focus:border-[#20D5EC]/50"
+                />
+              </div>
+              {(['all', 'image', 'video'] as const).map((mk) => (
+                <button
+                  key={mk}
+                  type="button"
+                  onClick={() => setAssetModality(mk)}
+                  className={`h-7 px-2 rounded-[7px] text-[10.5px] capitalize ${
+                    assetModality === mk
+                      ? 'bg-white/[0.14] text-white font-medium'
+                      : 'text-white/50 hover:text-white/80'
+                  }`}
+                >
+                  {mk}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="p-3 overflow-y-auto grid grid-cols-2 gap-2">
+            {assetsLoading && assetsCatalog.length === 0 ? (
+              <div className="col-span-2 py-12 text-center text-[12px] text-white/45 flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-[#20D5EC]" />
+                <span>Syncing cloud &amp; storage libraries…</span>
+              </div>
+            ) : (
+              (() => {
+                const q = assetSearch.trim().toLowerCase();
+                const filtered = assetsCatalog.filter((item) => {
+                  if (assetModality !== 'all' && item.kind !== assetModality) {
+                    return false;
+                  }
+                  if (
+                    q &&
+                    !item.title.toLowerCase().includes(q) &&
+                    !(item.prompt || '').toLowerCase().includes(q)
+                  ) {
+                    return false;
+                  }
+                  return true;
+                });
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="col-span-2 py-10 text-center text-[12px] text-white/45">
+                      No assets match this filter. Generate or upload files to populate your
+                      library.
+                    </div>
+                  );
+                }
+
+                return filtered.map((asset) => (
+                  <button
+                    key={asset.id}
+                    type="button"
+                    onClick={() => {
+                      void placeCloudAssetOnCanvas(asset);
+                      setAssetDrawerOpen(false);
+                    }}
+                    className="group rounded-[10px] overflow-hidden bg-[#141414] border border-white/[0.08] hover:border-white/[0.28] text-left transition-all"
+                  >
+                    <div className="aspect-video bg-[#191919] relative overflow-hidden">
+                      <SmartMediaImage
+                        src={asset.thumbnailUrl || asset.url}
+                        alt={asset.title}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                      />
+                      <div className="absolute top-1.5 left-1.5 flex items-center gap-1 rounded-[5px] bg-black/75 px-1 py-0.5">
+                        <PlatformBrandIcon
+                          platformId={(asset.platformId || asset.source) as PlatformId}
+                          size="xs"
+                        />
+                        <span className="text-[9px] text-white/80 capitalize">
+                          {asset.source}
+                        </span>
+                      </div>
+                      {asset.kind === 'video' && (
+                        <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded-[4px] bg-black/70 tabular-nums text-[9.5px] text-white/85">
+                          Video
+                        </span>
+                      )}
+                    </div>
+                    <div className="p-2">
+                      <div className="text-[11.5px] font-medium text-white/90 truncate">
+                        {asset.title}
+                      </div>
+                      <div className="text-[10px] text-white/45 uppercase mt-0.5">
+                        {asset.kind}
+                      </div>
+                    </div>
+                  </button>
+                ));
+              })()
+            )}
           </div>
         </div>
       )}
@@ -963,7 +1086,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
           <div className="w-[200px] h-[126px] rounded-[12px] dreamina-levitation p-2 relative overflow-hidden">
             <div className="text-[10px] text-white/40 mb-1 flex items-center justify-between">
               <span>Spatial Overview</span>
-              <span className="font-mono">{nodes.length} nodes</span>
+              <span className="tabular-nums">{nodes.length} nodes</span>
             </div>
             <div className="relative w-full h-[92px] bg-[#121212] rounded-[7px] border border-white/[0.06] overflow-hidden">
               {nodes.map((n) => {
@@ -1068,7 +1191,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
             type="button"
             onClick={() => fitAllNodesInViewport()}
             title="Fit all nodes in viewport"
-            className="px-1.5 h-6 rounded-[6px] hover:bg-[#252525] font-mono text-[11.5px] tabular-nums text-white/80 hover:text-white"
+            className="px-1.5 h-6 rounded-[6px] hover:bg-[#252525] tabular-nums text-[11.5px] tabular-nums text-white/80 hover:text-white"
           >
             {Math.round(zoom * 100)}%
           </button>
@@ -1257,7 +1380,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setSearchModalOpen(false)}
-                className="text-[11px] font-mono text-white/40 px-1.5 py-0.5 rounded bg-white/[0.06]"
+                className="text-[11px] tabular-nums text-white/40 px-1.5 py-0.5 rounded bg-white/[0.06]"
               >
                 ESC
               </button>
@@ -1337,7 +1460,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
             />
 
             {directorStepLog.length > 0 && (
-              <div className="p-3 rounded-[10px] bg-[#141414] border border-white/[0.06] space-y-1 max-h-[140px] overflow-y-auto font-mono text-[11px] text-white/70">
+              <div className="p-3 rounded-[10px] bg-[#141414] border border-white/[0.06] space-y-1 max-h-[140px] overflow-y-auto tabular-nums text-[11px] text-white/70">
                 {directorStepLog.map((line, i) => (
                   <div key={i}>{line}</div>
                 ))}
@@ -1545,7 +1668,7 @@ const CameraDirector3DModal: React.FC = () => {
               className="w-full h-[250px] cursor-grab active:cursor-grabbing block"
             />
             <div className="absolute bottom-2.5 left-3 right-3 flex items-center justify-between pointer-events-none">
-              <span className="px-2 py-0.5 rounded-[6px] bg-black/65 text-[11px] text-white/75 font-mono">
+              <span className="px-2 py-0.5 rounded-[6px] bg-black/65 text-[11px] text-white/75 tabular-nums">
                 Drag stage to orbit camera · {summaryDescriptor}
               </span>
             </div>
@@ -1563,7 +1686,7 @@ const CameraDirector3DModal: React.FC = () => {
                     key={mm}
                     type="button"
                     onClick={() => setFocalMm(mm)}
-                    className={`h-7 rounded-[7px] text-[11.5px] font-mono transition-colors ${
+                    className={`h-7 rounded-[7px] text-[11.5px] tabular-nums transition-colors ${
                       focalMm === mm
                         ? 'bg-white text-[#0e0e0e] font-semibold'
                         : 'bg-[#252525] text-white/75 hover:bg-[#303030]'

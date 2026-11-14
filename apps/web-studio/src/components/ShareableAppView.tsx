@@ -19,6 +19,7 @@ import type {
 } from '../types/studio';
 import { estimateZeroMarkupCostUsd } from '../services/executionRouter';
 import { SmartMediaImage } from './SmartMedia';
+import { renderShotDataUrl } from '../utils/proceduralMedia';
 
 const CURVES: CameraTransitionCurve[] = [
   'Dolly In',
@@ -33,31 +34,25 @@ const CURVES: CameraTransitionCurve[] = [
 const INITIAL_BEATS: ShareableBeatInput[] = [
   {
     id: 'beat-1',
-    title: 'Beat 01 · Limestone Courtyard Daylight',
-    prompt:
-      'Wide 35mm Kodak Vision3 250D establishing shot of @Clara_Vidal in sunlit Mediterranean limestone courtyard, dappled olive shadows',
-    imageUrl: '/media/real_courtyard_sun.jpg',
-    videoUrl: '/media/real_shot01_courtyard.mp4',
+    title: 'Beat 01 · Establishing Scene',
+    prompt: 'Wide 35mm establishing shot in natural daylight',
+    imageUrl: renderShotDataUrl('16:9', { prompt: 'Beat 01 Establishing', seed: 101 }),
     durationSec: 6,
     cameraCurve: 'Dolly In',
   },
   {
     id: 'beat-2',
-    title: 'Beat 02 · Courtyard → Atlantic Cliffs Bridge',
-    prompt:
-      'Smooth optical keyframe bridge carrying camera from warm terracotta archways out to windswept coastal limestone cliffs at golden hour',
-    imageUrl: '/media/real_coastal_cliffs.jpg',
-    videoUrl: '/media/real_shot02_bridge.mp4',
+    title: 'Beat 02 · Midground Transition',
+    prompt: 'Smooth optical keyframe bridge across primary horizon',
+    imageUrl: renderShotDataUrl('16:9', { prompt: 'Beat 02 Transition', seed: 202 }),
     durationSec: 6,
     cameraCurve: 'Orbit 180°',
   },
   {
     id: 'beat-3',
-    title: 'Beat 03 · Atelier Contact Table',
-    prompt:
-      'Intimate 50mm Leica Summilux close-up inside quiet daylight studio as @Clara_Vidal inspects silver-gelatin contact prints beside @Leica_M6',
-    imageUrl: '/media/real_atelier_interior.jpg',
-    videoUrl: '/media/real_shot03_atelier.mp4',
+    title: 'Beat 03 · Closing Reveal',
+    prompt: 'Quiet close-up architectural detail in directional daylight',
+    imageUrl: renderShotDataUrl('16:9', { prompt: 'Beat 03 Reveal', seed: 303 }),
     durationSec: 6,
     cameraCurve: 'Crane Up',
   },
@@ -78,10 +73,7 @@ export const ShareableAppView: React.FC = () => {
   } = useStudioStore();
 
   const [filmTitle, setFilmTitle] = useState(`${projectTitle} · Shareable App`);
-  const [selectedHandles, setSelectedHandles] = useState<string[]>([
-    '@Clara_Vidal',
-    '@Leica_M6',
-  ]);
+  const [selectedHandles, setSelectedHandles] = useState<string[]>([]);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
   const [resolution, setResolution] = useState<ResolutionTier>('720p');
   const [beats, setBeats] = useState<ShareableBeatInput[]>(INITIAL_BEATS);
@@ -120,7 +112,7 @@ export const ShareableAppView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <span className="h-8 px-3 rounded-[8px] bg-[#252525] font-mono text-[11.5px] text-white/80 flex items-center gap-1.5">
+          <span className="h-8 px-3 rounded-[8px] bg-[#252525] tabular-nums text-[11.5px] text-white/80 flex items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5 text-[#face15]" strokeWidth={1.75} />
             <span>${rawCostUsd.toFixed(2)} raw · 0% markup</span>
           </span>
@@ -325,9 +317,11 @@ export const ShareableAppView: React.FC = () => {
                       id: `beat-${Date.now()}`,
                       title: `Beat 0${cur.length + 1} · New Shot`,
                       prompt:
-                        'Natural daylight Steadicam follow shot locking @Clara_Vidal along sunlit limestone terrace',
-                      imageUrl: '/media/real_courtyard_sun.jpg',
-                      videoUrl: '/media/real_shot01_courtyard.mp4',
+                        'Natural daylight Steadicam follow shot along warm architectural terrace',
+                      imageUrl: renderShotDataUrl('16:9', {
+                        prompt: `Beat 0${cur.length + 1}`,
+                        seed: 400 + cur.length * 17,
+                      }),
                       durationSec: 6,
                       cameraCurve: 'Dolly In',
                     },
@@ -351,16 +345,16 @@ export const ShareableAppView: React.FC = () => {
                     Master Output Preview
                   </span>
                 </div>
-                <span className="font-mono text-[11px] text-white/50">
+                <span className="tabular-nums text-[11px] text-white/50">
                   {mcpHealth.online ? 'FFmpeg 8.0 Live' : 'Browser Render'}
                 </span>
               </div>
 
               <div className="aspect-video rounded-[10px] overflow-hidden bg-[#121212] border border-white/[0.08]">
                 <video
-                  key={masterRenderUrl || '/media/real_salt_terracotta_master.mp4'}
-                  src={masterRenderUrl || '/media/real_salt_terracotta_master.mp4'}
-                  poster="/media/real_courtyard_sun.jpg"
+                  key={masterRenderUrl || 'empty-master'}
+                  src={masterRenderUrl || undefined}
+                  poster={beats[0]?.imageUrl}
                   controls
                   autoPlay
                   loop
@@ -408,7 +402,7 @@ export const ShareableAppView: React.FC = () => {
               )}
 
               {appRenderLog.length > 0 && (
-                <div className="p-3 rounded-[9px] bg-[#141414] border border-white/[0.06] font-mono text-[11px] text-white/65 space-y-1 max-h-[150px] overflow-y-auto">
+                <div className="p-3 rounded-[9px] bg-[#141414] border border-white/[0.06] tabular-nums text-[11px] text-white/65 space-y-1 max-h-[150px] overflow-y-auto">
                   {appRenderLog.map((line, i) => (
                     <div key={i}>{line}</div>
                   ))}

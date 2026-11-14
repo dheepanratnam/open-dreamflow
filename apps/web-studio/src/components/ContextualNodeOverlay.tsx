@@ -35,11 +35,13 @@ import {
 import type {
   AspectRatio,
   ConnectionTransport,
+  CreditQuoteResponse,
   ModelParameterSpec,
   PlatformId,
   PlatformModelDefinition,
   ResolutionTier,
 } from '../types/studio';
+import { fetchCreditQuoteViaBackend } from '../services/executionRouter';
 import {
   ELEVENLABS_VOICES,
   getModelsForPlatformAndModality,
@@ -177,6 +179,8 @@ export const ContextualNodeOverlay: React.FC = () => {
   const connectedBrowserPlatforms = useStudioStore((s) => s.connectedBrowserPlatforms);
   const connectedMcpPlatforms = useStudioStore((s) => s.connectedMcpPlatforms);
   const configuredApiPlatforms = useStudioStore((s) => s.configuredApiPlatforms);
+  const ownConnectedPlatforms = useStudioStore((s) => s.ownConnectedPlatforms);
+  const sharedAvailablePools = useStudioStore((s) => s.sharedAvailablePools);
   const lastImagePlatformId = useStudioStore((s) => s.lastImagePlatformId);
   const lastVideoPlatformId = useStudioStore((s) => s.lastVideoPlatformId);
   const lastAudioPlatformId = useStudioStore((s) => s.lastAudioPlatformId);
@@ -227,6 +231,7 @@ export const ContextualNodeOverlay: React.FC = () => {
   const [modelSearch, setModelSearch] = useState('');
   const [modelFamilyFilter, setModelFamilyFilter] = useState<string>('All');
   const [atAutocompleteOpen, setAtAutocompleteOpen] = useState(false);
+  const [creditQuote, setCreditQuote] = useState<CreditQuoteResponse | null>(null);
 
   const refUploadInputRef = useRef<HTMLInputElement | null>(null);
   const directCardUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -252,6 +257,50 @@ export const ContextualNodeOverlay: React.FC = () => {
     setModelFamilyFilter('All');
     setAtAutocompleteOpen(false);
   }, [selectedNode?.id, resolvedEffectivePlatformId, selectedModality]);
+
+  useEffect(() => {
+    if (!selectedNode || !selectedModality) {
+      setCreditQuote(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void fetchCreditQuoteViaBackend({
+        platformId: resolvedEffectivePlatformId,
+        modelId: resolveCanonicalModelId(selectedNode.modelId) || selectedNode.modelId || '',
+        modality: selectedModality,
+        resolution: selectedNode.resolution,
+        durationSec: selectedNode.durationSec,
+        aspectRatio: selectedNode.aspectRatio,
+        batchCount: selectedNode.batchCount || 1,
+        quality:
+          selectedNode.quality ||
+          (typeof selectedNode.modelParams?.quality === 'string'
+            ? selectedNode.modelParams.quality
+            : undefined),
+        prompt: selectedNode.prompt,
+      }).then((q) => {
+        if (!cancelled) setCreditQuote(q);
+      });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    selectedNode?.id,
+    selectedModality,
+    resolvedEffectivePlatformId,
+    selectedNode?.modelId,
+    selectedNode?.resolution,
+    selectedNode?.durationSec,
+    selectedNode?.aspectRatio,
+    selectedNode?.batchCount,
+    selectedNode?.quality,
+    selectedNode?.modelParams?.quality,
+    selectedNode?.prompt,
+  ]);
 
   if (selectedNodeIds.length >= 2) {
     return <MultiReferenceSelectionBar />;
@@ -868,7 +917,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                                   className="w-3.5 h-3.5 text-[#20D5EC] shrink-0"
                                   strokeWidth={1.5}
                                 />
-                                <span className="font-mono text-[11.5px] truncate">
+                                <span className="tabular-nums text-[11.5px] truncate">
                                   {el.handle}
                                 </span>
                               </span>
@@ -979,7 +1028,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                     }}
                     className="w-full h-8 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/90 flex items-center justify-between"
                   >
-                    <span className="font-mono text-[#20D5EC]">{el.handle}</span>
+                    <span className="tabular-nums text-[#20D5EC]">{el.handle}</span>
                     <span className="text-[11px] text-white/45 truncate ml-2">
                       {el.name}
                     </span>
@@ -1290,7 +1339,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                     onClick={() =>
                       setOpenMenu(openMenu === 'aspect' ? null : 'aspect')
                     }
-                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] font-mono text-[11.5px] text-white/85 flex items-center gap-1"
+                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
                     title="Aspect Ratio"
                   >
                     <span>{selectedNode.aspectRatio}</span>
@@ -1306,7 +1355,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                             setNodeAspectRatio(selectedNode.id, ar);
                             setOpenMenu(null);
                           }}
-                          className={`w-full h-7 px-2.5 rounded-[7px] font-mono text-[11.5px] flex items-center justify-between ${
+                          className={`w-full h-7 px-2.5 rounded-[7px] tabular-nums text-[11.5px] flex items-center justify-between ${
                             String(selectedNode.aspectRatio).toLowerCase() === ar.toLowerCase()
                               ? 'bg-white/[0.1] text-white'
                               : 'hover:bg-white/[0.06] text-white/80'
@@ -1330,7 +1379,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                     onClick={() =>
                       setOpenMenu(openMenu === 'resolution' ? null : 'resolution')
                     }
-                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] font-mono text-[11.5px] text-white/85 flex items-center gap-1"
+                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
                     title="Output Resolution"
                   >
                     <span>{selectedNode.resolution}</span>
@@ -1349,7 +1398,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                               updateNodeFields(selectedNode.id, { resolution: res });
                               setOpenMenu(null);
                             }}
-                            className={`w-full h-7 px-2.5 rounded-[7px] font-mono text-[11.5px] flex items-center justify-between ${
+                            className={`w-full h-7 px-2.5 rounded-[7px] tabular-nums text-[11.5px] flex items-center justify-between ${
                               isActiveRes
                                 ? 'bg-white/[0.1] text-white'
                                 : 'hover:bg-white/[0.06] text-white/80'
@@ -1481,7 +1530,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                     onClick={() =>
                       setOpenMenu(openMenu === 'batch' ? null : 'batch')
                     }
-                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] font-mono text-[11.5px] text-white/85 flex items-center gap-1"
+                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
                     title="Batch image count"
                   >
                     <span>{selectedNode.batchCount || 1}×</span>
@@ -1497,7 +1546,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                             updateNodeFields(selectedNode.id, { batchCount: cnt });
                             setOpenMenu(null);
                           }}
-                          className={`w-full h-7 px-2.5 rounded-[7px] font-mono text-[11.5px] flex items-center justify-between ${
+                          className={`w-full h-7 px-2.5 rounded-[7px] tabular-nums text-[11.5px] flex items-center justify-between ${
                             (selectedNode.batchCount || 1) === cnt
                               ? 'bg-white/[0.1] text-white'
                               : 'hover:bg-white/[0.06] text-white/80'
@@ -1523,7 +1572,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                       onClick={() =>
                         setOpenMenu(openMenu === 'duration' ? null : 'duration')
                       }
-                      className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] font-mono text-[11.5px] text-white/85 flex items-center gap-1"
+                      className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
                       title="Clip Duration"
                     >
                       <span>
@@ -1543,7 +1592,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                               updateNodeFields(selectedNode.id, { durationSec: sec });
                               setOpenMenu(null);
                             }}
-                            className={`w-full h-7 px-2.5 rounded-[7px] font-mono text-[11.5px] flex items-center justify-between ${
+                            className={`w-full h-7 px-2.5 rounded-[7px] tabular-nums text-[11.5px] flex items-center justify-between ${
                               (selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5) === sec
                                 ? 'bg-white/[0.1] text-white'
                                 : 'hover:bg-white/[0.06] text-white/80'
@@ -1723,7 +1772,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                       onClick={() =>
                         setOpenMenu(openMenu === 'duration' ? null : 'duration')
                       }
-                      className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] font-mono text-[11.5px] text-white/85 flex items-center gap-1"
+                      className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
                     >
                       <span>{selectedNode.durationSec || 8}s</span>
                       <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
@@ -1738,7 +1787,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                               updateNodeFields(selectedNode.id, { durationSec: sec });
                               setOpenMenu(null);
                             }}
-                            className={`w-full h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] font-mono text-[11.5px] flex items-center justify-between ${
+                            className={`w-full h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] tabular-nums text-[11.5px] flex items-center justify-between ${
                               (selectedNode.durationSec || 8) === sec
                                 ? 'bg-white/[0.1] text-white'
                                 : 'text-white/85'
@@ -1774,7 +1823,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" strokeWidth={1.6} />
                   {customParamCount > 0 && (
-                    <span className="h-4 min-w-[16px] px-1 rounded-full bg-[#20D5EC]/20 text-[#20D5EC] font-mono text-[10px] font-semibold flex items-center justify-center">
+                    <span className="h-4 min-w-[16px] px-1 rounded-full bg-[#20D5EC]/20 text-[#20D5EC] tabular-nums text-[10px] font-semibold flex items-center justify-center">
                       {customParamCount}
                     </span>
                   )}
@@ -1915,7 +1964,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                                         val === '' ? undefined : Number(val)
                                       );
                                     }}
-                                    className="w-24 h-7 px-2 rounded-[7px] bg-[#141414] border border-white/[0.08] font-mono text-[11.5px] text-white outline-none select-text"
+                                    className="w-24 h-7 px-2 rounded-[7px] bg-[#141414] border border-white/[0.08] tabular-nums text-[11.5px] text-white outline-none select-text"
                                   />
                                 </div>
                               );
@@ -2009,7 +2058,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                             seed: Number(e.target.value) || 100,
                           })
                         }
-                        className="w-28 h-7 px-2 rounded-[7px] bg-[#141414] border border-white/[0.08] font-mono text-[11.5px] text-white outline-none select-text"
+                        className="w-28 h-7 px-2 rounded-[7px] bg-[#141414] border border-white/[0.08] tabular-nums text-[11.5px] text-white outline-none select-text"
                       />
                     </div>
                   </div>
@@ -2019,6 +2068,43 @@ export const ContextualNodeOverlay: React.FC = () => {
 
             {/* Right Execution CTAs */}
             <div className="flex items-center gap-1.5 shrink-0">
+              {ownConnectedPlatforms.includes(effectivePlatformId) &&
+                sharedAvailablePools.some(
+                  (p) => p.platformId === effectivePlatformId && p.enabled
+                ) && (
+                  <div
+                    className="h-8 p-0.5 rounded-full bg-[#1C1C1F] border border-white/[0.1] flex items-center text-[10.5px] font-medium"
+                    title="Choose credit source for this generation"
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateNodeFields(selectedNode.id, { creditSource: 'own' })
+                      }
+                      className={`h-7 px-2 rounded-full transition-colors ${
+                        (selectedNode.creditSource || 'own') !== 'shared'
+                          ? 'bg-[#20D5EC]/20 text-[#20D5EC]'
+                          : 'text-white/55 hover:text-white/85'
+                      }`}
+                    >
+                      My Credits
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateNodeFields(selectedNode.id, { creditSource: 'shared' })
+                      }
+                      className={`h-7 px-2 rounded-full transition-colors ${
+                        selectedNode.creditSource === 'shared'
+                          ? 'bg-[#20D5EC]/20 text-[#20D5EC]'
+                          : 'text-white/55 hover:text-white/85'
+                      }`}
+                    >
+                      Shared Pool
+                    </button>
+                  </div>
+                )}
+
               {hasDownstreamEdges && (
                 <button
                   type="button"
@@ -2049,7 +2135,16 @@ export const ContextualNodeOverlay: React.FC = () => {
                 ) : (
                   <>
                     <Play className="w-3 h-3 fill-current" strokeWidth={2} />
-                    <span>Generate</span>
+                    <span>
+                      Generate
+                      {creditQuote?.ok
+                        ? creditQuote.isUnlimitedEligible || creditQuote.unit === 'unlimited'
+                          ? ' · ∞ Unlim'
+                          : creditQuote.estimatedCredits != null
+                          ? ` · ${creditQuote.estimatedCredits} cr`
+                          : ''
+                        : ''}
+                    </span>
                     <ArrowUp className="w-3.5 h-3.5" strokeWidth={2.2} />
                   </>
                 )}
@@ -2447,7 +2542,7 @@ const MultiReferenceSelectionBar: React.FC = () => {
               ) : (
                 <Type className="w-3 h-3 text-[#20D5EC]" />
               )}
-              <span className="font-mono">{chip.tag}</span>
+              <span className="tabular-nums">{chip.tag}</span>
               {targetKind === 'video' &&
                 referenceFrameMode === 'start-end' &&
                 chip.type === 'image' &&
@@ -2485,7 +2580,7 @@ const MultiReferenceSelectionBar: React.FC = () => {
                 }
                 className="h-7 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/90 flex items-center gap-1.5"
               >
-                <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
+                <PlatformBrandIcon platformId={effectivePlatformId} size="xs" />
                 <span>{activePlatformDef?.shortLabel || effectivePlatformId}</span>
                 <ChevronDown className="w-3 h-3 text-white/45" />
               </button>
@@ -2514,7 +2609,10 @@ const MultiReferenceSelectionBar: React.FC = () => {
                             : 'hover:bg-white/[0.07] text-white/80'
                         }`}
                       >
-                        <span className="truncate">{plat.shortLabel}</span>
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <PlatformBrandIcon platformId={plat.id} size="xs" />
+                          <span className="truncate">{plat.shortLabel}</span>
+                        </span>
                         {st.connected && (
                           <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
                         )}
