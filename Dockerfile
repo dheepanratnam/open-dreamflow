@@ -30,12 +30,12 @@ RUN set -eux; \
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
+COPY package.json ./
 COPY packages/provider-sdk/package.json ./packages/provider-sdk/
 COPY packages/mcp-client/package.json ./packages/mcp-client/
 COPY apps/web-studio/package.json ./apps/web-studio/
 
-RUN npm install
+RUN npm install --include=optional
 
 COPY packages ./packages
 COPY apps ./apps
