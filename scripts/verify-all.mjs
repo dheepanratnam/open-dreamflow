@@ -1,24 +1,25 @@
 #!/usr/bin/env node
 /**
- * Open-DreamFlow — 16-Stage Automated Monorepo End-to-End Verification Suite
+ * Open-DreamFlow — 17-Stage Automated Monorepo End-to-End Verification Suite
  *
  * Stages:
- *   [1/16 provider-sdk]                      Zero-markup SDK clients, 13-platform PLATFORM_CATALOG & $0 markup estimator
- *   [2/16 mcp-client]                        Live JSON-RPC roundtrip verifying all 12 built-in MCP tools on :3001/mcp
- *   [3/16 real-photography-media]            206 Partial Content streaming, ffprobe real photography/cinema check & zero-slop bundle audit
- *   [4/16 inline-editor]                     Live /api/upload-media, /api/inpaint (mask), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)
- *   [5/16 keyframe-bridge-and-audio]         Live /api/keyframe-bridge (A->B), /api/generate-audio (64-bar waveform + MP3) & multi-track /api/compile-timeline
- *   [6/16 persistence-bridge]                Live /api/projects CRUD + .dreamflow.json export + /api/bridge/push -> /api/bridge/events
- *   [7/16 live-provider-and-bridge-jobs]     /api/verify-provider, GET /bridge-connector.js (PNA CORS) & Dreamina live bridge lifecycle
- *   [8/16 multi-platform-and-external-mcp]   GET /api/platforms (13 platforms) + real stdio External MCP Server tools/list, /api/mcp/call & /api/generate-node
- *   [9/16 cross-platform-chained-workflow]   Higgsfield (ChatGPT Image 2.6) -> Kling 4.0 (Video) chained base64 reference forwarding
- *   [10/16 guided-connections-and-sume]      GET /api/connections/status, dryRun 1-click Chrome profile launcher (higgsfield + all) & bridge_session status sync
- *   [11/16 mcp-oauth-and-check-browser]      MCP OAuth 2.1 + PKCE + Streamable HTTP SSE lifecycle (mock + live Higgsfield probe), /api/mcp/call & /api/connections/check-browser
- *   [12/16 batch-multiref-and-dreamina-mcp]  4-image batch outputs (multi-job + single-cap fan-out), multi-modal video+image+start/end refs & Dreamina MCP flow
- *   [13/16 chrome-bridge]                    Manifest V3 v1.2.0 across all 8 creator domains (incl. sume.com), icons & syntax check across all 6 scripts
- *   [14/16 cli-and-docker]                   open-dreamflow doctor CLI check, unified single-port SPA GET :3001/, Dockerfile & docker-compose.yml
- *   [15/16 web-studio]                       Production Vite bundle + Stage 10.1 Dreamina CLI OAuth / Seedance 2.5 / Nano Banana 2.1 / 0-neon / custom-mcp dedup audit
- *   [16/16 dreamina-cli-oauth-hermetic]      Hermetic mock dreamina-canvas CLI E2E: auth login/wait/account, upload->create->quote->confirm->run(--credit-token)->wait->show->download(0600->0644)
+ *   [1/17 provider-sdk]                      Zero-markup SDK clients, 13-platform PLATFORM_CATALOG & $0 markup estimator
+ *   [2/17 mcp-client]                        Live JSON-RPC roundtrip verifying all 12 built-in MCP tools on :3001/mcp
+ *   [3/17 real-photography-media]            206 Partial Content streaming, ffprobe real photography/cinema check & zero-slop bundle audit
+ *   [4/17 inline-editor]                     Live /api/upload-media, /api/inpaint (mask), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)
+ *   [5/17 keyframe-bridge-and-audio]         Live /api/keyframe-bridge (A->B), /api/generate-audio (64-bar waveform + MP3) & multi-track /api/compile-timeline
+ *   [6/17 persistence-bridge]                Live /api/projects CRUD + .dreamflow.json export + /api/bridge/push -> /api/bridge/events
+ *   [7/17 live-provider-and-bridge-jobs]     /api/verify-provider, GET /bridge-connector.js (PNA CORS) & Dreamina live bridge lifecycle
+ *   [8/17 multi-platform-and-external-mcp]   GET /api/platforms (13 platforms) + real stdio External MCP Server tools/list, /api/mcp/call & /api/generate-node
+ *   [9/17 cross-platform-chained-workflow]   Higgsfield (ChatGPT Image 2.6) -> Kling 4.0 (Video) chained base64 reference forwarding
+ *   [10/17 guided-connections-and-sume]      GET /api/connections/status, dryRun 1-click Chrome profile launcher (higgsfield + all) & bridge_session status sync
+ *   [11/17 mcp-oauth-and-check-browser]      MCP OAuth 2.1 + PKCE + Streamable HTTP SSE lifecycle (mock + live Higgsfield probe), /api/mcp/call & /api/connections/check-browser
+ *   [12/17 batch-multiref-and-dreamina-mcp]  4-image batch outputs (multi-job + single-cap fan-out), multi-modal video+image+start/end refs & Dreamina MCP flow
+ *   [13/17 chrome-bridge]                    Manifest V3 v1.2.0 across all 8 creator domains (incl. sume.com), icons & syntax check across all 6 scripts
+ *   [14/17 cli-and-docker]                   open-dreamflow doctor CLI check, unified single-port SPA GET :3001/, Dockerfile & docker-compose.yml
+ *   [15/17 web-studio]                       Production Vite bundle + Stage 10.2 34-model Dreamina catalog, dynamic family chips, 44-tool explorer & 0-neon audit
+ *   [16/17 dreamina-cli-oauth-hermetic]      Hermetic mock dreamina-canvas CLI E2E: auth login/wait/account, upload->create->quote->confirm->run(--credit-token)->wait->show->download(0600->0644)
+ *   [17/17 dreamina-44tools-and-catalog]     34 Dreamina models (18 video), 44 official MCP tools, dynamic CLI model discovery (?refresh=1) & post-edit CLI execution
  */
 
 import * as crypto from 'node:crypto';
@@ -298,7 +299,7 @@ async function verifyStage1ProviderSdk() {
   assert(cost.rawProviderCostUsd > 0, 'Raw Gemini Omni 15s estimate must be positive');
 
   logStep(
-    '1/16 provider-sdk',
+    '1/17 provider-sdk',
     `Verified zero-markup BYOK/Local GPU clients, ${sdk.PLATFORM_CATALOG.length}-platform PLATFORM_CATALOG + $0 markup estimator`
   );
 }
@@ -357,7 +358,7 @@ async function verifyLiveServerStages() {
     }
 
     // -------------------------------------------------------------------------
-    // Stage [2/16 mcp-client]: Live JSON-RPC roundtrip verifying all 12 MCP tools
+    // Stage [2/17 mcp-client]: Live JSON-RPC roundtrip verifying all 12 MCP tools
     // -------------------------------------------------------------------------
     const healthRes = await fetch(`${baseUrl}/api/health`);
     assert(healthRes.ok, '/api/health returned non-200');
@@ -401,12 +402,12 @@ async function verifyLiveServerStages() {
     await client.disconnect();
 
     logStep(
-      '2/16 mcp-client',
+      '2/17 mcp-client',
       `Live JSON-RPC roundtrip on ${baseUrl}/mcp verified all ${expectedTools.length} built-in MCP tools`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [3/16 real-photography-media]: 206 Partial Content + ffprobe + zero neon slop
+    // Stage [3/17 real-photography-media]: 206 Partial Content + ffprobe + zero neon slop
     // -------------------------------------------------------------------------
     const publicMediaDir = path.join(ROOT, 'apps/web-studio/public/media');
     const distMediaDir = path.join(ROOT, 'apps/web-studio/dist/media');
@@ -483,12 +484,12 @@ async function verifyLiveServerStages() {
 
     const masterSizeMb = (fs.statSync(resolveAsset('real_salt_terracotta_master.mp4')).size / (1024 * 1024)).toFixed(2);
     logStep(
-      '3/16 real-photography-media',
+      '3/17 real-photography-media',
       `Verified 206 Range streaming, ffprobe on ${requiredRealMedia.length} real 35mm/cinema assets (master = ${masterSizeMb} MB) & 0 neon strings in JS bundle`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [4/16 inline-editor]: Live upload, mask inpaint, 16:9 outpaint, cutout & 4K upscale
+    // Stage [4/17 inline-editor]: Live upload, mask inpaint, 16:9 outpaint, cutout & 4K upscale
     // -------------------------------------------------------------------------
     assert(health.ffmpeg === true, 'FFmpeg must be available for Stage 4 inline-editor verification');
 
@@ -536,12 +537,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(upscaleRes.imageUrl), 'Upscale 4K PNG missing on disk');
 
     logStep(
-      '4/16 inline-editor',
+      '4/17 inline-editor',
       'Verified live /api/upload-media, /api/inpaint (masked), /api/outpaint (16:9), /api/remove-bg & /api/upscale (4K)'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [5/16 keyframe-bridge-and-audio]: A->B optical bridge + 64-bar audio + multi-track mix
+    // Stage [5/17 keyframe-bridge-and-audio]: A->B optical bridge + 64-bar audio + multi-track mix
     // -------------------------------------------------------------------------
     const bridgeRes = await postJson(baseUrl, '/api/keyframe-bridge', {
       startImageUrl: '/media/real_courtyard_sun.jpg',
@@ -581,12 +582,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(compiledMasterUrl), 'Multi-track compiled master MP4 missing on disk');
 
     logStep(
-      '5/16 keyframe-bridge-and-audio',
+      '5/17 keyframe-bridge-and-audio',
       'Verified live /api/keyframe-bridge (A→B), /api/generate-audio (64-bar RMS waveform + MP3) & multi-track /api/compile-timeline'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [6/16 persistence-bridge]: Projects CRUD + .dreamflow.json export + Bridge relay
+    // Stage [6/17 persistence-bridge]: Projects CRUD + .dreamflow.json export + Bridge relay
     // -------------------------------------------------------------------------
     const saveRes = await postJson(baseUrl, '/api/projects', {
       id: tempProjectId,
@@ -636,12 +637,12 @@ async function verifyLiveServerStages() {
     );
 
     logStep(
-      '6/16 persistence-bridge',
+      '6/17 persistence-bridge',
       'Verified /api/projects CRUD + snapshot + .dreamflow.json export + /api/bridge/push -> /api/bridge/events'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [7/16 live-provider-and-bridge-jobs]:
+    // Stage [7/17 live-provider-and-bridge-jobs]:
     //   /api/verify-provider, GET /bridge-connector.js & Dreamina job lifecycle
     // -------------------------------------------------------------------------
     const verifyEmptyRes = await fetch(`${baseUrl}/api/verify-provider`, {
@@ -740,12 +741,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(savedLiveImage), `Ingested ${savedLiveImage} missing on disk`);
 
     logStep(
-      '7/16 live-provider-and-bridge-jobs',
+      '7/17 live-provider-and-bridge-jobs',
       `Verified /api/verify-provider, GET /bridge-connector.js (PNA CORS) & Dreamina bridge lifecycle (${path.basename(savedLiveImage)})`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [8/16 multi-platform-and-external-mcp]:
+    // Stage [8/17 multi-platform-and-external-mcp]:
     //   1) GET /api/platforms (all 13 platforms incl. sume + modality-accurate models)
     //   2) Real External stdio MCP Server roundtrip
     // -------------------------------------------------------------------------
@@ -846,12 +847,12 @@ async function verifyLiveServerStages() {
     registeredMcpServerId = null;
 
     logStep(
-      '8/16 multi-platform-and-external-mcp',
+      '8/17 multi-platform-and-external-mcp',
       `Verified GET /api/platforms (${platformList.length} platforms incl. sume) + real stdio External MCP Server (${path.basename(nodeMcpMedia)})`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [9/16 cross-platform-chained-workflow]:
+    // Stage [9/17 cross-platform-chained-workflow]:
     //   Higgsfield (ChatGPT Image 2.6) -> Kling AI (Kling 4.0) chained reference forwarding
     // -------------------------------------------------------------------------
     const hfPrompt = `E2E Higgsfield Base Frame ${Date.now()}`;
@@ -944,12 +945,12 @@ async function verifyLiveServerStages() {
     assert(findGeneratedMediaDiskPath(node2VideoPath), `Node 2 ${node2VideoPath} missing on disk`);
 
     logStep(
-      '9/16 cross-platform-chained-workflow',
+      '9/17 cross-platform-chained-workflow',
       `Verified Higgsfield (chatgpt-image-2.6) -> Kling 4.0 chained base64 reference forwarding (${path.basename(node1MediaPath)} -> ${path.basename(node2VideoPath)})`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [10/16 guided-connections-and-sume]:
+    // Stage [10/17 guided-connections-and-sume]:
     //   1) GET /api/connections/status (includes all 8 browser platforms incl. sume)
     //   2) POST /api/connections/launch-browser dryRun for 'higgsfield' & 'all'
     //   3) POST /api/bridge/push type:'bridge_session' updates connectedBrowserPlatforms
@@ -1008,12 +1009,12 @@ async function verifyLiveServerStages() {
     );
 
     logStep(
-      '10/16 guided-connections-and-sume',
+      '10/17 guided-connections-and-sume',
       `Verified /api/connections/status (8 browser platforms + ${dryHiggs.browserName}), dryRun --load-extension & bridge_session sync`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [11/16 mcp-oauth-and-check-browser]: MCP OAuth 2.1 + PKCE + Streamable HTTP SSE + CDP Check
+    // Stage [11/17 mcp-oauth-and-check-browser]: MCP OAuth 2.1 + PKCE + Streamable HTTP SSE + CDP Check
     // -------------------------------------------------------------------------
     const b64u = (v) => Buffer.from(JSON.stringify(v)).toString('base64url');
     const mockAccessToken = `${b64u({ alg: 'none' })}.${b64u({
@@ -1472,12 +1473,12 @@ async function verifyLiveServerStages() {
     assert(checkBrowserRes.ok === true && Array.isArray(checkBrowserRes.connectedBrowserPlatforms), 'POST /api/connections/check-browser invalid response');
 
     logStep(
-      '11/16 mcp-oauth-and-check-browser',
+      '11/17 mcp-oauth-and-check-browser',
       `Verified Mock OAuth 2.1 PKCE + Streamable HTTP SSE (4 tools + gpu_status), ${liveHiggsStatus}, & POST /api/connections/check-browser (200 OK)`
     );
 
     // -------------------------------------------------------------------------
-    // Stage [12/16 batch-multiref-and-dreamina-mcp]:
+    // Stage [12/17 batch-multiref-and-dreamina-mcp]:
     //   1) True 4-image batch outputs (multi-job + single-job-capped fan-out)
     //   2) Multi-modal video + image references & start-end frame roles
     //   3) Isolated Dreamina MCP flow (connect -> status -> connectedMcpPlatforms -> tools/list)
@@ -1621,17 +1622,17 @@ async function verifyLiveServerStages() {
     }
 
     logStep(
-      '12/16 batch-multiref-and-dreamina-mcp',
+      '12/17 batch-multiref-and-dreamina-mcp',
       'Verified 4x batch (multi-job + single-cap fan-out), multi-modal video+image & start/end refs, and isolated Dreamina MCP connect flow'
     );
 
     // -------------------------------------------------------------------------
-    // Stage [13/16 chrome-bridge]: Manifest V3 v1.2.0 across all 8 creator domains
+    // Stage [13/17 chrome-bridge]: Manifest V3 v1.2.0 across all 8 creator domains
     // -------------------------------------------------------------------------
     verifyStage11ChromeBridge();
 
     // -------------------------------------------------------------------------
-    // Stage [14/16 cli-and-docker]: open-dreamflow doctor + unified SPA GET :3001/ + Docker
+    // Stage [14/17 cli-and-docker]: open-dreamflow doctor + unified SPA GET :3001/ + Docker
     // -------------------------------------------------------------------------
     const cliPath = path.join(ROOT, 'bin/open-dreamflow.mjs');
     assert(fs.existsSync(cliPath), 'bin/open-dreamflow.mjs missing');
@@ -1661,7 +1662,7 @@ async function verifyLiveServerStages() {
     }
 
     logStep(
-      '14/16 cli-and-docker',
+      '14/17 cli-and-docker',
       `Verified 'open-dreamflow doctor' (exit 0), unified single-port SPA GET ${baseUrl}/ (200 OK) & Dockerfile + docker-compose.yml`
     );
   } finally {
@@ -1770,7 +1771,7 @@ function verifyStage11ChromeBridge() {
   assert(bgSource.includes('dispatch_bridge_job'), 'background.js missing dispatch_bridge_job WS listener');
 
   logStep(
-    '13/16 chrome-bridge',
+    '13/17 chrome-bridge',
     `Manifest V3 v${manifest.version} (8 creator domains incl. sume.com), 3 icons & ${jsScripts.length} scripts syntax-checked`
   );
 }
@@ -1815,6 +1816,23 @@ function verifyStage13WebStudioBundle() {
     providerModalSrc.includes('seen.has(plat.id)') && providerModalSrc.includes('railPlatforms'),
     'ProviderModal.tsx must deduplicate railPlatforms by plat.id so custom-mcp is never duplicated'
   );
+  const platformCatalogSrc = fs.readFileSync(
+    path.join(ROOT, 'apps/web-studio/src/presets/platformCatalog.ts'),
+    'utf8'
+  );
+  assert(
+    !platformCatalogSrc.includes("'seedance_1_5_pro':") &&
+      platformCatalogSrc.includes("platformId !== 'dreamina'"),
+    'platformCatalog.ts must not drop seedance_1_5_pro in LEGACY_MODEL_ID_REDIRECTS and must exclude dreamina from allowInDropdown raw MCP tool mixing'
+  );
+  const overlaySrc = fs.readFileSync(
+    path.join(ROOT, 'apps/web-studio/src/components/ContextualNodeOverlay.tsx'),
+    'utf8'
+  );
+  assert(
+    overlaySrc.includes('buildFamilyChips') && overlaySrc.includes('familyMatchesChip'),
+    'ContextualNodeOverlay.tsx must use dynamic buildFamilyChips + familyMatchesChip matching'
+  );
   for (const marker of [
     '2×2 Grid',
     'Split into',
@@ -1824,6 +1842,14 @@ function verifyStage13WebStudioBundle() {
     'Nano Banana 2.1',
     'Official CLI MCP',
     'Seedance 2.5',
+    'Seedance 1.5 Pro',
+    'Seedance 2.0 Mini',
+    'Veo 3.1 Lite',
+    'Gemini Omni 1.1 Flash',
+    'Motion Imitation',
+    'Seed TTS',
+    'Resources & Ops',
+    'Workflows & 3D',
     'cli_oauth',
     'dreamina_mcp_oauth',
     'Start → End Frame',
@@ -1871,8 +1897,8 @@ function verifyStage13WebStudioBundle() {
   }
 
   logStep(
-    '15/16 web-studio',
-    `Dreamina 1:1 Vite bundle + Stage 10.1 CLI OAuth / Seedance 2.5 / custom-mcp dedup verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
+    '15/17 web-studio',
+    `Dreamina 1:1 Vite bundle + Stage 10.2 34-model Dreamina catalog / family chips / 44-tool explorer / custom-mcp dedup verified (${jsFiles[0]} = ${jsSizeKb} kB, ${cssFiles[0]} = ${cssSizeKb} kB)`
   );
 }
 
@@ -2148,18 +2174,268 @@ if (cmd === 'version') {
   }
 
   logStep(
-    '16/16 dreamina-cli-oauth-hermetic',
+    '16/17 dreamina-cli-oauth-hermetic',
     'Verified hermetic mock dreamina-canvas CLI OAuth device flow, resource upload, node create->quote->confirm->run(--credit-token)->wait->show->download (0600->0644) & /media/* HTTP 200'
   );
 }
 
+async function verifyStage17Dreamina44ToolsAndCatalog() {
+  const sdkDist = path.join(ROOT, 'packages/provider-sdk/dist/index.js');
+  const sdk = await import(pathToFileURL(sdkDist).href);
+  const catalog = sdk.DREAMINA_CANONICAL_MODELS || [];
+  assert(
+    catalog.length === 34,
+    `Expected 34 canonical Dreamina models (14 image + 18 video + 2 audio), got ${catalog.length}`
+  );
+  const vidModels = catalog.filter((m) => m.modality === 'video');
+  const imgModels = catalog.filter((m) => m.modality === 'image');
+  const audModels = catalog.filter((m) => m.modality === 'audio');
+  assert(
+    imgModels.length === 14 && vidModels.length === 18 && audModels.length === 2,
+    `Expected 14 image / 18 video / 2 audio models, got ${imgModels.length}/${vidModels.length}/${audModels.length}`
+  );
+  for (const requiredVid of [
+    'seedance_2_5',
+    'seedance_2_5_flash',
+    'seedance_2_5_draft',
+    'seedance_2_0',
+    'seedance_2_0_fast',
+    'seedance_2_0_mini',
+    'seedance_1_5_pro',
+    'seedance_1_0_pro',
+    'seedance_pro_fast',
+    'seedance_1_0_lite',
+    'veo_3_1',
+    'veo_3_1_fast',
+    'veo_3_1_lite',
+    'gemini_omni_1_1_flash',
+    'wan_3_0',
+    'happyhorse_1_1',
+    'omnihuman_1_5',
+    'dreamina_motion_imitation',
+  ]) {
+    assert(
+      vidModels.some((m) => m.id === requiredVid),
+      `Missing Dreamina video model in DREAMINA_CANONICAL_MODELS: ${requiredVid}`
+    );
+  }
+  assert(
+    sdk.normalizeDreaminaModelId('seedance_pro_fast') === 'seedance_pro_fast' &&
+      sdk.mapCanonicalDreaminaToCliModel('seedance_pro_fast') === 'seedance_pro_fast',
+    'seedance_pro_fast must map cleanly without collapsing into seedance_1_5_pro'
+  );
+
+  const mcpBridge = path.join(ROOT, 'packages/mcp-client/dist/server-bridge.js');
+  const { McpStdioBridgeServer } = await import(pathToFileURL(mcpBridge).href);
+
+  const prevCfgEnv = process.env.DREAMFLOW_DREAMINA_CONFIG_PATH;
+  const prevBinEnv = process.env.DREAMFLOW_DREAMINA_BINARY_PATH;
+  const prevDisableEnv = process.env.DREAMFLOW_DISABLE_SYSTEM_DREAMINA_CLI;
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'df_stage17_44tools_'));
+  const tmpCfgPath = path.join(tmpDir, 'dreamina-mcp.json');
+  const tmpMockBinPath = path.join(tmpDir, 'dreamina-canvas');
+  const tmpMediaTracker = [];
+
+  const mockCliSource = `#!/usr/bin/env node
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+const rawArgs = process.argv.slice(2);
+const pos = [];
+const flags = {};
+const valueFlags = new Set([
+  '--format', '--type', '--file', '--project-id', '--node-id', '--submit-id',
+  '--credit-ceiling', '--credit-token', '--ratio', '--resolution', '--duration',
+  '--count', '--mode', '--model', '--prompt', '--title', '--ref', '--timeout',
+  '--interval', '--limit', '--kind', '--fps', '--detail', '-o',
+]);
+for (let i = 0; i < rawArgs.length; i++) {
+  const a = rawArgs[i];
+  if (valueFlags.has(a)) {
+    flags[a] = rawArgs[i + 1] ?? '';
+    i++;
+  } else if (a.startsWith('--')) {
+    flags[a] = 'true';
+  } else {
+    pos.push(a);
+  }
+}
+const out = (data) => process.stdout.write(JSON.stringify({ schemaVersion: '2', ok: true, data }) + '\\n');
+const cmd = pos[0];
+const sub = pos[1];
+const sub2 = pos[2];
+
+if (cmd === 'version') {
+  out({ version: '1.3.0', edition: 'public' });
+} else if (cmd === 'schema') {
+  out({ leafCommands: 57, directorSubcommands: 10, version: '1.3.0' });
+} else if (cmd === 'auth' && sub === 'status') {
+  out({ loggedIn: true });
+} else if (cmd === 'auth' && sub === 'account') {
+  out({ displayName: 'Hermetic44User', userId: 'u_44', availableCredits: '99000', vipLevel: 'maestro' });
+} else if (cmd === 'canvas' && sub === 'ls') {
+  out({ canvases: [{ projectId: 'proj_44_1', name: 'Open-DreamFlow Bridge' }] });
+} else if (cmd === 'canvas' && sub === 'current') {
+  out({ projectId: 'proj_44_1', name: 'Open-DreamFlow Bridge' });
+} else if (cmd === 'model' && sub === 'list') {
+  const t = flags['--type'] || 'image';
+  const items =
+    t === 'video'
+      ? [
+          { model: 'seedance_2.5', modes: [{ name: 't2v', flags: [{ flag: '--resolution', values: ['480p', '720p', '1080p', '4k'] }, { flag: '--ratio', values: ['16:9', '9:16'] }, { flag: '--duration', values: ['4', '5', '10', '15', '30'] }] }] },
+          { model: 'seedance_3.0_preview', name: 'Seedance 3.0 Preview', modes: [{ name: 't2v', flags: [{ flag: '--resolution', values: ['720p', '1080p'] }, { flag: '--ratio', values: ['16:9'] }, { flag: '--duration', values: ['5', '10', '15'] }] }] },
+        ]
+      : t === 'audio'
+        ? [{ model: 'seed_audio_v1' }]
+        : [{ model: 'seedream_5.5' }];
+  out({ items });
+} else if (cmd === 'model' && sub === 'find') {
+  out({ models: [{ id: 'seedance_2.5' }, { id: 'seedance_2.5_flash' }] });
+} else if (cmd === 'model' && sub) {
+  out({ id: sub, modality: 'video', resolutions: ['480p', '720p', '1080p', '4k'] });
+} else if (cmd === 'voice' && sub === 'list') {
+  out({ voices: [{ voiceId: 'v_cinema_01', name: 'Cinema Narrator', language: 'en' }] });
+} else if (cmd === 'director' && sub === 'catalog') {
+  out({ items: [{ id: 'dir_char_01', name: 'Studio Architect' }] });
+} else if (cmd === 'workflow' && sub === 'capabilities') {
+  out({ templatesSupported: true, maxConcurrent: 4 });
+} else if (cmd === 'node' && sub === 'upscale' && sub2 === 'image') {
+  out({ nodeId: 'node_up_44', submitId: 'sub_up_44' });
+} else if (cmd === 'node' && sub === 'quote') {
+  out({ totalCredit: 4 });
+} else if (cmd === 'node' && sub === 'confirm') {
+  out({ creditConfirmationToken: 'ctok_up_44' });
+} else if (cmd === 'node' && sub === 'run') {
+  out({ submitId: flags['--submit-id'] || 'sub_up_44' });
+} else if (cmd === 'operation' && sub === 'wait') {
+  out({ status: 'success' });
+} else if (cmd === 'node' && sub === 'show') {
+  out({ node: { nodeId: flags['--node-id'] || 'node_up_44', resources: [{ resourceId: 'res_up_44', status: 'success' }] } });
+} else if (cmd === 'resource' && sub === 'download') {
+  const outDir = flags['-o'];
+  fs.mkdirSync(outDir, { recursive: true });
+  const dest = path.join(outDir, 'upscale_44.png');
+  fs.writeFileSync(dest, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
+  fs.chmodSync(dest, 0o600);
+  out({ path: dest });
+} else {
+  out({ echoed: rawArgs });
+}
+`;
+  fs.writeFileSync(tmpMockBinPath, mockCliSource, 'utf8');
+  fs.chmodSync(tmpMockBinPath, 0o755);
+
+  process.env.DREAMFLOW_DREAMINA_CONFIG_PATH = tmpCfgPath;
+  process.env.DREAMFLOW_DREAMINA_BINARY_PATH = tmpMockBinPath;
+  delete process.env.DREAMFLOW_DISABLE_SYSTEM_DREAMINA_CLI;
+
+  const port17 = 16100 + Math.floor(Math.random() * 800);
+  const bridge = new McpStdioBridgeServer({ host: '127.0.0.1', port: port17, quiet: true });
+  try {
+    await bridge.start();
+    const u = `http://127.0.0.1:${port17}`;
+    const c17 = await postJson(u, '/api/mcp/dreamina/connect', { mode: 'cli_oauth' });
+    assert(c17.ok === true && c17.session?.step === 'connected', `Stage 17 CLI connect failed: ${JSON.stringify(c17)}`);
+
+    const srvsJson = await (await fetch(`${u}/api/mcp/servers`)).json();
+    const dSrv = (srvsJson.servers || []).find((s) => s.id === 'mcp_dreamina');
+    const toolNames = (dSrv?.tools || []).map((t) => t.name);
+    assert(
+      toolNames.length >= 44,
+      `Expected >= 44 Dreamina MCP tools, got ${toolNames.length}: ${JSON.stringify(toolNames)}`
+    );
+    for (const requiredTool of [
+      'dreamina_cli_schema',
+      'dreamina_model_info',
+      'dreamina_model_find',
+      'dreamina_voices_list',
+      'dreamina_upscale_image',
+      'dreamina_upscale_video',
+      'dreamina_cutout_image',
+      'dreamina_interpolate_video',
+      'dreamina_promote_video_sample',
+      'dreamina_canvas_list',
+      'dreamina_node_create',
+      'dreamina_resource_upload',
+      'dreamina_workflow_list',
+      'dreamina_director_catalog',
+    ]) {
+      assert(toolNames.includes(requiredTool), `Missing official Dreamina MCP tool: ${requiredTool}`);
+    }
+
+    const refreshedModels = await (
+      await fetch(`${u}/api/mcp/models?platformId=dreamina&refresh=1`)
+    ).json();
+    assert(
+      refreshedModels.ok === true &&
+        Array.isArray(refreshedModels.models) &&
+        refreshedModels.models.length >= 35 &&
+        refreshedModels.models.some((m) => m.id === 'seedance_3_0_preview'),
+      `Expected dynamic CLI model discovery to append seedance_3_0_preview alongside 34 canonical models, got count=${refreshedModels.models?.length}`
+    );
+
+    for (const [toolName, toolArgs] of [
+      ['dreamina_cli_schema', {}],
+      ['dreamina_model_info', { model: 'seedance_2_5' }],
+      ['dreamina_voices_list', { count: 2 }],
+      ['dreamina_director_catalog', { kind: 'builtin' }],
+      ['dreamina_workflow_capabilities', {}],
+    ]) {
+      const callOut = await postJson(u, '/api/mcp/call', {
+        serverId: 'mcp_dreamina',
+        toolName,
+        arguments: toolArgs,
+      });
+      assert(callOut.ok === true, `MCP call ${toolName} failed: ${JSON.stringify(callOut)}`);
+    }
+
+    const upCall = await postJson(u, '/api/mcp/call', {
+      serverId: 'mcp_dreamina',
+      toolName: 'dreamina_upscale_image',
+      arguments: { node_id: 'node_up_44', wait: true, resolution: '4K' },
+    });
+    const upMedia =
+      upCall.mediaUrl || upCall.structuredContent?.mediaUrl || upCall.structuredContent?.outputs?.[0];
+    assert(
+      upCall.ok === true && String(upMedia || '').startsWith('/media/dreamina_mcp_'),
+      `Expected dreamina_upscale_image to download /media/dreamina_mcp_*, got: ${JSON.stringify(upCall)}`
+    );
+    tmpMediaTracker.push(upMedia);
+    const upHttp = await fetch(`${u}${upMedia}`);
+    assert(upHttp.status === 200, `Expected HTTP 200 on ${upMedia}, got ${upHttp.status}`);
+
+    await postJson(u, '/api/mcp/dreamina/disconnect', {});
+  } finally {
+    await bridge.stop();
+    for (const m of tmpMediaTracker) unlinkMediaIfPresent(m);
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+    if (prevCfgEnv === undefined) delete process.env.DREAMFLOW_DREAMINA_CONFIG_PATH;
+    else process.env.DREAMFLOW_DREAMINA_CONFIG_PATH = prevCfgEnv;
+    if (prevBinEnv === undefined) delete process.env.DREAMFLOW_DREAMINA_BINARY_PATH;
+    else process.env.DREAMFLOW_DREAMINA_BINARY_PATH = prevBinEnv;
+    if (prevDisableEnv === undefined) delete process.env.DREAMFLOW_DISABLE_SYSTEM_DREAMINA_CLI;
+    else process.env.DREAMFLOW_DISABLE_SYSTEM_DREAMINA_CLI = prevDisableEnv;
+  }
+
+  logStep(
+    '17/17 dreamina-44tools-and-catalog',
+    'Verified 34 Dreamina models (18 video incl. seedance_1_5_pro/pro_fast), 44 official MCP tools, dynamic CLI discovery (?refresh=1) & post-edit execution'
+  );
+}
+
 async function main() {
-  console.log('\nOpen-DreamFlow — Running 16-Stage End-to-End Verification Suite...');
+  console.log('\nOpen-DreamFlow — Running 17-Stage End-to-End Verification Suite...');
   await verifyStage1ProviderSdk();
   await verifyLiveServerStages();
   verifyStage13WebStudioBundle();
   await verifyStage16DreaminaCliHermetic();
-  console.log('All 16/16 Open-DreamFlow subsystems passed verification with 0 errors!\n');
+  await verifyStage17Dreamina44ToolsAndCatalog();
+  console.log('All 17/17 Open-DreamFlow subsystems passed verification with 0 errors!\n');
 }
 
 main().catch((err) => {
