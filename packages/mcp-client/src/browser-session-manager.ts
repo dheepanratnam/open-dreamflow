@@ -7,7 +7,9 @@
  */
 
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -349,14 +351,234 @@ export class BrowserSessionManager {
   }
 
   /**
+   * Probes a Dreamina / Jimeng Chrome DevTools tab WebSocket to verify an actual
+   * authenticated session cookie (`sessionid`, `sid_tt`, `sessionid_ss`, `uid_tt`)
+   * or hydrated `_ROUTER_DATA` `"__isLogined":true` marker before reporting logged in.
+   */
+  private async probeDreaminaCdpTabLoggedIn(wsDebuggerUrl: string): Promise<boolean> {
+    if (!wsDebuggerUrl || !wsDebuggerUrl.startsWith('ws://')) {
+      return false;
+    }
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(wsDebuggerUrl);
+    } catch {
+      return false;
+    }
+
+    const host = parsedUrl.hostname || '127.0.0.1';
+    const port = Number(parsedUrl.port) || 80;
+    const reqPath = `${parsedUrl.pathname || '/'}${parsedUrl.search || ''}`;
+
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const socket = net.createConnection({ host, port });
+      const wsKey = crypto.randomBytes(16).toString('base64');
+
+      let upgraded = false;
+      let recvBuf = Buffer.alloc(0);
+      let checkedCookies = false;
+      let checkedRuntime = false;
+
+      const finish = (loggedIn: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          socket.destroy();
+        } catch {
+          // Ignore close error
+        }
+        resolve(loggedIn);
+      };
+
+      const timer = setTimeout(() => finish(false), 900);
+
+      const sendWsText = (text: string) => {
+        const payload = Buffer.from(text, 'utf8');
+        const maskKey = crypto.randomBytes(4);
+        let header: Buffer;
+        if (payload.length < 126) {
+          header = Buffer.alloc(2);
+          header[0] = 0x81;
+          header[1] = 0x80 | payload.length;
+        } else {
+          header = Buffer.alloc(4);
+          header[0] = 0x81;
+          header[1] = 0x80 | 126;
+          header.writeUInt16BE(payload.length, 2);
+        }
+        const masked = Buffer.alloc(payload.length);
+        for (let i = 0; i < payload.length; i += 1) {
+          masked[i] = payload[i] ^ maskKey[i % 4];
+        }
+        socket.write(Buffer.concat([header, maskKey, masked]));
+      };
+
+      const handleCdpJson = (rawText: string) => {
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(rawText) as Record<string, unknown>;
+        } catch {
+          return;
+        }
+        const msgId = msg.id;
+        const resultObj =
+          typeof msg.result === 'object' && msg.result !== null
+            ? (msg.result as Record<string, unknown>)
+            : null;
+
+        if (msgId === 1) {
+          checkedCookies = true;
+          const cookies = Array.isArray(resultObj?.cookies)
+            ? (resultObj.cookies as Array<Record<string, unknown>>)
+            : [];
+          const hasAuthCookie = cookies.some((c) => {
+            const name = String(c?.name || '').toLowerCase();
+            const val = String(c?.value || '').trim();
+            return (
+              val.length > 0 &&
+              (name === 'sessionid' ||
+                name === 'sessionid_ss' ||
+                name === 'sid_tt' ||
+                name === 'sid_guard' ||
+                name === 'uid_tt')
+            );
+          });
+          if (hasAuthCookie) {
+            finish(true);
+            return;
+          }
+        } else if (msgId === 2) {
+          checkedRuntime = true;
+          const evalResult =
+            typeof resultObj?.result === 'object' && resultObj.result !== null
+              ? (resultObj.result as Record<string, unknown>)
+              : null;
+          const val = String(evalResult?.value || '');
+          if (val) {
+            try {
+              const parsed = JSON.parse(val) as Record<string, unknown>;
+              if (parsed.isLogined === true) {
+                finish(true);
+                return;
+              }
+            } catch {
+              // Ignore parse failure
+            }
+          }
+        }
+
+        if (checkedCookies && checkedRuntime) {
+          finish(false);
+        }
+      };
+
+      const drainFrames = () => {
+        while (recvBuf.length >= 2) {
+          const b0 = recvBuf[0];
+          const b1 = recvBuf[1];
+          const opcode = b0 & 0x0f;
+          const masked = (b1 & 0x80) !== 0;
+          let len = b1 & 0x7f;
+          let offset = 2;
+
+          if (len === 126) {
+            if (recvBuf.length < offset + 2) return;
+            len = recvBuf.readUInt16BE(offset);
+            offset += 2;
+          } else if (len === 127) {
+            if (recvBuf.length < offset + 8) return;
+            len = Number(recvBuf.readBigUInt64BE(offset));
+            offset += 8;
+          }
+
+          if (masked) {
+            offset += 4;
+          }
+          if (recvBuf.length < offset + len) return;
+
+          const framePayload = recvBuf.subarray(offset, offset + len);
+          recvBuf = recvBuf.subarray(offset + len);
+
+          if (opcode === 0x8) {
+            finish(false);
+            return;
+          }
+          if (opcode === 0x1) {
+            handleCdpJson(framePayload.toString('utf8'));
+          }
+        }
+      };
+
+      socket.on('connect', () => {
+        const upgradeReq = [
+          `GET ${reqPath} HTTP/1.1`,
+          `Host: ${host}:${port}`,
+          'Upgrade: websocket',
+          'Connection: Upgrade',
+          `Sec-WebSocket-Key: ${wsKey}`,
+          'Sec-WebSocket-Version: 13',
+          '\r\n',
+        ].join('\r\n');
+        socket.write(upgradeReq);
+      });
+
+      socket.on('data', (chunk: Buffer | string) => {
+        const piece = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        recvBuf = Buffer.concat([recvBuf, piece]);
+        if (!upgraded) {
+          const headerEnd = recvBuf.indexOf('\r\n\r\n');
+          if (headerEnd === -1) return;
+          const headerStr = recvBuf.subarray(0, headerEnd).toString('utf8');
+          if (!/^HTTP\/1\.1 101\b/i.test(headerStr)) {
+            finish(false);
+            return;
+          }
+          upgraded = true;
+          recvBuf = recvBuf.subarray(headerEnd + 4);
+          sendWsText(
+            JSON.stringify({
+              id: 1,
+              method: 'Network.getCookies',
+              params: {
+                urls: ['https://dreamina.capcut.com', 'https://jimeng.jianying.com'],
+              },
+            })
+          );
+          sendWsText(
+            JSON.stringify({
+              id: 2,
+              method: 'Runtime.evaluate',
+              params: {
+                expression:
+                  'JSON.stringify({ isLogined: (function(){ try { var s = JSON.stringify(window._ROUTER_DATA || {}); return s.includes(\'"__isLogined":true\') || s.includes(\'"is_logined":true\'); } catch(e) { return false; } })() })',
+                returnByValue: true,
+              },
+            })
+          );
+        }
+        drainFrames();
+      });
+
+      socket.on('error', () => finish(false));
+      socket.on('close', () => finish(false));
+    });
+  }
+
+  /**
    * Inspects Chrome DevTools Protocol (`http://127.0.0.1:9229/json/list`) to detect
    * signed-in creator tabs directly even when Chrome Stable skips unpacked extension loading.
+   * Verifies real Dreamina authentication cookies / `_ROUTER_DATA` state so logged-out tabs
+   * never produce false-positive `dreamina` connections.
    */
   public async inspectOpenCreatorTabsViaCdp(cdpPort?: number): Promise<{
     reachable: boolean;
     cdpUrl: string;
     openDomains: string[];
     platforms: LaunchableCreatorPlatformId[];
+    dreaminaLoggedIn: boolean;
     tabs: Array<{ title: string; url: string; platformId: LaunchableCreatorPlatformId | null }>;
   }> {
     const port = cdpPort || Number(process.env.DREAMFLOW_CHROME_CDP_PORT || 9229) || 9229;
@@ -367,15 +589,30 @@ export class BrowserSessionManager {
         signal: AbortSignal.timeout(600),
       });
       if (!res.ok) {
-        return { reachable: false, cdpUrl, openDomains: [], platforms: [], tabs: [] };
+        return {
+          reachable: false,
+          cdpUrl,
+          openDomains: [],
+          platforms: [],
+          dreaminaLoggedIn: false,
+          tabs: [],
+        };
       }
       const rawTabs = (await res.json()) as Array<Record<string, unknown>>;
       if (!Array.isArray(rawTabs)) {
-        return { reachable: true, cdpUrl, openDomains: [], platforms: [], tabs: [] };
+        return {
+          reachable: true,
+          cdpUrl,
+          openDomains: [],
+          platforms: [],
+          dreaminaLoggedIn: false,
+          tabs: [],
+        };
       }
 
       const domains = new Set<string>();
       const platforms = new Set<LaunchableCreatorPlatformId>();
+      const dreaminaWsCandidates: string[] = [];
       const tabs: Array<{
         title: string;
         url: string;
@@ -385,9 +622,15 @@ export class BrowserSessionManager {
       for (const tab of rawTabs) {
         const url = typeof tab?.url === 'string' ? tab.url.trim() : '';
         const title = typeof tab?.title === 'string' ? tab.title.trim() : '';
+        const wsDebuggerUrl =
+          typeof tab?.webSocketDebuggerUrl === 'string' ? tab.webSocketDebuggerUrl.trim() : '';
         if (!url || !/^https?:/i.test(url)) continue;
         const platformId = mapDomainToCreatorPlatformId(url);
-        if (platformId) {
+        if (platformId === 'dreamina') {
+          if (wsDebuggerUrl) {
+            dreaminaWsCandidates.push(wsDebuggerUrl);
+          }
+        } else if (platformId) {
           platforms.add(platformId);
           try {
             const host = new URL(url).hostname.toLowerCase();
@@ -399,15 +642,44 @@ export class BrowserSessionManager {
         tabs.push({ title, url, platformId });
       }
 
+      let dreaminaLoggedIn = false;
+      for (const wsUrl of dreaminaWsCandidates) {
+        if (await this.probeDreaminaCdpTabLoggedIn(wsUrl)) {
+          dreaminaLoggedIn = true;
+          break;
+        }
+      }
+
+      if (dreaminaLoggedIn) {
+        platforms.add('dreamina');
+        for (const tab of tabs) {
+          if (tab.platformId !== 'dreamina') continue;
+          try {
+            const host = new URL(tab.url).hostname.toLowerCase();
+            if (host) domains.add(host);
+          } catch {
+            // Ignore malformed URL
+          }
+        }
+      }
+
       return {
         reachable: true,
         cdpUrl,
         openDomains: Array.from(domains),
         platforms: Array.from(platforms),
+        dreaminaLoggedIn,
         tabs,
       };
     } catch {
-      return { reachable: false, cdpUrl, openDomains: [], platforms: [], tabs: [] };
+      return {
+        reachable: false,
+        cdpUrl,
+        openDomains: [],
+        platforms: [],
+        dreaminaLoggedIn: false,
+        tabs: [],
+      };
     }
   }
 }

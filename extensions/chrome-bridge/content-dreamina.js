@@ -162,6 +162,8 @@
 
   function findDreaminaPromptEditor() {
     const selectors = [
+      'textarea.prompt-textarea-nsnNXw',
+      'textarea[class*="prompt-textarea"]',
       '.tiptap.ProseMirror[contenteditable="true"]',
       'div.ProseMirror[contenteditable="true"]',
       'div[contenteditable="true"][role="textbox"]',
@@ -508,7 +510,7 @@
         const editor = await ensureDreaminaPromptMounted(job.mode);
         if (!editor) {
           throw new Error(
-            'Dreamina prompt input (.tiptap.ProseMirror) not found. Sign in at dreamina.capcut.com/ai-tool/ai-canvas and open a canvas.'
+            'Dreamina prompt input (textarea.prompt-textarea-nsnNXw or .tiptap.ProseMirror) not found. Sign in at dreamina.capcut.com/ai-tool/home or /ai-tool/ai-canvas.'
           );
         }
 

@@ -1099,7 +1099,7 @@ export class McpStdioBridgeServer {
     string,
     {
       fetchedAt: number;
-      balance: { credits?: number; plan?: string; rawText: string };
+      balance: { credits?: number; plan?: string; account?: string; rawText: string };
     }
   >();
   private readonly mcpRefUploadCache = new Map<string, string>();
@@ -1164,15 +1164,19 @@ export class McpStdioBridgeServer {
     this.dreaminaMcpEngine = new DreaminaMcpEngine({
       externalMcpHost: this.externalMcpHost,
       loadProviderSdk: () => this.loadProviderSdk(),
+      mediaDir: this.mediaDir,
+      getPublicBaseUrl: () => this.getPublicBaseUrl(),
       checkBrowserStatus: async () => {
         const cdp = await this.browserSessionManager.inspectOpenCreatorTabsViaCdp();
         const extensionTabActive = this.isBridgeSessionRecentlyActive('dreamina');
         const cdpDreaminaOpen =
           cdp.platforms.includes('dreamina') ||
-          cdp.openDomains.some((d) => d.includes('dreamina') || d.includes('jimeng'));
+          cdp.openDomains.some((d) => d.includes('dreamina') || d.includes('jimeng')) ||
+          cdp.tabs.some((t) => t.platformId === 'dreamina');
         return {
           extensionTabActive,
           cdpDreaminaOpen,
+          cdpDreaminaLoggedIn: cdp.dreaminaLoggedIn,
           cdpReachable: cdp.reachable,
           openUrls: cdp.tabs.map((t) => t.url),
         };
@@ -1197,6 +1201,7 @@ export class McpStdioBridgeServer {
       this.hydrateBridgeInbox();
       this.externalMcpHost.hydrateFromDiskInBackground();
       this.dreaminaMcpEngine.hydrateOnStartup();
+      void this.dreaminaMcpEngine.verifyAndHydrateStartup();
     } catch {
       // Ignore if read-only fs in synthetic harness
     }
@@ -2638,7 +2643,10 @@ export class McpStdioBridgeServer {
         if (Boolean(isConnected)) {
           this.lastBridgePlatformSeenAt.set(mapped, now);
           this.explicitlyClosedPlatformAt.delete(mapped);
-        } else if (isConnected === false && raw.source === 'chrome-extension') {
+        } else if (
+          isConnected === false &&
+          (raw.source === 'chrome-extension' || raw.source === 'cdp-inspector')
+        ) {
           this.lastBridgePlatformSeenAt.delete(mapped);
           this.explicitlyClosedPlatformAt.set(mapped, now);
         }
@@ -4264,13 +4272,20 @@ export class McpStdioBridgeServer {
     cdpUrl: string;
     discoveredPlatforms: string[];
     openDomains: string[];
+    dreaminaLoggedIn: boolean;
     tabs: Array<{ title: string; url: string; platformId: string | null }>;
   }> {
     const cdp = await this.browserSessionManager.inspectOpenCreatorTabsViaCdp();
-    if (cdp.reachable && (cdp.openDomains.length > 0 || cdp.platforms.length > 0)) {
+    const hasDreaminaTab = cdp.tabs.some((t) => t.platformId === 'dreamina');
+    if (cdp.reachable && (cdp.openDomains.length > 0 || cdp.platforms.length > 0 || hasDreaminaTab)) {
       const platformsConnected: Record<string, boolean> = {};
       for (const p of cdp.platforms) {
         platformsConnected[p] = true;
+      }
+      if (hasDreaminaTab && !cdp.dreaminaLoggedIn) {
+        platformsConnected.dreamina = false;
+        this.openCreatorDomains.delete('dreamina.capcut.com');
+        this.openCreatorDomains.delete('jimeng.jianying.com');
       }
       this.recordBrowserBridgeHeartbeat({
         source: 'cdp-inspector',
@@ -4283,6 +4298,7 @@ export class McpStdioBridgeServer {
       cdpUrl: cdp.cdpUrl,
       discoveredPlatforms: cdp.platforms,
       openDomains: cdp.openDomains,
+      dreaminaLoggedIn: cdp.dreaminaLoggedIn,
       tabs: cdp.tabs,
     };
   }
@@ -4290,7 +4306,7 @@ export class McpStdioBridgeServer {
   private async getMcpBalanceWithCache(
     serverId: string,
     forceRefresh = false
-  ): Promise<{ credits?: number; plan?: string; rawText: string } | null> {
+  ): Promise<{ credits?: number; plan?: string; account?: string; rawText: string } | null> {
     const now = Date.now();
     const cached = this.mcpBalanceCache.get(serverId);
     if (!forceRefresh && cached && now - cached.fetchedAt < 45_000) {
@@ -4307,22 +4323,31 @@ export class McpStdioBridgeServer {
       const rawText = String(res.textSummary || '').trim();
       let credits: number | undefined;
       let plan: string | undefined;
+      let account: string | undefined;
 
       const structured =
         typeof res.rawResult?.structuredContent === 'object' && res.rawResult.structuredContent !== null
           ? (res.rawResult.structuredContent as Record<string, unknown>)
           : null;
       if (structured) {
-        const rawCredits = structured.credits ?? structured.balance ?? structured.remaining_credits;
+        const rawCredits =
+          structured.credits ??
+          structured.balance ??
+          structured.availableCredits ??
+          structured.remaining_credits;
         if (typeof rawCredits === 'number' && Number.isFinite(rawCredits)) {
           credits = rawCredits;
         } else if (typeof rawCredits === 'string' && rawCredits.trim()) {
           const parsed = Number(rawCredits.replace(/,/g, ''));
           if (Number.isFinite(parsed)) credits = parsed;
         }
-        const rawPlan = structured.plan ?? structured.tier ?? structured.subscription;
+        const rawPlan =
+          structured.plan ?? structured.vipLevel ?? structured.tier ?? structured.subscription;
         if (typeof rawPlan === 'string' && rawPlan.trim()) {
           plan = rawPlan.trim().toLowerCase();
+        }
+        if (typeof structured.account === 'string' && structured.account.trim()) {
+          account = structured.account.trim();
         }
       }
 
@@ -4352,6 +4377,7 @@ export class McpStdioBridgeServer {
       const balance = {
         ...(credits !== undefined && Number.isFinite(credits) ? { credits } : {}),
         ...(plan ? { plan } : {}),
+        ...(account ? { account } : {}),
         rawText: fallbackText,
       };
       this.mcpBalanceCache.set(serverId, { fetchedAt: now, balance });
@@ -4447,6 +4473,31 @@ export class McpStdioBridgeServer {
       return summary;
     });
 
+    const mcpBalances: Record<
+      string,
+      { credits?: number; plan?: string; account?: string; rawText?: string }
+    > = {};
+    for (const srv of mcpServers) {
+      if (srv.status !== 'connected' || !srv.platformId || !srv.balance) continue;
+      if (mcpBalances[srv.platformId]) continue;
+      const balObj = srv.balance as {
+        credits?: number;
+        plan?: string;
+        account?: string;
+        rawText?: string;
+      };
+      const acctName =
+        balObj.account ||
+        (typeof srv.account?.name === 'string' ? srv.account.name : undefined) ||
+        (typeof srv.account?.username === 'string' ? srv.account.username : undefined);
+      mcpBalances[srv.platformId] = {
+        ...(balObj.credits !== undefined ? { credits: balObj.credits } : {}),
+        ...(balObj.plan ? { plan: balObj.plan } : {}),
+        ...(acctName ? { account: acctName } : {}),
+        ...(balObj.rawText ? { rawText: balObj.rawText } : {}),
+      };
+    }
+
     const detectedBrowser = this.browserSessionManager.detectBrowserBinary();
     const extensionConnected =
       this.bridgeWsClients.size > 0 ||
@@ -4457,12 +4508,14 @@ export class McpStdioBridgeServer {
       ok: true,
       extensionConnected,
       cdpReachable: cdpInfo.cdpReachable,
+      dreaminaLoggedIn: cdpInfo.dreaminaLoggedIn,
       bridgeClients: this.bridgeWsClients.size,
       openDomains: Array.from(this.openCreatorDomains),
       connectedBrowserPlatforms,
       connectedMcpPlatforms,
       configuredApiKeyPlatforms,
       mcpServers,
+      mcpBalances,
       browserLauncher: {
         available: Boolean(detectedBrowser),
         browserName: detectedBrowser?.browserName || null,
@@ -5672,10 +5725,33 @@ export class McpStdioBridgeServer {
               ? Math.round(Number(seedParam))
               : undefined,
         });
-        mcpToolArgs = { ...builtArgs, ...explicitMcpArgs };
+        const isDreaminaMcpTool =
+          candidateMcpServer.platformId === 'dreamina' ||
+          chosenTool.name.startsWith('dreamina_generate_');
+        const dreaminaExtraArgs: Record<string, unknown> = isDreaminaMcpTool
+          ? {
+              reference_frame_mode: referenceFrameMode,
+              ...(quality ? { quality } : {}),
+              ...(typeof mergedModelParams.mode === 'string' && mergedModelParams.mode.trim()
+                ? { mode: mergedModelParams.mode.trim() }
+                : {}),
+              ...(typeof mergedModelParams.scenario === 'string' && mergedModelParams.scenario.trim()
+                ? { scenario: mergedModelParams.scenario.trim() }
+                : {}),
+              ...(typeof mergedModelParams.voice_name === 'string' &&
+              mergedModelParams.voice_name.trim()
+                ? { voice_name: mergedModelParams.voice_name.trim() }
+                : {}),
+            }
+          : {};
+        mcpToolArgs = { ...builtArgs, ...dreaminaExtraArgs, ...explicitMcpArgs };
       }
 
       const targetOutputCount = kind === 'image' ? batchCount : 1;
+      const effectiveMcpTimeoutMs =
+        candidateMcpServer.platformId === 'dreamina'
+          ? Math.max(Number(params.timeoutMs) || 0, kind === 'video' ? 360_000 : 180_000)
+          : Number(params.timeoutMs) || undefined;
 
       const readStructuredObj = (out: Record<string, unknown>): Record<string, unknown> =>
         (typeof out.structuredData === 'object' && out.structuredData !== null
@@ -5791,7 +5867,7 @@ export class McpStdioBridgeServer {
           serverId: candidateMcpServer.id,
           toolName: chosenTool.name,
           arguments: callArgs,
-          timeoutMs: params.timeoutMs,
+          timeoutMs: effectiveMcpTimeoutMs ?? params.timeoutMs,
           maxOutputs: maxOutputsForCall,
         });
         let stObj = readStructuredObj(out);
@@ -6785,8 +6861,8 @@ export class McpStdioBridgeServer {
         referenceImages: resolvedReferenceImages,
         videoReferences: resolvedVideoReferences,
         smartFastFail: true,
-        claimTimeoutMs: Number(params.claimTimeoutMs) || 15_000,
-        timeoutMs: Number(params.timeoutMs) || 150_000,
+        claimTimeoutMs: Number(params.claimTimeoutMs) || (target === 'dreamina' ? 35_000 : 15_000),
+        timeoutMs: Number(params.timeoutMs) || (target === 'dreamina' ? 360_000 : 150_000),
         waitForResult: params.waitForResult !== false,
       });
 
@@ -9807,12 +9883,13 @@ export class McpStdioBridgeServer {
       return;
     }
 
-    // 4a-4. Stage 10 Built-In Dreamina MCP Connection Endpoints (`mcp_dreamina`)
+    // 4a-4. Stage 10 / 10.1 Built-In Dreamina MCP Connection Endpoints (`mcp_dreamina`)
     if (pathname === '/api/mcp/dreamina/connect' && req.method === 'POST') {
       try {
         const bodyObj = (await this.readJsonBody(req)) || {};
         const session = await this.dreaminaMcpEngine.connect({
           mode: typeof bodyObj.mode === 'string' ? bodyObj.mode : undefined,
+          force: typeof bodyObj.force === 'boolean' ? bodyObj.force : undefined,
           sessionIdCookie:
             typeof bodyObj.sessionIdCookie === 'string' ? bodyObj.sessionIdCookie : undefined,
           arkApiKey: typeof bodyObj.arkApiKey === 'string' ? bodyObj.arkApiKey : undefined,
@@ -9837,6 +9914,12 @@ export class McpStdioBridgeServer {
           mode: session.mode,
           step: session.step,
           authorizeUrl: session.authorizeUrl,
+          ...(session.userCode ? { userCode: session.userCode } : {}),
+          ...(session.availableCredits !== undefined
+            ? { availableCredits: session.availableCredits }
+            : {}),
+          ...(session.vipLevel ? { vipLevel: session.vipLevel } : {}),
+          ...(session.cliVersion ? { cliVersion: session.cliVersion } : {}),
           session,
         });
       } catch (err) {

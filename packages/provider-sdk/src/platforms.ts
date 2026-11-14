@@ -15,6 +15,7 @@ import {
 import {
   DREAMINA_CANONICAL_MODELS,
   normalizeDreaminaModelId,
+  mapCanonicalDreaminaToCliModel,
 } from './dreamina-catalog.js';
 
 export {
@@ -26,6 +27,7 @@ export {
   type RawHiggsfieldMediaSpec,
   DREAMINA_CANONICAL_MODELS,
   normalizeDreaminaModelId,
+  mapCanonicalDreaminaToCliModel,
 };
 
 export type PlatformId =
