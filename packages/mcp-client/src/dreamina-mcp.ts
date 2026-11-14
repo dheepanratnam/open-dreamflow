@@ -2011,6 +2011,8 @@ export class DreaminaMcpEngine {
     return await fetchPromise;
   }
 
+  private quoteNodeByProfileModality = new Map<string, string>();
+
   public async quoteCliCost(params: {
     modality: 'image' | 'video' | 'audio';
     modelId: string;
@@ -2030,63 +2032,140 @@ export class DreaminaMcpEngine {
         typeof sdk.mapCanonicalDreaminaToCliModel === 'function'
           ? (sdk.mapCanonicalDreaminaToCliModel as (r?: string, m?: 'image' | 'video' | 'audio') => string)
           : defaultCliModelForCanonical;
-      const cliModel = mapToCli(params.modelId, params.modality);
-      const pid = await this.ensureWorkspaceProjectId();
+      const canonical = String(params.modelId || '').trim();
+      const cliModel = mapToCli(canonical, params.modality);
+      const liveSpecs = await this.getLiveCliModels(params.modality);
+      const spec = liveSpecs.find(
+        (m) =>
+          m.model === cliModel ||
+          m.model === canonical ||
+          m.model?.replace(/\./g, '_') === canonical
+      );
+      const resolvedCliModel = spec?.model || cliModel;
       const mode =
         params.modality === 'image' ? 't2i' : params.modality === 'audio' ? 'tts' : 't2v';
-      const args = [
-        'node',
-        'create',
-        params.modality,
-        '--project-id',
-        pid,
+
+      const requestedRatio = String(params.aspectRatio || '16:9').trim() || '16:9';
+      const defaultRes =
+        params.modality === 'video' ? '720P' : params.modality === 'image' ? '2K' : '';
+      const requestedRes = String(params.resolution || defaultRes).trim() || defaultRes;
+      const coercedRatio =
+        params.modality === 'audio'
+          ? ''
+          : this.coerceFlagValue(spec, mode, '--ratio', requestedRatio) || requestedRatio;
+      const coercedRes =
+        params.modality === 'audio'
+          ? ''
+          : this.coerceFlagValue(spec, mode, '--resolution', requestedRes) || requestedRes;
+
+      const modeSpec = spec?.modes?.find((m) => m.name === mode);
+      let clampedDuration = Math.round(Number(params.durationSec) || 5);
+      if (params.modality === 'video') {
+        const durFlag = modeSpec?.flags?.find((f) => f.flag === '--duration');
+        if (durFlag?.values && durFlag.values.length > 0) {
+          const allowed = durFlag.values.map((v) => Number(v)).filter((n) => Number.isFinite(n));
+          if (allowed.length > 0 && !allowed.includes(clampedDuration)) {
+            clampedDuration = allowed.reduce((prev, cur) =>
+              Math.abs(cur - clampedDuration) < Math.abs(prev - clampedDuration) ? cur : prev
+            );
+          }
+        } else if (typeof durFlag?.min === 'number' || typeof durFlag?.max === 'number') {
+          clampedDuration = Math.max(durFlag.min ?? 4, Math.min(durFlag.max ?? 15, clampedDuration));
+        }
+      }
+
+      const requestedBatch = Math.max(1, Math.min(8, Math.round(Number(params.batchCount) || 1)));
+      const maxCount = modeSpec?.flags?.find((f) => f.flag === '--count')?.max ?? 8;
+      const clampedCount =
+        params.modality === 'image' ? Math.max(1, Math.min(maxCount, requestedBatch)) : 1;
+      const batchMultiplier =
+        params.modality === 'image' && requestedBatch > clampedCount
+          ? Math.ceil(requestedBatch / clampedCount)
+          : 1;
+
+      const genFlags = [
         '--mode',
         mode,
         '--model',
-        cliModel,
+        resolvedCliModel,
         '--prompt',
-        params.prompt || 'Quote check scene',
-        ...(params.aspectRatio ? ['--ratio', params.aspectRatio] : []),
-        ...(params.resolution ? ['--resolution', params.resolution] : []),
-        ...(params.modality === 'video' && params.durationSec
-          ? ['--duration', String(Math.round(params.durationSec))]
-          : []),
-        ...(params.modality === 'image' && params.batchCount
-          ? ['--count', String(Math.max(1, Math.min(8, Math.round(params.batchCount))))]
-          : []),
+        (params.prompt || 'Cinematic preflight quote check').slice(0, 240),
+        ...(coercedRatio ? ['--ratio', coercedRatio] : []),
+        ...(coercedRes ? ['--resolution', coercedRes] : []),
+        ...(params.modality === 'video' ? ['--duration', String(clampedDuration)] : []),
+        ...(params.modality === 'image' ? ['--count', String(clampedCount)] : []),
+        '--title',
+        `QuoteScratch-${params.modality}`,
       ];
-      let createdNodeId = '';
-      try {
-        const cr = await this.runCliJson(args, { profile, timeoutMs: 25_000 });
-        createdNodeId = String((cr.data as Record<string, unknown> | undefined)?.nodeId || '').trim();
-        if (!createdNodeId) return null;
-        const qt = await this.runCliJson(
-          ['node', 'quote', '--project-id', pid, '--node-id', createdNodeId],
-          { profile, timeoutMs: 20_000 }
-        );
-        const qtData = (qt.data || {}) as Record<string, unknown>;
-        const est = Number(qtData.estimatedCredits ?? qtData.credits ?? qtData.totalMaxCredits);
-        return Number.isFinite(est) ? est : null;
-      } catch {
-        return null;
-      } finally {
-        if (createdNodeId) {
-          void this.runCliJson(
-            [
-              'node',
-              'delete',
-              'confirm',
-              '--project-id',
-              pid,
-              '--node-id',
-              createdNodeId,
-              '--update-id',
-              crypto.randomUUID(),
-            ],
-            { profile, timeoutMs: 15_000 }
-          ).catch(() => {});
+
+      return await this.withProfileSubmitLock(async () => {
+        try {
+          const pid = await this.ensureWorkspaceProjectId();
+          const scratchKey = `${profile}:${pid}:${params.modality}`;
+          let scratchNodeId = this.quoteNodeByProfileModality.get(scratchKey) || '';
+
+          if (scratchNodeId) {
+            try {
+              await this.runCliJson(
+                [
+                  'node',
+                  'edit',
+                  params.modality,
+                  '--project-id',
+                  pid,
+                  '--node-id',
+                  scratchNodeId,
+                  ...genFlags,
+                ],
+                { profile, timeoutMs: 25_000 }
+              );
+            } catch {
+              scratchNodeId = '';
+              this.quoteNodeByProfileModality.delete(scratchKey);
+            }
+          }
+
+          if (!scratchNodeId) {
+            const cr = await this.runCliJson(
+              ['node', 'create', params.modality, '--project-id', pid, ...genFlags],
+              { profile, timeoutMs: 25_000 }
+            );
+            const createData = (cr.data || {}) as Record<string, unknown>;
+            scratchNodeId = String(
+              createData.nodeId ||
+                (createData.node as Record<string, unknown> | undefined)?.nodeId ||
+                (createData.node as Record<string, unknown> | undefined)?.id ||
+                ''
+            ).trim();
+            if (!scratchNodeId) return null;
+            this.quoteNodeByProfileModality.set(scratchKey, scratchNodeId);
+          }
+
+          const qt = await this.runCliJson(
+            ['node', 'quote', '--project-id', pid, '--node-id', scratchNodeId],
+            { profile, timeoutMs: 20_000 }
+          );
+          const quoteData = (qt.data || {}) as Record<string, unknown>;
+          const quoteItems = Array.isArray(quoteData.items)
+            ? (quoteData.items as Array<Record<string, unknown>>)
+            : [];
+          const firstQuote = quoteItems[0] || {};
+          const rawEst =
+            quoteData.totalCredit ??
+            quoteData.estimatedCredits ??
+            quoteData.creditCost ??
+            quoteData.credits ??
+            quoteData.totalMaxCredits ??
+            firstQuote.totalCredit ??
+            firstQuote.estimatedCredits ??
+            firstQuote.creditCost ??
+            firstQuote.credits;
+          const est = Number(rawEst);
+          return Number.isFinite(est) && est >= 0 ? Math.ceil(est * batchMultiplier) : null;
+        } catch {
+          return null;
         }
-      }
+      });
     });
   }
 
@@ -3124,6 +3203,7 @@ export class DreaminaMcpEngine {
     }
 
     this.cachedBalance = null;
+    this.profileBalances.delete(this.getActiveProfile());
     void this.getBalanceInfo(true);
 
     return {
@@ -3345,6 +3425,7 @@ export class DreaminaMcpEngine {
       );
     }
     this.cachedBalance = null;
+    this.profileBalances.delete(this.getActiveProfile());
     void this.getBalanceInfo(true);
 
     return okToolResult({
@@ -4236,6 +4317,7 @@ export class DreaminaMcpEngine {
 
         // If user asked for batch > CLI model per-call limit (e.g. GPT Image Flare max 1), run remainder cleanly
         const allOutputs = [...pipeOut.outputs];
+        let totalEstimatedCredits = pipeOut.estimatedCredits ?? 0;
         if (allOutputs.length < batchCount) {
           const extraCalls = await Promise.all(
             Array.from({ length: batchCount - allOutputs.length }, () =>
@@ -4251,6 +4333,7 @@ export class DreaminaMcpEngine {
           );
           for (const extra of extraCalls) {
             allOutputs.push(...extra.outputs);
+            totalEstimatedCredits += extra.estimatedCredits ?? 0;
           }
         }
 
@@ -4262,6 +4345,7 @@ export class DreaminaMcpEngine {
           cliModel: resolvedCliModel,
           nodeId: pipeOut.nodeId,
           submitId: pipeOut.submitId,
+          estimatedCredits: totalEstimatedCredits,
           imageUrl: finalOutputs[0],
           images: finalOutputs.map((url) => ({ url })),
         };
@@ -4559,6 +4643,7 @@ export class DreaminaMcpEngine {
           modeUsed: cliVideoMode,
           nodeId: pipeOut.nodeId,
           submitId: pipeOut.submitId,
+          estimatedCredits: pipeOut.estimatedCredits,
           videoUrl: pipeOut.outputs[0],
           outputs: pipeOut.outputs,
         };
@@ -4741,6 +4826,7 @@ export class DreaminaMcpEngine {
         cliModel,
         nodeId: pipeOut.nodeId,
         submitId: pipeOut.submitId,
+        estimatedCredits: pipeOut.estimatedCredits,
         audioUrl: pipeOut.outputs[0],
         outputs: pipeOut.outputs,
       };

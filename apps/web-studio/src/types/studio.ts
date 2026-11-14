@@ -338,6 +338,15 @@ export interface CanvasNode {
   editBadge?: string;
   layers: FrameLayer[];
   providerUsed: string;
+  generatedSnapshot?: {
+    prompt: string;
+    platformId?: PlatformId;
+    modelId?: string;
+    aspectRatio?: AspectRatio;
+    resolution?: ResolutionTier;
+    quality?: string;
+    durationSec?: number;
+  };
   createdAt: number;
 }
 
@@ -605,6 +614,7 @@ export interface BridgeIncomingEvent {
   prompt?: string;
   projectId?: string;
   updatedBy?: string;
+  clientInstanceId?: string;
   name?: string;
   state?: Record<string, unknown>;
   updatedAt?: number;

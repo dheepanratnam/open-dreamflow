@@ -24,6 +24,7 @@ import {
   MousePointer2,
   MoreHorizontal,
   Palette,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -148,6 +149,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const runChatQuickAction = useStudioStore((s) => s.runChatQuickAction);
   const switchDiskProject = useStudioStore((s) => s.switchDiskProject);
   const createNewBlankProject = useStudioStore((s) => s.createNewBlankProject);
+  const renameSavedProject = useStudioStore((s) => s.renameSavedProject);
   const deleteSavedProject = useStudioStore((s) => s.deleteSavedProject);
   const saveVersionSnapshot = useStudioStore((s) => s.saveVersionSnapshot);
   const restoreVersionSnapshot = useStudioStore((s) => s.restoreVersionSnapshot);
@@ -167,6 +169,8 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const importBundleInputRef = useRef<HTMLInputElement | null>(null);
   const hoverToolTimerRef = useRef<number | null>(null);
   const [hoveredTool, setHoveredTool] = useState<DreaminaToolId | null>(null);
+  const [renamingProjId, setRenamingProjId] = useState<string | null>(null);
+  const [renamingDraft, setRenamingDraft] = useState<string>('');
 
   useEffect(() => {
     return () => {
@@ -363,24 +367,43 @@ export const DreaminaFloatingChrome: React.FC = () => {
               autoFocus
               value={projectTitle}
               onChange={(e) => setProjectTitle(e.target.value)}
-              onBlur={() => setEditingTitle(false)}
+              onBlur={() => {
+                setEditingTitle(false);
+                void renameSavedProject(activeProjectId, projectTitle);
+              }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === 'Escape') {
+                if (e.key === 'Enter') {
+                  setEditingTitle(false);
+                  void renameSavedProject(activeProjectId, projectTitle);
+                } else if (e.key === 'Escape') {
                   setEditingTitle(false);
                 }
               }}
-              className="w-[150px] bg-[#252525] text-[13px] font-medium text-white px-2 py-0.5 rounded-[6px] outline-none border border-white/20"
+              className="w-[164px] bg-[#252525] text-[13px] font-medium text-white px-2 py-0.5 rounded-[6px] outline-none border border-white/25"
             />
           ) : (
-            <button
-              type="button"
-              onClick={() => setProjectMenuOpen(!projectMenuOpen)}
-              onDoubleClick={() => setEditingTitle(true)}
-              className="h-7 px-1.5 rounded-[6px] hover:bg-[#252525] flex items-center gap-1 text-[13px] font-medium text-[#f5f5f5] transition-colors"
-            >
-              <span>{projectTitle}</span>
-              <ChevronDown className="w-3.5 h-3.5 text-white/50" strokeWidth={1.5} />
-            </button>
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => setProjectMenuOpen(!projectMenuOpen)}
+                onDoubleClick={() => setEditingTitle(true)}
+                className="h-7 px-1.5 rounded-[6px] hover:bg-[#252525] flex items-center gap-1 text-[13px] font-medium text-[#f5f5f5] transition-colors"
+              >
+                <span className="max-w-[180px] truncate">{projectTitle}</span>
+                <ChevronDown className="w-3.5 h-3.5 text-white/50" strokeWidth={1.5} />
+              </button>
+              <button
+                type="button"
+                title="Rename canvas"
+                onClick={() => {
+                  setProjectMenuOpen(false);
+                  setEditingTitle(true);
+                }}
+                className="w-6 h-6 rounded-[6px] hover:bg-[#252525] text-white/45 hover:text-white flex items-center justify-center transition-colors"
+              >
+                <Pencil className="w-3 h-3" strokeWidth={1.6} />
+              </button>
+            </div>
           )}
 
           <span className="px-2 py-0.5 rounded-[6px] bg-white/[0.06] text-[11px] font-medium text-white/65">
@@ -422,53 +445,98 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 <div className="max-h-[180px] overflow-y-auto space-y-0.5 pb-0.5">
                   {diskProjects.map((proj) => {
                     const isCurrent = proj.id === activeProjectId;
+                    const isRowRenaming = renamingProjId === proj.id;
                     return (
                       <div
                         key={proj.id}
-                        className={`group h-8 px-2 rounded-[7px] flex items-center justify-between gap-1.5 ${
+                        className={`group h-8 px-2 rounded-[7px] flex items-center justify-between gap-1 ${
                           isCurrent
                             ? 'bg-white/[0.09] text-white'
                             : 'hover:bg-white/[0.07] text-white/85'
                         }`}
                       >
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void switchDiskProject(proj.id);
-                            setProjectMenuOpen(false);
-                          }}
-                          className="flex-1 min-w-0 text-left flex items-center gap-1.5 text-[12px]"
-                        >
-                          {isCurrent ? (
-                            <Check
-                              className="w-3.5 h-3.5 text-[#20D5EC] shrink-0"
-                              strokeWidth={1.75}
-                            />
-                          ) : (
-                            <span className="w-3.5 shrink-0" />
-                          )}
-                          <span className="truncate">{proj.name}</span>
-                          {proj.isSharedWithTeam && (
-                            <span className="px-1 py-0.2 rounded bg-[#20D5EC]/15 text-[#20D5EC] text-[9px] font-medium shrink-0">
-                              Shared
-                            </span>
-                          )}
-                          <span className="text-[10px] tabular-nums text-white/40 shrink-0">
-                            {proj.nodeCount}n
-                          </span>
-                        </button>
-                        {diskProjects.length > 1 && (
+                        {isRowRenaming ? (
+                          <input
+                            autoFocus
+                            value={renamingDraft}
+                            onChange={(e) => setRenamingDraft(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            onBlur={() => {
+                              const trimmed = renamingDraft.trim();
+                              setRenamingProjId(null);
+                              if (trimmed && trimmed !== proj.name) {
+                                void renameSavedProject(proj.id, trimmed);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                const trimmed = renamingDraft.trim();
+                                setRenamingProjId(null);
+                                if (trimmed && trimmed !== proj.name) {
+                                  void renameSavedProject(proj.id, trimmed);
+                                }
+                              } else if (e.key === 'Escape') {
+                                setRenamingProjId(null);
+                              }
+                            }}
+                            className="flex-1 min-w-0 bg-[#1a1a1a] text-[12px] text-white px-2 py-0.5 rounded-[5px] outline-none border border-white/25"
+                          />
+                        ) : (
                           <button
                             type="button"
-                            title="Delete project from disk"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void deleteSavedProject(proj.id);
+                            onClick={() => {
+                              void switchDiskProject(proj.id);
+                              setProjectMenuOpen(false);
                             }}
-                            className="w-6 h-6 rounded-[5px] opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-white/45 hover:text-red-300 flex items-center justify-center transition-opacity"
+                            className="flex-1 min-w-0 text-left flex items-center gap-1.5 text-[12px]"
                           >
-                            <Trash2 className="w-3 h-3" strokeWidth={1.5} />
+                            {isCurrent ? (
+                              <Check
+                                className="w-3.5 h-3.5 text-[#20D5EC] shrink-0"
+                                strokeWidth={1.75}
+                              />
+                            ) : (
+                              <span className="w-3.5 shrink-0" />
+                            )}
+                            <span className="truncate">{proj.name}</span>
+                            {proj.isSharedWithTeam && (
+                              <span className="px-1 py-0.2 rounded bg-[#20D5EC]/15 text-[#20D5EC] text-[9px] font-medium shrink-0">
+                                Shared
+                              </span>
+                            )}
+                            <span className="text-[10px] tabular-nums text-white/40 shrink-0">
+                              {proj.nodeCount}n
+                            </span>
                           </button>
+                        )}
+                        {!isRowRenaming && (
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <button
+                              type="button"
+                              title="Rename canvas"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRenamingProjId(proj.id);
+                                setRenamingDraft(proj.name);
+                              }}
+                              className="w-6 h-6 rounded-[5px] opacity-70 group-hover:opacity-100 hover:bg-white/[0.12] text-white/55 hover:text-white flex items-center justify-center transition-opacity"
+                            >
+                              <Pencil className="w-3 h-3" strokeWidth={1.5} />
+                            </button>
+                            {diskProjects.length > 1 && (
+                              <button
+                                type="button"
+                                title="Delete project from disk"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void deleteSavedProject(proj.id);
+                                }}
+                                className="w-6 h-6 rounded-[5px] opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-white/45 hover:text-red-300 flex items-center justify-center transition-opacity"
+                              >
+                                <Trash2 className="w-3 h-3" strokeWidth={1.5} />
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
                     );

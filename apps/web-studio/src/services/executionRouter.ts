@@ -2614,6 +2614,8 @@ export async function getDiskProject(
   }
 }
 
+export const CLIENT_INSTANCE_ID = `web_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
+
 export async function saveDiskProject(params: {
   id: string;
   name: string;
@@ -2626,7 +2628,7 @@ export async function saveDiskProject(params: {
     const res = await authFetch(`${LOCAL_MCP_BASE}/api/projects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
+      body: JSON.stringify({ ...params, clientInstanceId: CLIENT_INSTANCE_ID }),
     });
     if (!res.ok) return { ok: false };
     const json = (await res.json()) as {
@@ -3389,6 +3391,28 @@ export async function fetchCreditQuoteViaBackend(payload: {
     };
   } catch {
     return null;
+  }
+}
+
+export async function syncModelCreditRatesViaBackend(
+  force = true
+): Promise<{ ok: boolean; syncedCount?: number; lastDailyRateSyncAt?: string }> {
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/credits/sync-rates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force }),
+    });
+    if (!res.ok) return { ok: false };
+    const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    return {
+      ok: Boolean(json?.ok),
+      syncedCount: typeof json?.syncedCount === 'number' ? json.syncedCount : 0,
+      lastDailyRateSyncAt:
+        typeof json?.lastDailyRateSyncAt === 'string' ? json.lastDailyRateSyncAt : undefined,
+    };
+  } catch {
+    return { ok: false };
   }
 }
 

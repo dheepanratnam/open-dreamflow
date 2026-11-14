@@ -78,6 +78,7 @@ import {
   sliceGridImageDataUrl,
 } from '../utils/proceduralMedia';
 import {
+  CLIENT_INSTANCE_ID,
   LOCAL_MCP_BASE,
   LOCAL_MCP_HTTP_URL,
   checkBrowserConnectionsViaBackend,
@@ -559,6 +560,7 @@ export interface StudioState {
   }) => Promise<void>;
   switchDiskProject: (id: string) => Promise<void>;
   createNewBlankProject: (name?: string) => Promise<void>;
+  renameSavedProject: (id: string, newName: string) => Promise<void>;
   deleteSavedProject: (id: string) => Promise<void>;
   saveVersionSnapshot: (label?: string) => Promise<void>;
   restoreVersionSnapshot: (snapshotId: string) => Promise<void>;
@@ -1809,10 +1811,21 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         }
         case 'image-editor': {
           const n = countOfKind('contact-sheet');
+          const curSt = get();
+          const preferHiggsfieldGrid =
+            curSt.connectedMcpPlatforms.includes('higgsfield') ||
+            curSt.externalMcpServers.some(
+              (s) => s.platformId === 'higgsfield' && s.status === 'connected'
+            ) ||
+            lastImagePlatformId === 'higgsfield';
+          const gridPlatformId: PlatformId = preferHiggsfieldGrid
+            ? 'higgsfield'
+            : lastImagePlatformId;
+          const gridModelId = preferHiggsfieldGrid ? 'gpt_image_2_6' : defaultImageModelId;
           newNode = {
             id,
             kind: 'contact-sheet',
-            title: `Contact Sheet ${n}`,
+            title: `9-Grid Storyboard ${n}`,
             prompt: '',
             x,
             y,
@@ -1820,17 +1833,19 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             height: 270,
             aspectRatio: '16:9',
             status: 'idle',
-            platformId: lastImagePlatformId,
+            platformId: gridPlatformId,
             connectionMode: 'auto',
-            modelId: defaultImageModelId,
+            modelId: gridModelId,
             batchCount: 1,
             imageUrl: undefined,
             seed: 512 + n,
-            resolution: '4K',
+            resolution: '2K',
             elementHandles: [],
             gridSpec: { rows: 3, cols: 3, labels: NINE_GRID_LABELS },
             layers: [],
-            providerUsed: defaultImageBadge,
+            providerUsed: preferHiggsfieldGrid
+              ? 'Higgsfield · GPT Image 2.6'
+              : defaultImageBadge,
             createdAt: Date.now(),
           };
           break;
@@ -2416,7 +2431,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           seed,
         });
 
-    const updateInPlace = Boolean(anchorNode && anchorNode.kind === targetKind);
+    const anchorHasMedia = Boolean(
+      anchorNode && (anchorNode.imageUrl || anchorNode.videoUrl || anchorNode.audioUrl)
+    );
+    const updateInPlace = Boolean(
+      anchorNode && anchorNode.kind === targetKind && !anchorHasMedia
+    );
     const targetNodeId = updateInPlace && anchorNode ? anchorNode.id : `node_gen_${Date.now()}`;
 
     if (updateInPlace && anchorNode) {
@@ -4940,6 +4960,22 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           }
         | undefined;
       if (loaded.ok && loaded.project && st && Array.isArray(st.nodes)) {
+        const hydratedNodes = st.nodes.map((n) =>
+          (n.imageUrl || n.videoUrl || n.audioUrl) && !n.generatedSnapshot
+            ? {
+                ...n,
+                generatedSnapshot: {
+                  prompt: n.prompt || '',
+                  platformId: n.platformId,
+                  modelId: n.modelId,
+                  aspectRatio: n.aspectRatio,
+                  resolution: n.resolution,
+                  quality: n.quality,
+                  durationSec: n.durationSec,
+                },
+              }
+            : n
+        );
         const snapshots = Array.isArray(loaded.project.snapshots)
           ? loaded.project.snapshots
           : [];
@@ -4947,7 +4983,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           activeProjectId: loaded.project!.id,
           projectTitle: loaded.project!.name || 'Untitled Canvas',
           activeProjectSharedWithTeam: Boolean(loaded.project!.isSharedWithTeam),
-          nodes: st.nodes!,
+          nodes: hydratedNodes,
           edges: Array.isArray(st.edges) ? st.edges : [],
           elements: Array.isArray(st.elements) ? st.elements : [],
           multiframes: Array.isArray(st.multiframes) ? st.multiframes : [],
@@ -5095,11 +5131,29 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       } catch {
         // ignore
       }
+      const hydratedNodes = Array.isArray(st.nodes)
+        ? st.nodes.map((n) =>
+            (n.imageUrl || n.videoUrl || n.audioUrl) && !n.generatedSnapshot
+              ? {
+                  ...n,
+                  generatedSnapshot: {
+                    prompt: n.prompt || '',
+                    platformId: n.platformId,
+                    modelId: n.modelId,
+                    aspectRatio: n.aspectRatio,
+                    resolution: n.resolution,
+                    quality: n.quality,
+                    durationSec: n.durationSec,
+                  },
+                }
+              : n
+          )
+        : [];
       set((s) => ({
         activeProjectId: proj.id,
         projectTitle: proj.name || 'Untitled Canvas',
         activeProjectSharedWithTeam: Boolean(proj.isSharedWithTeam),
-        nodes: Array.isArray(st.nodes) ? st.nodes : [],
+        nodes: hydratedNodes,
         edges: Array.isArray(st.edges) ? st.edges : [],
         elements: Array.isArray(st.elements) ? st.elements : [],
         multiframes: Array.isArray(st.multiframes) ? st.multiframes : [],
@@ -5198,6 +5252,43 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       createSnapshot: true,
       snapshotLabel: 'Created blank canvas',
     });
+  },
+
+  renameSavedProject: async (id, newName) => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    if (id === get().activeProjectId) {
+      set({ projectTitle: trimmed });
+      await get().persistActiveProjectToDisk();
+      get().showToast(`Renamed canvas to "${trimmed}"`);
+      return;
+    }
+    const loaded = await getDiskProject(id);
+    if (!loaded.ok || !loaded.project) {
+      get().showToast('Could not find canvas to rename', 'error');
+      return;
+    }
+    const saved = await saveDiskProject({
+      id,
+      name: trimmed,
+      state: (loaded.project.state as Record<string, unknown>) || { nodes: [], edges: [] },
+      isSharedWithTeam: Boolean(loaded.project.isSharedWithTeam),
+    });
+    if (!saved.ok) {
+      get().showToast('Failed to rename canvas', 'error');
+      return;
+    }
+    const listing = await listDiskProjects();
+    set((s) => ({
+      diskProjects: listing.projects,
+      projectCache: s.projectCache[id]
+        ? {
+            ...s.projectCache,
+            [id]: { ...s.projectCache[id], name: trimmed, updatedAt: Date.now() },
+          }
+        : s.projectCache,
+    }));
+    get().showToast(`Renamed canvas to "${trimmed}"`);
   },
 
   deleteSavedProject: async (id) => {
@@ -6319,12 +6410,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
 
     const effectivePrompt =
-      modality === 'video' &&
-      node.cameraMotion &&
-      node.cameraMotion !== 'Static Tripod' &&
-      !basePrompt.toLowerCase().includes(node.cameraMotion.toLowerCase())
-        ? `${basePrompt}, ${node.cameraMotion} camera motion`
-        : basePrompt;
+      node.kind === 'contact-sheet' && !/3x3|9-grid|contact sheet/i.test(basePrompt)
+        ? `3x3 cinematic storyboard contact sheet grid (9 distinct panels: wide establishing, medium, close-up, low angle, over-the-shoulder, detail insert, tracking angle, high angle, final hero frame), consistent characters and lighting: ${basePrompt}`
+        : modality === 'video' &&
+          node.cameraMotion &&
+          node.cameraMotion !== 'Static Tripod' &&
+          !basePrompt.toLowerCase().includes(node.cameraMotion.toLowerCase())
+          ? `${basePrompt}, ${node.cameraMotion} camera motion`
+          : basePrompt;
 
     // Collect image + video references in deterministic priority:
     // 1. Wired upstream image/element/contact-sheet & video nodes
@@ -6395,21 +6488,107 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     const credentials = resolveByokCredentialsForPlatform(platformId, state.byok);
 
-    set((s) => ({
-      lastFailedPlatformId: null,
-      nodes: s.nodes.map((n) =>
-        n.id === nodeId
-          ? {
-              ...n,
-              platformId,
-              modelId,
-              status: 'generating' as const,
-              progress: 30,
-              editBadge: `Generating on ${badge}…`,
-            }
-          : n
-      ),
-    }));
+    // Non-destructive canvas rule: if the selected node ALREADY holds generated media,
+    // spawn a new sibling node beside it for this new generation and restore the original
+    // node's snapshot so previously paid/generated videos or images never disappear!
+    const hadGeneratedMedia = Boolean(node.imageUrl || node.videoUrl || node.audioUrl);
+    let targetNodeId = node.id;
+
+    if (hadGeneratedMedia) {
+      const siblingId = `node_${node.kind}_${Date.now()}`;
+      const baseW = node.width || (modality === 'video' ? 480 : 384);
+      const baseH = node.height || (modality === 'video' ? 270 : 216);
+      const spawnX = node.x + baseW + 56;
+      let spawnY = node.y;
+      for (let step = 0; step < 12; step++) {
+        const collides = state.nodes.some(
+          (other) =>
+            other.id !== node.id &&
+            Math.abs(other.x - spawnX) < baseW * 0.65 &&
+            Math.abs(other.y - spawnY) < baseH * 0.75
+        );
+        if (!collides) break;
+        spawnY += baseH + 56;
+      }
+
+      const snap = node.generatedSnapshot;
+      const siblingTitle = `${node.title.replace(/\s*·\s*Variation\s*\d+$/i, '')} · ${
+        models.find((m) => m.id === modelId)?.label || modelId
+      }`;
+
+      const siblingNode: CanvasNode = {
+        ...node,
+        id: siblingId,
+        title: siblingTitle,
+        prompt: node.prompt,
+        x: spawnX,
+        y: spawnY,
+        platformId,
+        modelId,
+        status: 'generating',
+        progress: 30,
+        editBadge: `Generating on ${badge}…`,
+        imageUrl: undefined,
+        videoUrl: undefined,
+        audioUrl: undefined,
+        waveform: undefined,
+        generatedOutputs: undefined,
+        generatedSnapshot: undefined,
+        interactionId: undefined,
+        layers: [],
+        providerUsed: badge,
+        createdAt: Date.now(),
+      };
+
+      const clonedIncomingEdges: CanvasEdge[] = incomingEdges.map((e, idx) => ({
+        id: `edge_fork_${siblingId}_${idx}`,
+        sourceId: e.sourceId,
+        targetId: siblingId,
+        kind: e.kind,
+        label: e.label,
+      }));
+
+      targetNodeId = siblingId;
+      set((s) => ({
+        lastFailedPlatformId: null,
+        selectedNodeIds: [siblingId],
+        nodes: [
+          ...s.nodes.map((n) =>
+            n.id === node.id && snap
+              ? {
+                  ...n,
+                  prompt: snap.prompt,
+                  platformId: snap.platformId ?? n.platformId,
+                  modelId: snap.modelId ?? n.modelId,
+                  aspectRatio: snap.aspectRatio ?? n.aspectRatio,
+                  resolution: snap.resolution ?? n.resolution,
+                  quality: snap.quality ?? n.quality,
+                  durationSec: snap.durationSec ?? n.durationSec,
+                }
+              : n
+          ),
+          siblingNode,
+        ],
+        edges: [...s.edges, ...clonedIncomingEdges],
+      }));
+      void get().persistActiveProjectToDisk();
+    } else {
+      set((s) => ({
+        lastFailedPlatformId: null,
+        nodes: s.nodes.map((n) =>
+          n.id === targetNodeId
+            ? {
+                ...n,
+                platformId,
+                modelId,
+                status: 'generating' as const,
+                progress: 30,
+                editBadge: `Generating on ${badge}…`,
+              }
+            : n
+        ),
+      }));
+    }
 
     const effectiveQuality =
       node.quality ||
@@ -6425,7 +6604,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         : undefined;
 
     const res = await generateNodeViaBackend({
-      nodeId: node.id,
+      nodeId: targetNodeId,
       kind: modality,
       platformId,
       connectionMode: node.connectionMode || 'auto',
@@ -6481,7 +6660,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       set((s) => ({
         lastFailedPlatformId: shouldShowConnectButton ? platformId : null,
         nodes: s.nodes.map((n) => {
-          if (n.id !== nodeId) return n;
+          if (n.id !== targetNodeId) return n;
           const hadMedia = Boolean(n.imageUrl || n.videoUrl || n.audioUrl);
           return {
             ...n,
@@ -6546,15 +6725,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       return {
         elements: nextElements,
         nodes: s.nodes.map((n) => {
-          if (n.id !== nodeId) return n;
+          if (n.id !== targetNodeId) return n;
           const resolvedImageForCard =
             primaryImg ||
             (modality === 'video' && !n.imageUrl
               ? Array.from(refSet)[0]
               : n.imageUrl);
+          const finalPrompt = n.prompt.trim() ? n.prompt : effectivePrompt;
           return {
             ...n,
-            prompt: n.prompt.trim() ? n.prompt : effectivePrompt,
+            prompt: finalPrompt,
             status: 'ready' as const,
             progress: 100,
             editBadge: undefined,
@@ -6576,6 +6756,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               ? createDefaultLayers(resolvedImageForCard)
               : n.layers,
             providerUsed: res.providerUsed || badge,
+            generatedSnapshot: {
+              prompt: finalPrompt,
+              platformId,
+              modelId,
+              aspectRatio: n.aspectRatio,
+              resolution: n.resolution,
+              quality: effectiveQuality,
+              durationSec: n.durationSec,
+            },
           };
         }),
       };
@@ -6583,7 +6772,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     void get().persistActiveProjectToDisk();
     void get().refreshCreditsSummary(true);
-    get().showToast(`Generated "${node.title}" via ${res.providerUsed || badge}`);
+    const finishedTitle =
+      get().nodes.find((n) => n.id === targetNodeId)?.title || node.title;
+    get().showToast(`Generated "${finishedTitle}" via ${res.providerUsed || badge}`);
     return true;
   },
 
@@ -7602,6 +7793,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   handleCanvasSyncWsEvent: (ev) => {
     const projectId = ev.projectId;
     if (!projectId) return;
+    if (ev.clientInstanceId && ev.clientInstanceId === CLIENT_INSTANCE_ID) {
+      return;
+    }
+    void listDiskProjects().then((listing) => {
+      if (listing.projects.length > 0) {
+        set({ diskProjects: listing.projects });
+      }
+    });
     if (projectId !== get().activeProjectId) {
       set((s) => {
         const nextCache = { ...s.projectCache };
@@ -7620,10 +7819,49 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           timelineClips?: TimelineClip[];
         }
       | undefined;
-    if (!st || !Array.isArray(st.nodes)) return;
+    if (!st || !Array.isArray(st.nodes)) {
+      void getDiskProject(projectId).then((loaded) => {
+        if (loaded.ok && loaded.project && get().activeProjectId === projectId) {
+          const remoteSt = (loaded.project.state || {}) as {
+            nodes?: CanvasNode[];
+            edges?: CanvasEdge[];
+            elements?: ElementVault[];
+            multiframes?: MultiframeCard[];
+            bridges?: MultiframeBridge[];
+            timelineClips?: TimelineClip[];
+          };
+          if (Array.isArray(remoteSt.nodes)) {
+            set((s) => ({
+              projectTitle: loaded.project!.name || s.projectTitle,
+              nodes: remoteSt.nodes!,
+              edges: Array.isArray(remoteSt.edges) ? remoteSt.edges : s.edges,
+              elements: Array.isArray(remoteSt.elements) ? remoteSt.elements : s.elements,
+              saveStatus: 'saved',
+            }));
+          }
+        }
+      });
+      return;
+    }
+    const hydratedNodes = st.nodes.map((n) =>
+      (n.imageUrl || n.videoUrl || n.audioUrl) && !n.generatedSnapshot
+        ? {
+            ...n,
+            generatedSnapshot: {
+              prompt: n.prompt || '',
+              platformId: n.platformId,
+              modelId: n.modelId,
+              aspectRatio: n.aspectRatio,
+              resolution: n.resolution,
+              quality: n.quality,
+              durationSec: n.durationSec,
+            },
+          }
+        : n
+    );
     set((s) => ({
       projectTitle: ev.name || s.projectTitle,
-      nodes: st.nodes!,
+      nodes: hydratedNodes,
       edges: Array.isArray(st.edges) ? st.edges : s.edges,
       elements: Array.isArray(st.elements) ? st.elements : s.elements,
       multiframes: Array.isArray(st.multiframes) ? st.multiframes : s.multiframes,

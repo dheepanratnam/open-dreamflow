@@ -879,6 +879,169 @@ export const BUILTIN_DREAMFLOW_MCP_TOOLS: McpToolDefinition[] = [
       },
     },
   },
+  {
+    name: 'canvas_list',
+    description: 'List all saved canvases in the Open-DreamFlow cloud workspace.',
+    annotations: { title: 'Canvas · List Canvases' },
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'canvas_get',
+    description: 'Read the complete node and edge graph of a saved canvas by projectId.',
+    annotations: { title: 'Canvas · Get Graph' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'Canvas ID (defaults to canvas_default)' },
+      },
+    },
+  },
+  {
+    name: 'canvas_create',
+    description: 'Create a new canvas in the workspace and broadcast live to connected browsers.',
+    annotations: { title: 'Canvas · Create Canvas' },
+    inputSchema: {
+      type: 'object',
+      required: ['name'],
+      properties: {
+        id: { type: 'string' },
+        name: { type: 'string' },
+        isSharedWithTeam: { type: 'boolean', default: false },
+      },
+    },
+  },
+  {
+    name: 'canvas_rename',
+    description: 'Rename an existing canvas and sync live to connected browsers.',
+    annotations: { title: 'Canvas · Rename Canvas' },
+    inputSchema: {
+      type: 'object',
+      required: ['projectId', 'name'],
+      properties: {
+        projectId: { type: 'string' },
+        name: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'canvas_upsert_nodes',
+    description:
+      'Add or update nodes (and optional edges or deletions) on a canvas and broadcast live to connected browsers.',
+    annotations: { title: 'Canvas · Upsert Nodes & Workflow' },
+    inputSchema: {
+      type: 'object',
+      required: ['nodes'],
+      properties: {
+        projectId: { type: 'string', description: 'Target canvas ID (defaults to canvas_default)' },
+        nodes: {
+          type: 'array',
+          items: { type: 'object' },
+          description: 'Nodes to insert or merge by id',
+        },
+        edges: {
+          type: 'array',
+          items: { type: 'object' },
+          description: 'Optional edges ({ sourceId, targetId, kind, label }) to connect',
+        },
+        deleteNodeIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional node IDs to remove',
+        },
+      },
+    },
+  },
+  {
+    name: 'canvas_connect_edges',
+    description: 'Connect workflow edges between nodes on a canvas and sync live.',
+    annotations: { title: 'Canvas · Connect Workflow Edges' },
+    inputSchema: {
+      type: 'object',
+      required: ['edges'],
+      properties: {
+        projectId: { type: 'string', description: 'Target canvas ID (defaults to canvas_default)' },
+        edges: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['sourceId', 'targetId'],
+            properties: {
+              sourceId: { type: 'string' },
+              targetId: { type: 'string' },
+              kind: { type: 'string', default: 'lineage' },
+              label: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'canvas_organize_layout',
+    description:
+      'Organize all nodes on a canvas into clean non-overlapping workflow columns/rows by topological stage and media type.',
+    annotations: { title: 'Canvas · Auto-Organize Layout' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'Target canvas ID (defaults to canvas_default)' },
+        startX: { type: 'number', default: 120 },
+        startY: { type: 'number', default: 100 },
+        colGap: { type: 'number', default: 96 },
+        rowGap: { type: 'number', default: 84 },
+      },
+    },
+  },
+  {
+    name: 'canvas_generate_node',
+    description:
+      'Generate real image/video/audio media via Higgsfield or Dreamina onto a canvas node, preserving existing generated media as separate nodes unless overwriteInPlace is true.',
+    annotations: { title: 'Canvas · Generate Node Live' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'Target canvas ID (defaults to canvas_default)' },
+        nodeId: { type: 'string', description: 'Existing node ID to generate (or omit to create a new node)' },
+        title: { type: 'string' },
+        kind: { type: 'string', enum: ['image', 'video', 'audio', 'contact-sheet'], default: 'image' },
+        platformId: { type: 'string', default: 'higgsfield' },
+        modelId: { type: 'string', default: 'gpt_image_2_6' },
+        prompt: { type: 'string' },
+        aspectRatio: { type: 'string', default: '16:9' },
+        resolution: { type: 'string', default: '1K' },
+        quality: { type: 'string' },
+        durationSec: { type: 'number' },
+        batchCount: { type: 'number', default: 1 },
+        referenceImages: { type: 'array', items: { type: 'string' } },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        overwriteInPlace: { type: 'boolean', default: false },
+      },
+    },
+  },
+  {
+    name: 'credits_summary',
+    description: 'Inspect live Higgsfield & Dreamina credit balances, expiry metadata, usage ledger, and synced model rates.',
+    annotations: { title: 'Credits · Live Summary' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        forceRefresh: { type: 'boolean', default: false },
+      },
+    },
+  },
+  {
+    name: 'credits_sync_rates',
+    description:
+      'Run zero-cost preflight cost checks (Higgsfield get_cost + Dreamina node quote) across active models to refresh the daily per-model credit cost table.',
+    annotations: { title: 'Credits · Daily Zero-Cost Rate Sync' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        force: { type: 'boolean', default: true },
+      },
+    },
+  },
 ];
 
 export function resolveBinaryPath(
@@ -1300,6 +1463,10 @@ export class McpStdioBridgeServer {
     return `http://localhost:${this.boundPort}`;
   }
 
+  private dailyRateSyncStartupTimer: NodeJS.Timeout | null = null;
+  private dailyRateSyncInterval: NodeJS.Timeout | null = null;
+  private inFlightModelRateSync: Promise<Record<string, unknown>> | null = null;
+
   public async start(): Promise<{
     port: number;
     host: string;
@@ -1307,6 +1474,7 @@ export class McpStdioBridgeServer {
     bridgeWsUrl: string;
     httpUrl: string;
   }> {
+    this.authStore.pruneReadOnlyLedgerEntries();
     if (this.command) this.spawnStdioProcess();
 
     this.httpServer = http.createServer((req, res) => {
@@ -1337,10 +1505,28 @@ export class McpStdioBridgeServer {
       }, media=${this.mediaDir}, data=${this.dataDir})`
     );
 
+    this.dailyRateSyncStartupTimer = setTimeout(() => {
+      void this.syncAllModelCreditRates({ force: false }).catch(() => {});
+    }, 6000);
+    this.dailyRateSyncStartupTimer.unref?.();
+
+    this.dailyRateSyncInterval = setInterval(() => {
+      void this.syncAllModelCreditRates({ force: true }).catch(() => {});
+    }, 24 * 3600_000);
+    this.dailyRateSyncInterval.unref?.();
+
     return { port: boundPort, host: this.host, wsUrl, bridgeWsUrl, httpUrl };
   }
 
   public async stop(): Promise<void> {
+    if (this.dailyRateSyncStartupTimer) {
+      clearTimeout(this.dailyRateSyncStartupTimer);
+      this.dailyRateSyncStartupTimer = null;
+    }
+    if (this.dailyRateSyncInterval) {
+      clearInterval(this.dailyRateSyncInterval);
+      this.dailyRateSyncInterval = null;
+    }
     for (const [, pending] of this.pendingStdioCalls) clearTimeout(pending.timer);
     this.pendingStdioCalls.clear();
 
@@ -2436,6 +2622,11 @@ export class McpStdioBridgeServer {
       ownerId: record.ownerId,
       isSharedWithTeam: record.isSharedWithTeam,
       updatedBy: user.id,
+      source: typeof params.source === 'string' ? params.source : 'web',
+      ...(typeof params.clientInstanceId === 'string' && params.clientInstanceId
+        ? { clientInstanceId: params.clientInstanceId }
+        : {}),
+      state: record.state,
       updatedAt: record.updatedAt,
     });
 
@@ -2448,6 +2639,567 @@ export class McpStdioBridgeServer {
       updatedAt: record.updatedAt,
       snapshotCount: record.snapshots.length,
       project: record,
+    };
+  }
+
+  public renameProject(params: { projectId: string; name: string }): Record<string, unknown> {
+    const projectId = String(params.projectId || 'canvas_default').trim() || 'canvas_default';
+    const nextName = String(params.name || '').trim();
+    if (!nextName) {
+      throw new BridgeHttpError(400, 'Canvas name is required.');
+    }
+    const existing = this.getProject(projectId);
+    if (!existing) {
+      throw new BridgeHttpError(404, `Canvas "${projectId}" not found.`);
+    }
+    const saved = this.saveProject({
+      id: existing.id,
+      name: nextName,
+      state: existing.state,
+      isSharedWithTeam: existing.isSharedWithTeam,
+      source: 'mcp',
+    });
+    return {
+      ok: true,
+      id: saved.id,
+      name: saved.name,
+      updatedAt: saved.updatedAt,
+    };
+  }
+
+  public upsertCanvasNodes(params: Record<string, unknown>): Record<string, unknown> {
+    const projectId = String(params.projectId || 'canvas_default').trim() || 'canvas_default';
+    const existing = this.getProject(projectId);
+    const curState = ((existing?.state || { nodes: [], edges: [] }) as Record<string, unknown>);
+    const curNodes = Array.isArray(curState.nodes)
+      ? ([...curState.nodes] as Array<Record<string, unknown>>)
+      : [];
+    const curEdges = Array.isArray(curState.edges)
+      ? ([...curState.edges] as Array<Record<string, unknown>>)
+      : [];
+
+    const deleteIds = new Set(
+      Array.isArray(params.deleteNodeIds)
+        ? (params.deleteNodeIds as unknown[]).map((x) => String(x || '').trim()).filter(Boolean)
+        : []
+    );
+    let nextNodes =
+      deleteIds.size > 0
+        ? curNodes.filter((n) => !deleteIds.has(String(n.id || '')))
+        : curNodes;
+    let nextEdges =
+      deleteIds.size > 0
+        ? curEdges.filter(
+            (e) =>
+              !deleteIds.has(String(e.sourceId || '')) &&
+              !deleteIds.has(String(e.targetId || ''))
+          )
+        : curEdges;
+
+    const incomingNodes = Array.isArray(params.nodes)
+      ? (params.nodes as Array<Record<string, unknown>>)
+      : [];
+    let autoOffsetIdx = 0;
+    for (const rawNode of incomingNodes) {
+      if (!rawNode || typeof rawNode !== 'object') continue;
+      const kind = String(rawNode.kind || 'image').trim();
+      const nodeId =
+        String(rawNode.id || '').trim() ||
+        `node_${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const existingIdx = nextNodes.findIndex((n) => String(n.id || '') === nodeId);
+      const prev = existingIdx >= 0 ? nextNodes[existingIdx] : null;
+      const defaultW = kind === 'video' ? 480 : kind === 'audio' ? 340 : 384;
+      const defaultH = kind === 'video' ? 270 : kind === 'audio' ? 128 : 216;
+      const maxRight = nextNodes.reduce(
+        (mx, n) => Math.max(mx, (Number(n.x) || 120) + (Number(n.width) || 384)),
+        40
+      );
+      const x =
+        typeof rawNode.x === 'number' && Number.isFinite(rawNode.x)
+          ? rawNode.x
+          : typeof prev?.x === 'number'
+            ? prev.x
+            : maxRight + 80;
+      const y =
+        typeof rawNode.y === 'number' && Number.isFinite(rawNode.y)
+          ? rawNode.y
+          : typeof prev?.y === 'number'
+            ? prev.y
+            : 120 + (autoOffsetIdx++ % 3) * 320;
+      const merged: Record<string, unknown> = {
+        ...(prev || {}),
+        ...rawNode,
+        id: nodeId,
+        kind,
+        title: String(rawNode.title ?? prev?.title ?? `${kind} node`),
+        prompt: String(rawNode.prompt ?? prev?.prompt ?? ''),
+        x,
+        y,
+        width: Number(rawNode.width ?? prev?.width ?? defaultW) || defaultW,
+        height: Number(rawNode.height ?? prev?.height ?? defaultH) || defaultH,
+        aspectRatio: String(rawNode.aspectRatio ?? prev?.aspectRatio ?? '16:9'),
+        status: String(
+          rawNode.status ??
+            prev?.status ??
+            (rawNode.imageUrl || rawNode.videoUrl || rawNode.audioUrl ? 'ready' : 'idle')
+        ),
+        seed: Number(rawNode.seed ?? prev?.seed ?? Math.floor(Math.random() * 9000) + 100),
+        resolution: String(
+          rawNode.resolution ?? prev?.resolution ?? (kind === 'video' ? '720p' : '2K')
+        ),
+        elementHandles: Array.isArray(rawNode.elementHandles)
+          ? rawNode.elementHandles
+          : Array.isArray(prev?.elementHandles)
+            ? prev.elementHandles
+            : [],
+        layers: Array.isArray(rawNode.layers)
+          ? rawNode.layers
+          : Array.isArray(prev?.layers)
+            ? prev.layers
+            : [],
+        providerUsed: String(
+          rawNode.providerUsed ?? prev?.providerUsed ?? rawNode.platformId ?? 'higgsfield'
+        ),
+        createdAt: Number(prev?.createdAt ?? rawNode.createdAt ?? Date.now()),
+      };
+      if (
+        (merged.imageUrl || merged.videoUrl || merged.audioUrl) &&
+        !merged.generatedSnapshot
+      ) {
+        merged.generatedSnapshot = {
+          prompt: String(merged.prompt || ''),
+          platformId: merged.platformId,
+          modelId: merged.modelId,
+          aspectRatio: merged.aspectRatio,
+          resolution: merged.resolution,
+          durationSec: merged.durationSec,
+        };
+      }
+      if (existingIdx >= 0) {
+        nextNodes[existingIdx] = merged;
+      } else {
+        nextNodes.push(merged);
+      }
+    }
+
+    const incomingEdges = Array.isArray(params.edges)
+      ? (params.edges as Array<Record<string, unknown>>)
+      : [];
+    for (const rawEdge of incomingEdges) {
+      if (!rawEdge || typeof rawEdge !== 'object') continue;
+      const sourceId = String(rawEdge.sourceId || rawEdge.from || '').trim();
+      const targetId = String(rawEdge.targetId || rawEdge.to || '').trim();
+      if (!sourceId || !targetId || sourceId === targetId) continue;
+      const already = nextEdges.some(
+        (e) => String(e.sourceId) === sourceId && String(e.targetId) === targetId
+      );
+      if (!already) {
+        nextEdges.push({
+          id:
+            String(rawEdge.id || '').trim() ||
+            `edge_${sourceId}_${targetId}_${Date.now().toString(36)}`,
+          sourceId,
+          targetId,
+          kind: String(rawEdge.kind || 'lineage'),
+          ...(typeof rawEdge.label === 'string' ? { label: rawEdge.label } : {}),
+        });
+      }
+    }
+
+    const saved = this.saveProject({
+      id: projectId,
+      name:
+        typeof params.name === 'string' && params.name.trim()
+          ? params.name.trim()
+          : existing?.name || 'Untitled Canvas',
+      state: {
+        ...curState,
+        nodes: nextNodes,
+        edges: nextEdges,
+      },
+      isSharedWithTeam: existing?.isSharedWithTeam,
+      source: 'mcp',
+    });
+
+    return {
+      ok: true,
+      projectId: saved.id,
+      name: saved.name,
+      nodeCount: nextNodes.length,
+      edgeCount: nextEdges.length,
+      updatedAt: saved.updatedAt,
+    };
+  }
+
+  public connectCanvasEdges(params: Record<string, unknown>): Record<string, unknown> {
+    return this.upsertCanvasNodes({
+      projectId: params.projectId,
+      nodes: [],
+      edges: params.edges,
+    });
+  }
+
+  public organizeCanvasLayout(params: Record<string, unknown>): Record<string, unknown> {
+    const projectId = String(params.projectId || 'canvas_default').trim() || 'canvas_default';
+    const existing = this.getProject(projectId);
+    if (!existing) {
+      throw new BridgeHttpError(404, `Canvas "${projectId}" not found.`);
+    }
+    const curState = (existing.state || { nodes: [], edges: [] }) as Record<string, unknown>;
+    const nodes = Array.isArray(curState.nodes)
+      ? ([...curState.nodes] as Array<Record<string, unknown>>)
+      : [];
+    const edges = Array.isArray(curState.edges)
+      ? (curState.edges as Array<Record<string, unknown>>)
+      : [];
+
+    const startX = Number.isFinite(Number(params.startX)) ? Number(params.startX) : 120;
+    const startY = Number.isFinite(Number(params.startY)) ? Number(params.startY) : 100;
+    const colGap = Number.isFinite(Number(params.colGap)) ? Number(params.colGap) : 96;
+    const rowGap = Number.isFinite(Number(params.rowGap)) ? Number(params.rowGap) : 88;
+
+    const nodeById = new Map<string, Record<string, unknown>>();
+    for (const n of nodes) {
+      nodeById.set(String(n.id || ''), n);
+    }
+
+    // Compute topological stage depth for connected DAGs; assign standalone nodes by workflow role
+    const incomingMap = new Map<string, string[]>();
+    const outgoingCount = new Map<string, number>();
+    for (const e of edges) {
+      const s = String(e.sourceId || '');
+      const t = String(e.targetId || '');
+      if (!nodeById.has(s) || !nodeById.has(t) || s === t) continue;
+      const arr = incomingMap.get(t) || [];
+      arr.push(s);
+      incomingMap.set(t, arr);
+      outgoingCount.set(s, (outgoingCount.get(s) || 0) + 1);
+    }
+
+    const depthMemo = new Map<string, number>();
+    const computeDepth = (id: string, visiting = new Set<string>()): number => {
+      if (depthMemo.has(id)) return depthMemo.get(id)!;
+      if (visiting.has(id)) return 0;
+      visiting.add(id);
+      const parents = incomingMap.get(id) || [];
+      if (parents.length === 0) {
+        const n = nodeById.get(id);
+        const hasOut = (outgoingCount.get(id) || 0) > 0;
+        if (hasOut) {
+          depthMemo.set(id, 0);
+          return 0;
+        }
+        const kind = String(n?.kind || 'image');
+        const roleCol =
+          kind === 'text' || kind === 'sticky' || kind === 'style-dna' || kind === 'element'
+            ? 0
+            : String(n?.id || '').startsWith('node_upload_')
+              ? 0
+              : kind === 'image' || kind === 'contact-sheet'
+                ? 1
+                : 2;
+        depthMemo.set(id, roleCol);
+        return roleCol;
+      }
+      let d = 0;
+      for (const p of parents) {
+        d = Math.max(d, computeDepth(p, new Set(visiting)) + 1);
+      }
+      depthMemo.set(id, d);
+      return d;
+    };
+
+    const columns = new Map<number, Array<Record<string, unknown>>>();
+    for (const n of nodes) {
+      const col = computeDepth(String(n.id || ''));
+      const bucket = columns.get(col) || [];
+      bucket.push(n);
+      columns.set(col, bucket);
+    }
+
+    const sortedColIndices = Array.from(columns.keys()).sort((a, b) => a - b);
+    let cursorX = startX;
+    const organizedNodes: Array<Record<string, unknown>> = [];
+
+    for (const colIdx of sortedColIndices) {
+      const colNodes = columns.get(colIdx)!;
+      colNodes.sort(
+        (a, b) =>
+          (Number(a.y) || 0) - (Number(b.y) || 0) ||
+          (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0)
+      );
+      let cursorY = startY;
+      let maxColWidth = 384;
+      for (const n of colNodes) {
+        const w = Number(n.width) || (n.kind === 'video' ? 480 : 384);
+        const h = Number(n.height) || (n.kind === 'video' ? 270 : 216);
+        maxColWidth = Math.max(maxColWidth, w);
+        organizedNodes.push({
+          ...n,
+          x: Math.round(cursorX),
+          y: Math.round(cursorY),
+        });
+        cursorY += h + rowGap;
+      }
+      cursorX += maxColWidth + colGap;
+    }
+
+    const saved = this.saveProject({
+      id: existing.id,
+      name: existing.name,
+      state: {
+        ...curState,
+        nodes: organizedNodes,
+      },
+      isSharedWithTeam: existing.isSharedWithTeam,
+      source: 'mcp',
+    });
+
+    return {
+      ok: true,
+      projectId: saved.id,
+      name: saved.name,
+      organizedCount: organizedNodes.length,
+      columns: sortedColIndices.length,
+      updatedAt: saved.updatedAt,
+    };
+  }
+
+  public async generateCanvasNodeAndSave(
+    params: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const projectId = String(params.projectId || 'canvas_default').trim() || 'canvas_default';
+    const existing = this.getProject(projectId);
+    const curState = ((existing?.state || { nodes: [], edges: [] }) as Record<string, unknown>);
+    const curNodes = Array.isArray(curState.nodes)
+      ? ([...curState.nodes] as Array<Record<string, unknown>>)
+      : [];
+    const curEdges = Array.isArray(curState.edges)
+      ? ([...curState.edges] as Array<Record<string, unknown>>)
+      : [];
+
+    const requestedNodeId = String(params.nodeId || '').trim();
+    const existingNode = requestedNodeId
+      ? curNodes.find((n) => String(n.id || '') === requestedNodeId)
+      : undefined;
+
+    const rawKind = String(params.kind || existingNode?.kind || 'image').trim();
+    const genModality: 'image' | 'video' | 'audio' =
+      rawKind === 'video' ? 'video' : rawKind === 'audio' ? 'audio' : 'image';
+    const platformId = String(
+      params.platformId || existingNode?.platformId || 'higgsfield'
+    ).trim();
+    const modelId = String(
+      params.modelId ||
+        existingNode?.modelId ||
+        (platformId === 'dreamina'
+          ? genModality === 'video'
+            ? 'seedance_2_0'
+            : 'seedream_5_5'
+          : genModality === 'video'
+            ? 'seedance_2_5'
+            : 'gpt_image_2_6')
+    ).trim();
+    const prompt = String(params.prompt || existingNode?.prompt || '').trim();
+    if (!prompt) {
+      throw new BridgeHttpError(400, 'Prompt is required to generate a canvas node.', platformId);
+    }
+
+    const hadExistingMedia = Boolean(
+      existingNode &&
+        (existingNode.imageUrl || existingNode.videoUrl || existingNode.audioUrl)
+    );
+    const shouldForkSibling = hadExistingMedia && params.overwriteInPlace !== true;
+
+    const targetNodeId =
+      existingNode && !shouldForkSibling
+        ? String(existingNode.id)
+        : !existingNode && requestedNodeId
+          ? requestedNodeId
+          : `node_${rawKind}_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+
+    // Collect upstream wired reference images if generating an existing connected node
+    const wiredRefUrls: string[] = [];
+    const sourceForEdges = existingNode ? String(existingNode.id) : targetNodeId;
+    for (const e of curEdges) {
+      if (String(e.targetId) === sourceForEdges) {
+        const up = curNodes.find((n) => String(n.id) === String(e.sourceId));
+        if (up && typeof up.imageUrl === 'string' && up.imageUrl) {
+          wiredRefUrls.push(up.imageUrl);
+        }
+      }
+    }
+    const explicitRefs = Array.isArray(params.referenceImages)
+      ? (params.referenceImages as unknown[]).map((u) => String(u || '')).filter(Boolean)
+      : Array.isArray(existingNode?.referenceUrls)
+        ? (existingNode!.referenceUrls as unknown[]).map((u) => String(u || '')).filter(Boolean)
+        : [];
+    const allReferenceImages = Array.from(new Set([...wiredRefUrls, ...explicitRefs]));
+
+    const aspectRatio = String(params.aspectRatio || existingNode?.aspectRatio || '16:9');
+    const resolution = String(
+      params.resolution || existingNode?.resolution || (genModality === 'video' ? '720p' : '1K')
+    );
+    const quality =
+      typeof params.quality === 'string'
+        ? params.quality
+        : typeof existingNode?.quality === 'string'
+          ? existingNode.quality
+          : undefined;
+    const durationSec = Number(params.durationSec ?? existingNode?.durationSec ?? 5) || 5;
+    const batchCount = Number(params.batchCount ?? existingNode?.batchCount ?? 1) || 1;
+
+    const effectivePrompt =
+      rawKind === 'contact-sheet' && !/3x3|9-grid|contact sheet/i.test(prompt)
+        ? `3x3 cinematic storyboard contact sheet grid (9 distinct panels with consistent characters, wardrobe, and lighting): ${prompt}`
+        : prompt;
+
+    const genRes = await this.generateNode({
+      nodeId: targetNodeId,
+      kind: genModality,
+      platformId,
+      modelId,
+      prompt: effectivePrompt,
+      referenceImages: allReferenceImages,
+      settings: {
+        aspectRatio,
+        resolution,
+        ...(quality ? { quality } : {}),
+        durationSec,
+        batchCount,
+      },
+    });
+
+    // Re-read latest canvas before writing so concurrent generations never clobber each other
+    const latestProj = this.getProject(projectId);
+    const latestState = ((latestProj?.state || curState) as Record<string, unknown>);
+    const latestNodes = Array.isArray(latestState.nodes)
+      ? ([...latestState.nodes] as Array<Record<string, unknown>>)
+      : [];
+    const latestEdges = Array.isArray(latestState.edges)
+      ? ([...latestState.edges] as Array<Record<string, unknown>>)
+      : [];
+
+    const defaultW = genModality === 'video' ? 480 : rawKind === 'contact-sheet' ? 480 : 384;
+    const defaultH = genModality === 'video' ? 270 : rawKind === 'contact-sheet' ? 270 : 216;
+    const maxRight = latestNodes.reduce(
+      (mx, n) => Math.max(mx, (Number(n.x) || 120) + (Number(n.width) || 384)),
+      40
+    );
+
+    const x =
+      typeof params.x === 'number' && Number.isFinite(params.x)
+        ? params.x
+        : shouldForkSibling && existingNode
+          ? (Number(existingNode.x) || 120) + (Number(existingNode.width) || defaultW) + 56
+          : existingNode && typeof existingNode.x === 'number'
+            ? existingNode.x
+            : maxRight + 80;
+    const y =
+      typeof params.y === 'number' && Number.isFinite(params.y)
+        ? params.y
+        : existingNode && typeof existingNode.y === 'number'
+          ? existingNode.y
+          : 120;
+
+    const nodeRecord: Record<string, unknown> = {
+      ...(existingNode && !shouldForkSibling ? existingNode : {}),
+      id: targetNodeId,
+      kind: rawKind,
+      title: String(
+        params.title ||
+          (shouldForkSibling
+            ? `${existingNode?.title || rawKind} · ${modelId}`
+            : existingNode?.title || `${platformId} · ${modelId}`)
+      ),
+      prompt,
+      x,
+      y,
+      width: Number(existingNode?.width || defaultW),
+      height: Number(existingNode?.height || defaultH),
+      aspectRatio,
+      resolution,
+      ...(quality ? { quality } : {}),
+      ...(genModality === 'video' ? { durationSec } : {}),
+      batchCount,
+      platformId,
+      modelId,
+      status: 'ready',
+      progress: 100,
+      imageUrl:
+        genModality === 'image'
+          ? genRes.imageUrl || genRes.mediaUrl
+          : genRes.imageUrl || allReferenceImages[0],
+      ...(genModality === 'video'
+        ? { videoUrl: genRes.videoUrl || genRes.mediaUrl }
+        : {}),
+      ...(genModality === 'audio'
+        ? { audioUrl: genRes.audioUrl || genRes.mediaUrl }
+        : {}),
+      generatedOutputs: Array.isArray(genRes.outputs) ? genRes.outputs : undefined,
+      referenceUrls: allReferenceImages,
+      generatedSnapshot: {
+        prompt,
+        platformId,
+        modelId,
+        aspectRatio,
+        resolution,
+        ...(quality ? { quality } : {}),
+        ...(genModality === 'video' ? { durationSec } : {}),
+      },
+      elementHandles: Array.isArray(existingNode?.elementHandles)
+        ? existingNode!.elementHandles
+        : [],
+      layers: [],
+      seed: Number(existingNode?.seed || Math.floor(Math.random() * 9000) + 100),
+      providerUsed: String(genRes.providerUsed || `${platformId}-mcp`),
+      createdAt:
+        existingNode && !shouldForkSibling
+          ? Number(existingNode.createdAt || Date.now())
+          : Date.now(),
+    };
+
+    const idx = latestNodes.findIndex((n) => String(n.id) === targetNodeId);
+    if (idx >= 0) {
+      latestNodes[idx] = nodeRecord;
+    } else {
+      latestNodes.push(nodeRecord);
+    }
+
+    if (shouldForkSibling && existingNode) {
+      for (const e of latestEdges) {
+        if (String(e.targetId) === String(existingNode.id)) {
+          latestEdges.push({
+            id: `edge_${e.sourceId}_${targetNodeId}`,
+            sourceId: e.sourceId,
+            targetId: targetNodeId,
+            kind: e.kind || 'lineage',
+          });
+        }
+      }
+    }
+
+    const saved = this.saveProject({
+      id: projectId,
+      name: latestProj?.name || 'Untitled Canvas',
+      state: {
+        ...latestState,
+        nodes: latestNodes,
+        edges: latestEdges,
+      },
+      isSharedWithTeam: latestProj?.isSharedWithTeam,
+      source: 'mcp',
+    });
+
+    return {
+      ok: true,
+      projectId: saved.id,
+      nodeId: targetNodeId,
+      forkedFromNodeId: shouldForkSibling ? existingNode?.id : undefined,
+      mediaUrl: genRes.mediaUrl,
+      fullUrl: genRes.fullUrl,
+      creditsUsed: genRes.creditsUsed,
+      providerUsed: genRes.providerUsed,
     };
   }
 
@@ -5121,6 +5873,7 @@ export class McpStdioBridgeServer {
     modelId?: string;
     modality?: string;
     resolution?: string;
+    quality?: string;
     durationSec?: number;
     batchCount?: number;
     prompt?: string;
@@ -5129,19 +5882,52 @@ export class McpStdioBridgeServer {
     const modality = String(params.modality || 'image').trim().toLowerCase();
     const modelId = String(params.modelId || '').trim().toLowerCase();
     const resolution = String(params.resolution || (modality === 'video' ? '1080p' : '2k')).trim().toLowerCase();
+    const quality = String(params.quality || '').trim().toLowerCase();
     const durationSec = Math.max(2, Math.min(30, Number(params.durationSec) || 5));
     const batchCount = Math.max(1, Math.min(8, Math.round(Number(params.batchCount) || 1)));
-    const modelKey = `${platformId}:${modelId || 'default'}:${modality}:${resolution}`;
+    const baseKey = `${platformId}:${modelId || 'default'}:${modality}:${resolution}`;
+    const modelKey = quality ? `${baseKey}:${quality}` : baseKey;
 
-    const calibrated = this.authStore.getCalibratedRates()[modelKey];
-    if (calibrated && calibrated.credits > 0) {
-      const mult = modality === 'image' ? batchCount : 1;
+    const allRates = this.authStore.getCalibratedRates();
+    const exactEntry = allRates[modelKey] ?? allRates[baseKey];
+    if (exactEntry && exactEntry.credits >= 0) {
+      const mult = modality === 'image' ? batchCount : modality === 'video' ? durationSec / 5 : 1;
+      // Note: observed_delta on video already includes duration if not normalized; daily_sync/live_quote stores 5s base on baseKey
+      const scaled =
+        modality === 'video' && exactEntry.source === 'daily_sync'
+          ? exactEntry.credits * (durationSec / 5)
+          : exactEntry.credits * (modality === 'image' ? mult : 1);
       return {
-        credits: Math.round(calibrated.credits * mult * 100) / 100,
+        credits: Math.round(scaled * 100) / 100,
         unit: platformId === 'elevenlabs' ? 'characters' : 'credits',
         source: 'calibrated',
         modelKey,
       };
+    }
+
+    // Secondary prefix lookup: if another resolution/quality for the same model was synced, scale intelligently
+    const modelPrefix = `${platformId}:${modelId || 'default'}:${modality}:`;
+    const prefixMatchKey = Object.keys(allRates).find((k) => k.startsWith(modelPrefix));
+    if (prefixMatchKey) {
+      const matched = allRates[prefixMatchKey];
+      if (matched && matched.credits >= 0) {
+        let resScale = 1;
+        if (modality === 'video') {
+          const from1080 = prefixMatchKey.includes('1080');
+          const to1080 = resolution.includes('1080');
+          if (!from1080 && to1080) resScale = 1.5;
+          else if (from1080 && !to1080) resScale = 0.67;
+          if (matched.source === 'daily_sync') resScale *= durationSec / 5;
+        } else if (modality === 'image') {
+          resScale = batchCount;
+        }
+        return {
+          credits: Math.round(matched.credits * resScale * 100) / 100,
+          unit: platformId === 'elevenlabs' ? 'characters' : 'credits',
+          source: 'calibrated',
+          modelKey,
+        };
+      }
     }
 
     if (platformId === 'elevenlabs') {
@@ -5152,22 +5938,32 @@ export class McpStdioBridgeServer {
     let base = 4;
     if (platformId === 'dreamina') {
       if (modality === 'video') {
-        const per5s = /seedance[-_ ]?(2\.0|2)/i.test(modelId) ? 35 : 22;
-        const resMult = resolution.includes('1080') ? 1.4 : resolution.includes('4k') ? 2 : 1;
-        base = Math.round((per5s * (durationSec / 5)) * resMult);
+        const isFast = /flash|fast|lite|mini/i.test(modelId);
+        const per5s720 = isFast ? 195 : /seedance[-_ ]?(2\.0|2)/i.test(modelId) ? 260 : 180;
+        const resMult = resolution.includes('1080') ? 1.5 : resolution.includes('4k') ? 2.2 : 1;
+        base = Math.round(per5s720 * (durationSec / 5) * resMult);
       } else if (modality === 'audio') {
-        base = 5;
+        base = 12;
       } else {
         const is4k = resolution.includes('4k');
-        base = (/5\.0|5/i.test(modelId) ? 4 : 3) * (is4k ? 2 : 1) * batchCount;
+        base = (is4k ? 16 : 8) * batchCount;
       }
     } else if (platformId === 'higgsfield') {
       if (modality === 'video') {
-        base = Math.round(20 * (durationSec / 5) * (resolution.includes('1080') ? 1.5 : 1));
+        const per5s = /veo|sora/i.test(modelId) ? 40 : /seedance|kling/i.test(modelId) ? 30 : 20;
+        base = Math.round(per5s * (durationSec / 5) * (resolution.includes('1080') ? 1.4 : 1));
       } else if (modality === 'audio') {
         base = 6;
+      } else if (/gpt[-_ ]?image/i.test(modelId)) {
+        const perImg =
+          quality === 'high' || resolution.includes('4k') || resolution.includes('2k')
+            ? 2.75
+            : quality === 'medium'
+              ? 0.75
+              : 0.25;
+        base = Math.round(perImg * batchCount * 100) / 100;
       } else {
-        base = (/nano|flux|soul/i.test(modelId) ? 3 : 5) * batchCount;
+        base = (/nano|seedream|soul/i.test(modelId) ? 0.5 : 1.5) * batchCount;
       }
     } else if (platformId === 'kling') {
       base = modality === 'video' ? Math.round(25 * (durationSec / 5)) : 4 * batchCount;
@@ -5184,6 +5980,174 @@ export class McpStdioBridgeServer {
     return { credits: base, unit: 'credits', source: 'rate_table', modelKey };
   }
 
+  public async syncAllModelCreditRates(
+    opts: { force?: boolean } = {}
+  ): Promise<Record<string, unknown>> {
+    const lastIso = this.authStore.getLastDailyRateSyncAt();
+    const lastMs = lastIso ? Date.parse(lastIso) : 0;
+    if (!opts.force && Number.isFinite(lastMs) && Date.now() - lastMs < 24 * 3600_000) {
+      return {
+        ok: true,
+        skipped: true,
+        lastDailyRateSyncAt: lastIso,
+        ratesCount: Object.keys(this.authStore.getCalibratedRates()).length,
+        rates: this.authStore.getCalibratedRates(),
+      };
+    }
+
+    if (this.inFlightModelRateSync) {
+      return await this.inFlightModelRateSync;
+    }
+
+    this.inFlightModelRateSync = (async () => {
+      const synced: Record<string, number> = {};
+      const errors: string[] = [];
+
+      // 1. Sync Higgsfield MCP model costs using zero-cost `get_cost: true`
+      const hfServer = this.externalMcpHost
+        .listServers()
+        .find((s) => s.platformId === 'higgsfield' && s.status === 'connected');
+      if (hfServer) {
+        const hfProbes: Array<{
+          modelId: string;
+          modality: 'image' | 'video';
+          resolution: string;
+          quality?: string;
+          durationSec?: number;
+        }> = [
+          { modelId: 'gpt_image_2_6', modality: 'image', resolution: '1k', quality: 'low' },
+          { modelId: 'gpt_image_2_6', modality: 'image', resolution: '1k', quality: 'medium' },
+          { modelId: 'gpt_image_2_6', modality: 'image', resolution: '2k', quality: 'high' },
+          { modelId: 'nano_banana_2', modality: 'image', resolution: '2k' },
+          { modelId: 'flux_2_pro', modality: 'image', resolution: '2k' },
+          { modelId: 'seedream_4_5', modality: 'image', resolution: '2k' },
+          { modelId: 'soul_2_0', modality: 'image', resolution: '2k' },
+          { modelId: 'seedance_2_5', modality: 'video', resolution: '720p', durationSec: 5 },
+          { modelId: 'kling_3_0', modality: 'video', resolution: '720p', durationSec: 5 },
+          { modelId: 'veo_3_1', modality: 'video', resolution: '720p', durationSec: 5 },
+          { modelId: 'wan_2_6', modality: 'video', resolution: '720p', durationSec: 5 },
+        ];
+
+        for (const probe of hfProbes) {
+          try {
+            const toolName = probe.modality === 'video' ? 'generate_video' : 'generate_image';
+            if (!hfServer.tools.some((t) => t.name === toolName)) continue;
+            const normalizedHfModel = normalizeHiggsfieldMcpModelId(probe.modelId, probe.modality);
+            const modelDef = await this.findHiggsfieldModelSchema(hfServer.id, normalizedHfModel);
+            const hfParams = this.buildHiggsfieldModelParams({
+              normalizedModel: normalizedHfModel,
+              kind: probe.modality,
+              modelDef,
+              prompt: 'daily model rate calibration check',
+              aspectRatio: '16:9',
+              resolution: probe.resolution,
+              quality: probe.quality || '',
+              durationSec: probe.durationSec || 5,
+              batchCount: 1,
+              audioEnabled: true,
+              mergedModelParams: {},
+              medias: [],
+              explicitParams: { get_cost: true },
+            });
+            const preflightRes = await this.externalMcpHost.callTool({
+              serverId: hfServer.id,
+              toolName,
+              arguments: { params: hfParams },
+              timeoutMs: 12_000,
+            });
+            const st =
+              typeof preflightRes.rawResult?.structuredContent === 'object' &&
+              preflightRes.rawResult.structuredContent !== null
+                ? (preflightRes.rawResult.structuredContent as Record<string, unknown>)
+                : {};
+            const rawExact = st.credits ?? st.cost ?? st.total_credits ?? st.exact_cost;
+            let parsedCost =
+              typeof rawExact === 'number' && Number.isFinite(rawExact) ? rawExact : NaN;
+            if (!Number.isFinite(parsedCost) && preflightRes.textSummary) {
+              const m = /:\s*([0-9]+(?:\.[0-9]+)?)\s*credits/i.exec(preflightRes.textSummary);
+              if (m) parsedCost = Number(m[1]);
+            }
+            if (Number.isFinite(parsedCost) && parsedCost >= 0) {
+              const baseKey = `higgsfield:${probe.modelId}:${probe.modality}:${probe.resolution}`;
+              const fullKey = probe.quality ? `${baseKey}:${probe.quality}` : baseKey;
+              this.authStore.setExactModelRate(fullKey, parsedCost, 'daily_sync');
+              if (!probe.quality || probe.quality === 'medium') {
+                this.authStore.setExactModelRate(baseKey, parsedCost, 'daily_sync');
+              }
+              synced[fullKey] = parsedCost;
+            }
+          } catch (err) {
+            errors.push(
+              `higgsfield:${probe.modelId}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+        }
+      }
+
+      // 2. Sync Dreamina CLI model costs using zero-cost `node edit` + `node quote`
+      if (this.dreaminaMcpEngine.hasProfileConnected('default')) {
+        const drmProbes: Array<{
+          modelId: string;
+          modality: 'image' | 'video';
+          resolution: string;
+          durationSec?: number;
+        }> = [
+          { modelId: 'seedream_5_5', modality: 'image', resolution: '2k' },
+          { modelId: 'seedream_5_5', modality: 'image', resolution: '4k' },
+          { modelId: 'seedream_4_5', modality: 'image', resolution: '2k' },
+          { modelId: 'gemini_3_image_pro', modality: 'image', resolution: '2k' },
+          { modelId: 'seedance_2_0', modality: 'video', resolution: '720p', durationSec: 5 },
+          { modelId: 'seedance_2_0', modality: 'video', resolution: '1080p', durationSec: 5 },
+          { modelId: 'seedance_2_5_flash', modality: 'video', resolution: '720p', durationSec: 5 },
+          { modelId: 'seedance_2_5_flash', modality: 'video', resolution: '1080p', durationSec: 5 },
+          { modelId: 'seedance_1_5_pro', modality: 'video', resolution: '720p', durationSec: 5 },
+        ];
+
+        for (const probe of drmProbes) {
+          try {
+            const cost = await this.dreaminaMcpEngine.quoteCliCost({
+              modality: probe.modality,
+              modelId: probe.modelId,
+              aspectRatio: '16:9',
+              resolution: probe.resolution,
+              durationSec: probe.durationSec || 5,
+              batchCount: 1,
+              profile: 'default',
+            });
+            if (cost !== null && cost >= 0) {
+              const key = `dreamina:${probe.modelId}:${probe.modality}:${probe.resolution}`;
+              this.authStore.setExactModelRate(key, cost, 'daily_sync');
+              synced[key] = cost;
+            }
+          } catch (err) {
+            errors.push(
+              `dreamina:${probe.modelId}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      if (Object.keys(synced).length > 0) {
+        this.authStore.setLastDailyRateSyncAt(nowIso);
+      }
+      this.creditsQuoteCache.clear();
+
+      return {
+        ok: true,
+        syncedCount: Object.keys(synced).length,
+        lastDailyRateSyncAt: this.authStore.getLastDailyRateSyncAt() || nowIso,
+        synced,
+        rates: this.authStore.getCalibratedRates(),
+        ...(errors.length > 0 ? { warnings: errors.slice(0, 8) } : {}),
+      };
+    })().finally(() => {
+      this.inFlightModelRateSync = null;
+    });
+
+    return await this.inFlightModelRateSync;
+  }
+
   public async quoteNodeCredits(params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const user = this.getCurrentRequestUser();
     const platformId = String(params.platformId || params.provider || 'dreamina').trim().toLowerCase();
@@ -5197,16 +6161,18 @@ export class McpStdioBridgeServer {
         ? (params.settings as Record<string, unknown>)
         : {};
     const resolution = String(settings.resolution ?? params.resolution ?? '').trim();
+    const quality = String(settings.quality ?? params.quality ?? '').trim();
     const durationSec = Number(settings.durationSec ?? params.durationSec ?? 5) || 5;
     const batchCount = Number(settings.batchCount ?? params.batchCount ?? 1) || 1;
     const aspectRatio = String(settings.aspectRatio ?? params.aspectRatio ?? '16:9').trim();
     const prompt = typeof params.prompt === 'string' ? params.prompt : undefined;
     const live = params.live === true;
 
-    const quoteKey = `${user.id}|${platformId}|${modelId}|${modality}|${resolution}|${durationSec}|${batchCount}|${aspectRatio}`;
+    const quoteKey = `${user.id}|${platformId}|${modelId}|${modality}|${resolution}|${quality}|${durationSec}|${batchCount}|${aspectRatio}`;
     const now = Date.now();
     const cached = this.creditsQuoteCache.get(quoteKey);
-    if (!live && cached && now - cached.fetchedAt < 60_000) {
+    const cacheTtlMs = live ? 300_000 : 60_000;
+    if (cached && now - cached.fetchedAt < cacheTtlMs && (!live || cached.payload.source === 'live_cli')) {
       return { ...cached.payload, cached: true };
     }
 
@@ -5215,6 +6181,7 @@ export class McpStdioBridgeServer {
       modelId,
       modality,
       resolution,
+      quality,
       durationSec,
       batchCount,
       prompt,
@@ -5238,6 +6205,13 @@ export class McpStdioBridgeServer {
       if (liveCost !== null && liveCost >= 0) {
         finalCredits = liveCost;
         source = 'live_cli';
+        const perUnit =
+          modality === 'image' && batchCount > 1
+            ? liveCost / batchCount
+            : modality === 'video'
+              ? liveCost / (durationSec / 5)
+              : liveCost;
+        this.authStore.setExactModelRate(est.modelKey, perUnit, 'daily_sync');
       }
     }
 
@@ -5252,7 +6226,11 @@ export class McpStdioBridgeServer {
         : null;
       const planStr = String(cachedBal?.plan || '').toLowerCase();
       supportsUnlimited = /ultimate|unlimited|pro/i.test(planStr);
-      unlimitedEligible = supportsUnlimited && batchCount === 1 && !/kling-o|sora-2-pro/i.test(modelId);
+      // Note: gpt_image_2_6 on Higgsfield charges paid credits unless explicitly marked eligible by get_cost (0 credits)
+      unlimitedEligible =
+        supportsUnlimited &&
+        batchCount === 1 &&
+        !/kling-o|sora-2-pro|gpt[-_ ]?image/i.test(modelId);
 
       if (
         live &&
@@ -5271,7 +6249,7 @@ export class McpStdioBridgeServer {
             prompt: prompt || 'cost preflight quote',
             aspectRatio,
             resolution,
-            quality: String(settings.quality ?? params.quality ?? '').trim(),
+            quality,
             durationSec,
             batchCount,
             audioEnabled: settings.audioEnabled !== false && params.audioEnabled !== false,
@@ -5303,6 +6281,14 @@ export class McpStdioBridgeServer {
           if (Number.isFinite(parsedCost) && parsedCost >= 0) {
             finalCredits = parsedCost;
             source = 'live_cli';
+            unlimitedEligible = parsedCost === 0 && supportsUnlimited;
+            const perUnit =
+              modality === 'image' && batchCount > 1
+                ? parsedCost / batchCount
+                : modality === 'video'
+                  ? parsedCost / (durationSec / 5)
+                  : parsedCost;
+            this.authStore.setExactModelRate(est.modelKey, perUnit, 'daily_sync');
           }
         } catch {
           // Non-fatal fallback to calibrated/rate_table estimate
@@ -5804,9 +6790,15 @@ export class McpStdioBridgeServer {
 
     const serverMeta = this.externalMcpHost.listServers().find((s) => s.id === serverId);
     const serverPlatformId = serverMeta?.platformId || 'custom-mcp';
-    const isReadOnlyTool = /^(balance|job_status|models_explore|dreamina_models_explore|list_models|status|health|get_job|check_job|assets|jobs)$/i.test(
-      toolName
-    );
+    const isGetCostPreflight =
+      typeof toolArgs.params === 'object' &&
+      toolArgs.params !== null &&
+      (toolArgs.params as Record<string, unknown>).get_cost === true;
+    const isReadOnlyTool =
+      isGetCostPreflight ||
+      /^(balance|show_plans_and_credits|job_status|models_explore|dreamina_models_explore|list_models|status|health|get_job|check_job|assets|jobs|quote)$/i.test(
+        toolName
+      );
     let resolvedCreditSource: 'own' | 'shared' | 'owner' = user.role === 'owner' ? 'owner' : 'own';
 
     if (!internalBypass) {
@@ -6824,6 +7816,7 @@ export class McpStdioBridgeServer {
     }
 
     const resolution = String(settings.resolution ?? params.resolution ?? (kind === 'video' ? '1080p' : '2K')).trim();
+    const quality = String(settings.quality ?? params.quality ?? '').trim();
     const durationSec = Math.max(
       2,
       Math.min(30, Math.round(Number(settings.durationSec ?? params.durationSec ?? params.durationSeconds ?? 5) || 5))
@@ -6837,6 +7830,7 @@ export class McpStdioBridgeServer {
       modelId,
       modality: kind,
       resolution,
+      quality,
       durationSec,
       batchCount,
       prompt,
@@ -6847,7 +7841,7 @@ export class McpStdioBridgeServer {
       effectiveMcpServer &&
       effectiveMcpServer.tools.some((t) => t.name === 'balance')
     ) {
-      const preBal = await this.getMcpBalanceWithCache(effectiveMcpServer.id, false).catch(() => null);
+      const preBal = await this.getMcpBalanceWithCache(effectiveMcpServer.id, true).catch(() => null);
       if (typeof preBal?.credits === 'number' && Number.isFinite(preBal.credits)) {
         preCredits = preBal.credits;
       }
@@ -6893,7 +7887,10 @@ export class McpStdioBridgeServer {
       throw new BridgeHttpError(502, msg, platformId);
     }
 
-    let creditsUsed = est.credits;
+    let creditsUsed =
+      typeof result.estimatedCredits === 'number' && Number.isFinite(result.estimatedCredits)
+        ? result.estimatedCredits
+        : est.credits;
     if (
       preCredits !== undefined &&
       effectiveMcpServer &&
@@ -6902,12 +7899,16 @@ export class McpStdioBridgeServer {
       const postBal = await this.getMcpBalanceWithCache(effectiveMcpServer.id, true).catch(() => null);
       if (typeof postBal?.credits === 'number' && Number.isFinite(postBal.credits)) {
         const delta = Math.round((preCredits - postBal.credits) * 100) / 100;
-        if (delta >= 0 && delta < 1000) {
+        if (delta > 0 && delta < 5000) {
           creditsUsed = delta;
-          if (delta > 0) {
-            const perUnit = kind === 'image' && batchCount > 1 ? delta / batchCount : delta;
-            this.authStore.updateCalibratedRate(est.modelKey, perUnit);
-          }
+          const perUnit = kind === 'image' && batchCount > 1 ? delta / batchCount : delta;
+          this.authStore.updateCalibratedRate(est.modelKey, perUnit);
+        } else if (
+          delta === 0 &&
+          platformId === 'higgsfield' &&
+          typeof result.estimatedCredits !== 'number'
+        ) {
+          creditsUsed = 0;
         }
       }
     }
@@ -7760,6 +8761,13 @@ export class McpStdioBridgeServer {
         );
       }
 
+      const finalStObj = readStructuredObj(mcpOut);
+      const reportedEstCredits =
+        typeof finalStObj.estimatedCredits === 'number' &&
+        Number.isFinite(finalStObj.estimatedCredits)
+          ? finalStObj.estimatedCredits
+          : undefined;
+
       return {
         ok: true,
         status: 'COMPLETED',
@@ -7770,6 +8778,7 @@ export class McpStdioBridgeServer {
         ...(isHiggsfieldOfficialMcp ? { normalizedModelId: normalizedHiggsfieldModel } : {}),
         ...(pendingJobId ? { jobId: pendingJobId } : {}),
         ...(allJobIds.length > 1 ? { jobIds: allJobIds } : {}),
+        ...(reportedEstCredits !== undefined ? { estimatedCredits: reportedEstCredits } : {}),
         transportUsed: 'mcp',
         providerUsed: `${platformId}-mcp`,
         mcpServerId: candidateMcpServer.id,
@@ -11591,6 +12600,29 @@ export class McpStdioBridgeServer {
       return;
     }
 
+    if (pathname === '/api/credits/rates' && req.method === 'GET') {
+      this.sendJson(res, 200, {
+        ok: true,
+        lastDailyRateSyncAt: this.authStore.getLastDailyRateSyncAt() || null,
+        rates: this.authStore.getCalibratedRates(),
+      });
+      return;
+    }
+
+    if (pathname === '/api/credits/sync-rates' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const force = bodyObj.force !== false;
+        this.sendJson(res, 200, await this.syncAllModelCreditRates({ force }));
+      } catch (err) {
+        this.sendJson(res, 500, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
     // Stage 11 Unified Asset Library & R2 / Dreamina Proxy Routes
     if (pathname === '/api/assets' && req.method === 'GET') {
       try {
@@ -12627,7 +13659,52 @@ export class McpStdioBridgeServer {
         case 'flow_scene_builder':
           return wrapStructured(await this.compileTimeline(args));
         case 'save_project':
-          return wrapStructured(this.saveProject(args));
+          return wrapStructured(this.saveProject({ ...args, source: 'mcp' }));
+        case 'canvas_list':
+          return wrapStructured({ ok: true, canvases: this.listProjects() });
+        case 'canvas_get': {
+          const pid = String(args.projectId || args.id || 'canvas_default').trim() || 'canvas_default';
+          const proj = this.getProject(pid);
+          if (!proj) {
+            throw new Error(`Canvas "${pid}" not found.`);
+          }
+          return wrapStructured({ ok: true, project: proj });
+        }
+        case 'canvas_create': {
+          const name = String(args.name || 'Untitled Canvas').trim() || 'Untitled Canvas';
+          const id = String(args.id || `canvas_${Date.now().toString(36)}`).trim();
+          const saved = this.saveProject({
+            id,
+            name,
+            state: { nodes: [], edges: [], elements: [], timelineClips: [] },
+            isSharedWithTeam: Boolean(args.isSharedWithTeam),
+            source: 'mcp',
+          });
+          return wrapStructured({ ok: true, id: saved.id, name: saved.name, updatedAt: saved.updatedAt });
+        }
+        case 'canvas_rename':
+          return wrapStructured(
+            this.renameProject({
+              projectId: String(args.projectId || args.id || 'canvas_default'),
+              name: String(args.name || ''),
+            })
+          );
+        case 'canvas_upsert_nodes':
+          return wrapStructured(this.upsertCanvasNodes(args));
+        case 'canvas_connect_edges':
+          return wrapStructured(this.connectCanvasEdges(args));
+        case 'canvas_organize_layout':
+          return wrapStructured(this.organizeCanvasLayout(args));
+        case 'canvas_generate_node':
+          return wrapStructured(await this.generateCanvasNodeAndSave(args));
+        case 'credits_summary':
+          return wrapStructured(
+            await this.getCreditsSummary({ forceRefresh: Boolean(args.forceRefresh) })
+          );
+        case 'credits_sync_rates':
+          return wrapStructured(
+            await this.syncAllModelCreditRates({ force: args.force !== false })
+          );
         case 'extract_style_dna': {
           const styleDna = {
             paletteHex: ['#191919', '#C89F81', '#D9CDBF', '#4A6B7C', '#F4EFEA'],

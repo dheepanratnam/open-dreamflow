@@ -61,6 +61,7 @@ export interface UsageLedgerEntry {
 export interface CalibratedRateEntry {
   credits: number;
   samples: number;
+  source?: 'daily_sync' | 'live_quote' | 'observed_delta';
   updatedAt: string;
 }
 
@@ -70,6 +71,7 @@ interface AuthVaultState {
   sessions: Record<string, StoredSessionRecord>;
   usageLedger: UsageLedgerEntry[];
   calibratedRates: Record<string, CalibratedRateEntry>;
+  lastDailyRateSyncAt?: string;
 }
 
 export interface PublicUserInfo {
@@ -726,16 +728,57 @@ export class AuthCreditsStore {
     return { ...this.state.calibratedRates };
   }
 
+  public getLastDailyRateSyncAt(): string | undefined {
+    return this.state.lastDailyRateSyncAt;
+  }
+
+  public setLastDailyRateSyncAt(iso: string): void {
+    this.state.lastDailyRateSyncAt = iso;
+    this.persist();
+  }
+
+  public setExactModelRate(
+    modelKey: string,
+    exactCredits: number,
+    source: 'daily_sync' | 'live_quote' | 'observed_delta' = 'daily_sync'
+  ): void {
+    if (!Number.isFinite(exactCredits) || exactCredits < 0) return;
+    this.state.calibratedRates[modelKey] = {
+      credits: Math.round(exactCredits * 100) / 100,
+      samples: Math.max(1, this.state.calibratedRates[modelKey]?.samples || 1),
+      source,
+      updatedAt: new Date().toISOString(),
+    };
+    this.persist();
+  }
+
+  public pruneReadOnlyLedgerEntries(): number {
+    const before = this.state.usageLedger.length;
+    this.state.usageLedger = this.state.usageLedger.filter(
+      (e) =>
+        !/^(balance|show_plans_and_credits|job_status|models_explore|dreamina_models_explore|list_models|status|health|get_job|check_job|assets|jobs|get_cost)$/i.test(
+          String(e.modelId || '').trim()
+        )
+    );
+    const removed = before - this.state.usageLedger.length;
+    if (removed > 0) {
+      this.persist();
+    }
+    return removed;
+  }
+
   public updateCalibratedRate(modelKey: string, observedDelta: number): void {
-    if (!Number.isFinite(observedDelta) || observedDelta <= 0) return;
+    if (!Number.isFinite(observedDelta) || observedDelta < 0) return;
     const prev = this.state.calibratedRates[modelKey];
     const samples = prev ? Math.min(20, prev.samples + 1) : 1;
-    const blended = prev
-      ? Math.round(((prev.credits * prev.samples + observedDelta) / samples) * 100) / 100
-      : Math.round(observedDelta * 100) / 100;
+    const blended =
+      prev && prev.source === 'observed_delta'
+        ? Math.round(((prev.credits * prev.samples + observedDelta) / samples) * 100) / 100
+        : Math.round(observedDelta * 100) / 100;
     this.state.calibratedRates[modelKey] = {
       credits: blended,
       samples,
+      source: 'observed_delta',
       updatedAt: new Date().toISOString(),
     };
     this.persist();

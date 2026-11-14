@@ -279,10 +279,11 @@ export const ContextualNodeOverlay: React.FC = () => {
             ? selectedNode.modelParams.quality
             : undefined),
         prompt: selectedNode.prompt,
+        live: true,
       }).then((q) => {
         if (!cancelled) setCreditQuote(q);
       });
-    }, 180);
+    }, 280);
 
     return () => {
       cancelled = true;

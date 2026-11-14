@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useStudioStore } from '../store/useStudioStore';
 import { PlatformBrandIcon } from './PlatformBrandIcon';
+import { syncModelCreditRatesViaBackend } from '../services/executionRouter';
 import type { PlatformId } from '../types/studio';
 
 const SHAREABLE_PLATFORM_IDS: Array<{ id: PlatformId; label: string }> = [
@@ -91,6 +92,8 @@ export const TeamCreditsModal: React.FC = () => {
   const [profilePasscode, setProfilePasscode] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMsg, setProfileMsg] = useState<string | null>(null);
+  const [syncingRates, setSyncingRates] = useState(false);
+  const showToast = useStudioStore((s) => s.showToast);
 
   if (!teamCreditsModalOpen) return null;
 
@@ -100,6 +103,18 @@ export const TeamCreditsModal: React.FC = () => {
     setRefreshingCredits(true);
     await refreshCreditsSummary(true);
     setRefreshingCredits(false);
+  };
+
+  const handleSyncModelCosts = async () => {
+    setSyncingRates(true);
+    const out = await syncModelCreditRatesViaBackend(true);
+    await refreshCreditsSummary(true);
+    setSyncingRates(false);
+    if (out.ok) {
+      showToast(`Synced ${out.syncedCount ?? 0} live model credit rates (0 credits spent)`);
+    } else {
+      showToast('Could not sync model credit rates', 'error');
+    }
   };
 
   const handleSaveResetDay = async (platformId: string, day: number) => {
@@ -211,6 +226,19 @@ export const TeamCreditsModal: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleSyncModelCosts()}
+              disabled={syncingRates}
+              title="Run zero-cost preflight quotes across Higgsfield & Dreamina models (auto-runs every 24h)"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[#20D5EC]/30 bg-[#041b24]/60 hover:bg-[#041b24] px-3 py-1.5 text-[11px] font-medium text-[#20D5EC] transition-colors"
+            >
+              <RefreshCw
+                size={12}
+                className={syncingRates ? 'animate-spin text-[#20D5EC]' : ''}
+              />
+              <span>{syncingRates ? 'Syncing Costs…' : 'Sync Model Costs'}</span>
+            </button>
             <button
               type="button"
               onClick={() => void handleRefreshSummary()}
