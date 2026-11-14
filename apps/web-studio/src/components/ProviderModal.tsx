@@ -17,6 +17,7 @@ import {
   PlugZap,
   Plus,
   RefreshCw,
+  Search,
   Server,
   ShieldCheck,
   Sparkles,
@@ -499,6 +500,42 @@ const ConnectionProgressCard: React.FC<ConnectionProgressCardProps> = ({
   );
 };
 
+type McpToolCategory =
+  | 'All'
+  | 'Generate'
+  | 'Post-Edit'
+  | 'Models & Voices'
+  | 'Canvas & Nodes'
+  | 'Resources & Ops'
+  | 'Workflows & 3D'
+  | 'Account';
+
+const MCP_TOOL_CATEGORIES: McpToolCategory[] = [
+  'All',
+  'Generate',
+  'Post-Edit',
+  'Models & Voices',
+  'Canvas & Nodes',
+  'Resources & Ops',
+  'Workflows & 3D',
+  'Account',
+];
+
+function classifyMcpToolCategory(toolName: string): Exclude<McpToolCategory, 'All'> {
+  const n = toolName.toLowerCase();
+  if (/(model|voice)/.test(n)) return 'Models & Voices';
+  if (/(balance|auth|session|account|quota|credit|schema|gpu_status)/.test(n)) {
+    return 'Account';
+  }
+  if (/(workflow|director|template)/.test(n)) return 'Workflows & 3D';
+  if (/(resource|operation)/.test(n)) return 'Resources & Ops';
+  if (/(upscale|cutout|interpolate|promote|inpaint|outpaint|remove_bg)/.test(n)) {
+    return 'Post-Edit';
+  }
+  if (/(canvas|node)/.test(n)) return 'Canvas & Nodes';
+  return 'Generate';
+}
+
 interface McpFunctionsExplorerProps {
   server: ExternalMcpServerRecord;
   onRefresh: () => void;
@@ -517,12 +554,19 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
   const [selectedToolName, setSelectedToolName] = useState<string>(
     server.tools[0]?.name || ''
   );
+  const [toolSearch, setToolSearch] = useState<string>('');
+  const [toolCategory, setToolCategory] = useState<McpToolCategory>('All');
   const [argValues, setArgValues] = useState<Record<string, string>>({});
   const [rawJsonArgs, setRawJsonArgs] = useState<string>('{}');
   const [useRawJson, setUseRawJson] = useState(false);
   const [showAllSchemas, setShowAllSchemas] = useState(false);
   const [runningTool, setRunningTool] = useState<string | null>(null);
   const [callResult, setCallResult] = useState<McpToolCallResult | null>(null);
+
+  useEffect(() => {
+    setToolSearch('');
+    setToolCategory('All');
+  }, [server.id]);
 
   useEffect(() => {
     if (server.tools.length > 0 && !server.tools.some((t) => t.name === selectedToolName)) {
@@ -532,8 +576,43 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
     }
   }, [server.tools, selectedToolName]);
 
+  const categoryCounts = useMemo(() => {
+    const counts: Record<McpToolCategory, number> = {
+      All: server.tools.length,
+      Generate: 0,
+      'Post-Edit': 0,
+      'Models & Voices': 0,
+      'Canvas & Nodes': 0,
+      'Resources & Ops': 0,
+      'Workflows & 3D': 0,
+      Account: 0,
+    };
+    for (const tool of server.tools) {
+      counts[classifyMcpToolCategory(tool.name)] += 1;
+    }
+    return counts;
+  }, [server.tools]);
+
+  const filteredTools = useMemo(() => {
+    const q = toolSearch.trim().toLowerCase();
+    return server.tools.filter((tool) => {
+      if (toolCategory !== 'All' && classifyMcpToolCategory(tool.name) !== toolCategory) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        tool.name.toLowerCase().includes(q) ||
+        (tool.description || '').toLowerCase().includes(q)
+      );
+    });
+  }, [server.tools, toolSearch, toolCategory]);
+
   const activeTool =
-    server.tools.find((t) => t.name === selectedToolName) || server.tools[0] || null;
+    filteredTools.find((t) => t.name === selectedToolName) ||
+    filteredTools[0] ||
+    server.tools.find((t) => t.name === selectedToolName) ||
+    server.tools[0] ||
+    null;
 
   const schemaProperties = useMemo(() => {
     const props = (activeTool?.inputSchema as { properties?: Record<string, Record<string, unknown>> } | undefined)
@@ -729,50 +808,115 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
             No MCP tools reported yet. Click Refresh Tools above.
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-3">
-            {/* Function Cards List */}
-            <div className="max-h-[260px] overflow-y-auto space-y-1.5 pr-1">
-              {server.tools.map((tool) => {
-                const active = activeTool?.name === tool.name;
-                const paramCount = Object.keys(
-                  ((tool.inputSchema as { properties?: Record<string, unknown> } | undefined)
-                    ?.properties) || {}
-                ).length;
-                return (
-                  <button
-                    key={tool.name}
-                    type="button"
-                    onClick={() => {
-                      setSelectedToolName(tool.name);
-                      setArgValues({});
-                      setRawJsonArgs('{}');
-                      setCallResult(null);
-                    }}
-                    className={`w-full text-left rounded-lg border p-2.5 transition-colors ${
-                      active
-                        ? 'border-[#20D5EC]/55 bg-[#192326] text-white'
-                        : 'border-white/[0.06] bg-[#111111] hover:bg-white/[0.04] text-[#cfcfcf]'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-1.5">
-                      <span className="text-[11.5px] font-mono font-semibold truncate">
-                        {tool.name}
-                      </span>
-                      <span className="text-[9.5px] text-[#808080] shrink-0">
-                        {paramCount} params
-                      </span>
-                    </div>
-                    {tool.description && (
-                      <div className="text-[10.5px] text-[#8c8c8c] line-clamp-2 mt-0.5">
-                        {tool.description}
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+          <div className="space-y-2.5">
+            {/* Search & Category Filter Pills */}
+            {server.tools.length > 4 && (
+              <div className="space-y-2">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-[#737373] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={toolSearch}
+                    onChange={(e) => setToolSearch(e.target.value)}
+                    placeholder={`Filter ${server.tools.length} functions: generate, upscale, cutout, voice, canvas, workflow, director…`}
+                    className="w-full rounded-lg border border-white/[0.1] bg-[#101010] pl-8 pr-7 py-1.5 text-[11.5px] text-white placeholder-[#666666] focus:border-[#20D5EC]/60 focus:outline-none"
+                  />
+                  {toolSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setToolSearch('')}
+                      aria-label="Clear function filter"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[#737373] hover:text-white"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
 
-            {/* Inline Run Function Tester */}
+                <div className="flex flex-wrap items-center gap-1">
+                  {MCP_TOOL_CATEGORIES.filter(
+                    (cat) => cat === 'All' || categoryCounts[cat] > 0
+                  ).map((cat) => {
+                    const activeCat = toolCategory === cat;
+                    return (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => setToolCategory(cat)}
+                        className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                          activeCat
+                            ? 'border-white bg-white text-[#0e0e0e]'
+                            : 'border-white/[0.09] bg-white/[0.04] text-[#bdbdbd] hover:bg-white/[0.09] hover:text-white'
+                        }`}
+                      >
+                        {cat} ({categoryCounts[cat]})
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-[250px_1fr] gap-3">
+              {/* Function Cards List */}
+              <div className="max-h-[340px] overflow-y-auto space-y-1.5 pr-1">
+                {filteredTools.length === 0 ? (
+                  <div className="rounded-lg border border-white/[0.06] bg-[#111111] p-3 text-[11px] text-[#8c8c8c] space-y-2">
+                    <p>No functions match &ldquo;{toolSearch || toolCategory}&rdquo;.</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setToolSearch('');
+                        setToolCategory('All');
+                      }}
+                      className="rounded border border-white/[0.12] bg-white/[0.05] hover:bg-white/[0.1] px-2 py-1 text-[10.5px] text-white"
+                    >
+                      Reset filter
+                    </button>
+                  </div>
+                ) : (
+                  filteredTools.map((tool) => {
+                    const active = activeTool?.name === tool.name;
+                    const paramCount = Object.keys(
+                      ((tool.inputSchema as { properties?: Record<string, unknown> } | undefined)
+                        ?.properties) || {}
+                    ).length;
+                    return (
+                      <button
+                        key={tool.name}
+                        type="button"
+                        onClick={() => {
+                          setSelectedToolName(tool.name);
+                          setArgValues({});
+                          setRawJsonArgs('{}');
+                          setCallResult(null);
+                        }}
+                        className={`w-full text-left rounded-lg border p-2.5 transition-colors ${
+                          active
+                            ? 'border-[#20D5EC]/55 bg-[#192326] text-white'
+                            : 'border-white/[0.06] bg-[#111111] hover:bg-white/[0.04] text-[#cfcfcf]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1.5">
+                          <span className="text-[11.5px] font-mono font-semibold truncate">
+                            {tool.name}
+                          </span>
+                          <span className="text-[9.5px] text-[#808080] shrink-0">
+                            {paramCount} params
+                          </span>
+                        </div>
+                        {tool.description && (
+                          <div className="text-[10.5px] text-[#8c8c8c] line-clamp-2 mt-0.5">
+                            {tool.description}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Inline Run Function Tester */}
             {activeTool && (
               <div className="rounded-xl border border-white/[0.08] bg-[#101010] p-3.5 space-y-3">
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -921,6 +1065,7 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
                 )}
               </div>
             )}
+            </div>
           </div>
         )}
       </div>

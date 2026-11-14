@@ -83,16 +83,52 @@ const TRANSPORT_OPTIONS: Array<{
   { id: 'api-key', label: 'Direct API Key ($0 Markup)', hint: 'Raw BYOK provider call' },
 ];
 
-const MODEL_FAMILY_CHIPS = [
-  'All',
-  '∞ Unlim',
+const PREFERRED_FAMILY_ORDER = [
   'OpenAI',
   'Higgsfield',
   'Kling',
   'ByteDance',
   'Google',
+  'Wan',
   'FLUX',
-] as const;
+];
+
+function normalizeFamilyChipLabel(raw?: string): string {
+  return (raw || '').split(/[\/(]/)[0].trim();
+}
+
+function familyMatchesChip(providerFamily: string | undefined, chip: string): boolean {
+  const fam = (providerFamily || '').trim().toLowerCase();
+  const target = chip.trim().toLowerCase();
+  if (!fam || !target) return false;
+  return fam === target || fam.includes(target);
+}
+
+function buildFamilyChips(models: PlatformModelDefinition[]): string[] {
+  const seen = new Set<string>();
+  const uniqueFamilies: string[] = [];
+  for (const m of models) {
+    const label = normalizeFamilyChipLabel(m.providerFamily);
+    if (!label) continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueFamilies.push(label);
+  }
+  uniqueFamilies.sort((a, b) => {
+    const ia = PREFERRED_FAMILY_ORDER.findIndex((p) => p.toLowerCase() === a.toLowerCase());
+    const ib = PREFERRED_FAMILY_ORDER.findIndex((p) => p.toLowerCase() === b.toLowerCase());
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+    return a.localeCompare(b);
+  });
+  return [
+    'All',
+    ...(models.some((m) => m.supportsUnlim) ? ['∞ Unlim'] : []),
+    ...uniqueFamilies,
+  ];
+}
 
 function formatParamOptionLabel(val: string | number | boolean): string {
   const str = String(val);
@@ -200,12 +236,22 @@ export const ContextualNodeOverlay: React.FC = () => {
     return nodes.find((n) => n.id === selectedNodeIds[0]) || null;
   }, [nodes, selectedNodeIds]);
 
+  const selectedModality = selectedNode ? nodeKindToModality(selectedNode.kind) : null;
+  const resolvedEffectivePlatformId: PlatformId = selectedNode
+    ? selectedNode.platformId ||
+      (selectedModality === 'video'
+        ? lastVideoPlatformId
+        : selectedModality === 'audio'
+        ? lastAudioPlatformId
+        : lastImagePlatformId)
+    : lastImagePlatformId;
+
   useEffect(() => {
     setOpenMenu(null);
     setModelSearch('');
     setModelFamilyFilter('All');
     setAtAutocompleteOpen(false);
-  }, [selectedNode?.id]);
+  }, [selectedNode?.id, resolvedEffectivePlatformId, selectedModality]);
 
   if (selectedNodeIds.length >= 2) {
     return <MultiReferenceSelectionBar />;
@@ -213,7 +259,7 @@ export const ContextualNodeOverlay: React.FC = () => {
 
   if (!selectedNode) return null;
 
-  const modality = nodeKindToModality(selectedNode.kind);
+  const modality = selectedModality;
   const hasMedia = Boolean(
     selectedNode.imageUrl || selectedNode.videoUrl || selectedNode.audioUrl
   );
@@ -262,13 +308,7 @@ export const ContextualNodeOverlay: React.FC = () => {
   );
 
   // Resolve active platform & model for generatable nodes
-  const effectivePlatformId: PlatformId =
-    selectedNode.platformId ||
-    (modality === 'video'
-      ? lastVideoPlatformId
-      : modality === 'audio'
-      ? lastAudioPlatformId
-      : lastImagePlatformId);
+  const effectivePlatformId: PlatformId = resolvedEffectivePlatformId;
 
   const availablePlatforms = modality
     ? getPlatformsForModality(modality, platformsCatalog)
@@ -362,13 +402,14 @@ export const ContextualNodeOverlay: React.FC = () => {
     });
   };
 
+  const dynamicFamilyChips = buildFamilyChips(availableModels);
   const normalizedModelSearch = modelSearch.trim().toLowerCase();
   const visibleModels = availableModels.filter((m) => {
     if (modelFamilyFilter === '∞ Unlim' && !m.supportsUnlim) return false;
     if (
       modelFamilyFilter !== 'All' &&
       modelFamilyFilter !== '∞ Unlim' &&
-      (m.providerFamily || '').toLowerCase() !== modelFamilyFilter.toLowerCase()
+      !familyMatchesChip(m.providerFamily, modelFamilyFilter)
     ) {
       return false;
     }
@@ -1123,19 +1164,9 @@ export const ContextualNodeOverlay: React.FC = () => {
                         </div>
                       )}
 
-                      {availableModels.length > 8 && (
+                      {availableModels.length > 6 && dynamicFamilyChips.length > 2 && (
                         <div className="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar">
-                          {MODEL_FAMILY_CHIPS.map((chip) => {
-                            const hasMatch =
-                              chip === 'All' ||
-                              (chip === '∞ Unlim'
-                                ? availableModels.some((m) => m.supportsUnlim)
-                                : availableModels.some(
-                                    (m) =>
-                                      (m.providerFamily || '').toLowerCase() ===
-                                      chip.toLowerCase()
-                                  ));
-                            if (!hasMatch) return null;
+                          {dynamicFamilyChips.map((chip) => {
                             const isChipActive = modelFamilyFilter === chip;
                             return (
                               <button
