@@ -52,6 +52,7 @@ import {
 } from 'node:child_process';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { McpToolDefinition } from './client.js';
 import { ExternalMcpHost, type ExternalMcpToolSchema } from './external-mcp-host.js';
 import {
@@ -59,7 +60,19 @@ import {
   mapDomainToCreatorPlatformId,
 } from './browser-session-manager.js';
 import { McpOAuthManager } from './mcp-oauth.js';
-import { DreaminaMcpEngine } from './dreamina-mcp.js';
+import { DreaminaMcpEngine, type DreaminaFullCreditSummary } from './dreamina-mcp.js';
+import {
+  AuthCreditsStore,
+  isLocalhostHttpRequest,
+  type StoredUserRecord,
+  type UserBillingMetaEntry,
+} from './auth-credits-store.js';
+import {
+  isR2Configured,
+  getR2ConfigSummary,
+  uploadBufferToR2,
+  listR2Objects,
+} from './cloud-r2.js';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -149,6 +162,8 @@ export interface ProjectSnapshotRecord {
 export interface PersistedProjectRecord {
   id: string;
   name: string;
+  ownerId?: string;
+  isSharedWithTeam?: boolean;
   state: Record<string, unknown>;
   snapshots: ProjectSnapshotRecord[];
   createdAt: string;
@@ -1081,6 +1096,22 @@ export class McpStdioBridgeServer {
   public readonly browserSessionManager: BrowserSessionManager;
   public readonly mcpOAuthManager: McpOAuthManager;
   public readonly dreaminaMcpEngine: DreaminaMcpEngine;
+  public readonly authStore: AuthCreditsStore;
+
+  private readonly requestUserStorage = new AsyncLocalStorage<StoredUserRecord>();
+  private readonly projectsIndex = new Map<string, PersistedProjectRecord>();
+  private readonly creditsSummaryCache = new Map<
+    string,
+    { fetchedAt: number; payload: Record<string, unknown> }
+  >();
+  private readonly creditsQuoteCache = new Map<
+    string,
+    { fetchedAt: number; payload: Record<string, unknown> }
+  >();
+  private mediaIndexCache: Record<
+    string,
+    { userId: string; platformId?: string; createdAt: string; r2Url?: string; r2Key?: string }
+  > | null = null;
 
   private httpServer: http.Server | null = null;
   private childProc: ChildProcessWithoutNullStreams | null = null;
@@ -1146,6 +1177,7 @@ export class McpStdioBridgeServer {
 
     this.projectsDir = path.join(this.dataDir, 'projects');
     this.bridgeInboxPath = path.join(this.dataDir, 'bridge-inbox.json');
+    this.authStore = new AuthCreditsStore(this.dataDir);
     this.externalMcpHost = new ExternalMcpHost({
       dataDir: this.dataDir,
       quiet: this.quiet,
@@ -1198,6 +1230,7 @@ export class McpStdioBridgeServer {
     try {
       fs.mkdirSync(this.mediaDir, { recursive: true });
       fs.mkdirSync(this.projectsDir, { recursive: true });
+      this.hydrateProjectsIndex();
       this.hydrateBridgeInbox();
       this.externalMcpHost.hydrateFromDiskInBackground();
       this.dreaminaMcpEngine.hydrateOnStartup();
@@ -1540,9 +1573,11 @@ export class McpStdioBridgeServer {
     const buf = Buffer.from(base64Body, 'base64');
     fs.writeFileSync(outFullPath, buf);
     this.mirrorToDistMedia(outFilename, outFullPath);
+    const contentType = detectedMime || MIME_BY_EXT[path.extname(outFilename).toLowerCase()] || 'application/octet-stream';
+    const r2Url = await this.mirrorBufferToR2AndIndex(outFilename, buf, contentType, 'upload');
 
     const mediaUrl = `/media/${outFilename}`;
-    const fullUrl = `${this.getPublicBaseUrl()}${mediaUrl}`;
+    const fullUrl = r2Url || `${this.getPublicBaseUrl()}${mediaUrl}`;
     const isVideo = /\.(mp4|webm|mov)$/i.test(outFilename);
 
     return {
@@ -1551,6 +1586,7 @@ export class McpStdioBridgeServer {
       imageUrl: isVideo ? undefined : mediaUrl,
       videoUrl: isVideo ? mediaUrl : undefined,
       fullUrl,
+      ...(r2Url ? { r2Url } : {}),
       filename: outFilename,
       bytes: buf.length,
     };
@@ -2099,6 +2135,121 @@ export class McpStdioBridgeServer {
   // Stage 4 Disk-Backed Project Database & `.dreamflow.json` Bundle Methods
   // ============================================================================
 
+  private getCurrentRequestUser(): StoredUserRecord {
+    return this.requestUserStorage.getStore() || this.authStore.getOwnerUser();
+  }
+
+  private isServerOwnedByUser(serverId: string, userId: string): boolean {
+    const idx = serverId.indexOf('__usr_');
+    if (userId === 'owner') return idx === -1;
+    return idx !== -1 && serverId.slice(idx + 2) === userId;
+  }
+
+  private isOwnerSharedServer(serverId: string): boolean {
+    return !serverId.includes('__usr_');
+  }
+
+  private getMediaIndexPath(): string {
+    return path.join(this.dataDir, 'media-index.json');
+  }
+
+  private loadMediaIndex(): Record<
+    string,
+    { userId: string; platformId?: string; createdAt: string; r2Url?: string; r2Key?: string }
+  > {
+    if (this.mediaIndexCache) return this.mediaIndexCache;
+    try {
+      const idxPath = this.getMediaIndexPath();
+      if (fs.existsSync(idxPath)) {
+        const parsed = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+        if (parsed && typeof parsed === 'object') {
+          this.mediaIndexCache = parsed as Record<
+            string,
+            { userId: string; platformId?: string; createdAt: string; r2Url?: string; r2Key?: string }
+          >;
+          return this.mediaIndexCache;
+        }
+      }
+    } catch {
+      // Ignore corrupt index
+    }
+    this.mediaIndexCache = {};
+    return this.mediaIndexCache;
+  }
+
+  private recordMediaOwnership(
+    filename: string,
+    userId: string,
+    platformId?: string,
+    r2Url?: string,
+    r2Key?: string
+  ): void {
+    const idx = this.loadMediaIndex();
+    const prev = idx[filename];
+    idx[filename] = {
+      userId: prev?.userId || userId || 'owner',
+      platformId: platformId || prev?.platformId,
+      createdAt: prev?.createdAt || new Date().toISOString(),
+      ...(r2Url || prev?.r2Url ? { r2Url: r2Url || prev?.r2Url } : {}),
+      ...(r2Key || prev?.r2Key ? { r2Key: r2Key || prev?.r2Key } : {}),
+    };
+    try {
+      writeJsonAtomically(this.getMediaIndexPath(), idx);
+    } catch {
+      // Non-fatal in read-only test harnesses
+    }
+  }
+
+  private async mirrorBufferToR2AndIndex(
+    filename: string,
+    buf: Buffer,
+    contentType: string,
+    platformId?: string
+  ): Promise<string | undefined> {
+    const user = this.getCurrentRequestUser();
+    this.recordMediaOwnership(filename, user.id, platformId);
+    if (!isR2Configured()) return undefined;
+    try {
+      const r2Key = `media/${filename}`;
+      const up = await uploadBufferToR2(r2Key, buf, contentType);
+      if (up.ok && up.publicUrl) {
+        this.recordMediaOwnership(filename, user.id, platformId, up.publicUrl, up.key);
+        return up.publicUrl;
+      }
+    } catch {
+      // Non-fatal fallback to local media disk
+    }
+    return undefined;
+  }
+
+  private hydrateProjectsIndex(): void {
+    this.projectsIndex.clear();
+    try {
+      if (!fs.existsSync(this.projectsDir)) return;
+      const files = fs
+        .readdirSync(this.projectsDir)
+        .filter((f) => f.endsWith('.json') && !f.endsWith('.tmp'));
+      for (const file of files) {
+        try {
+          const raw = JSON.parse(
+            fs.readFileSync(path.join(this.projectsDir, file), 'utf8')
+          ) as PersistedProjectRecord;
+          const id = raw.id || path.basename(file, '.json');
+          this.projectsIndex.set(id, {
+            ...raw,
+            id,
+            ownerId: raw.ownerId || 'owner',
+            isSharedWithTeam: Boolean(raw.isSharedWithTeam),
+          });
+        } catch {
+          // Skip malformed project JSON
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
   private getProjectFilePath(rawId: string): { id: string; filePath: string } {
     const id = sanitizeProjectId(rawId);
     const filePath = path.join(this.projectsDir, `${id}.json`);
@@ -2108,71 +2259,95 @@ export class McpStdioBridgeServer {
   public listProjects(): Array<{
     id: string;
     name: string;
+    ownerId: string;
+    isSharedWithTeam: boolean;
     nodeCount: number;
     edgeCount: number;
     snapshotCount: number;
     updatedAt: string;
     createdAt: string;
   }> {
-    try {
-      if (!fs.existsSync(this.projectsDir)) return [];
-      const files = fs
-        .readdirSync(this.projectsDir)
-        .filter((f) => f.endsWith('.json') && !f.endsWith('.tmp'));
-
-      const summaries = [];
-      for (const file of files) {
-        try {
-          const raw = JSON.parse(
-            fs.readFileSync(path.join(this.projectsDir, file), 'utf8')
-          ) as PersistedProjectRecord;
-          const stateObj = (raw.state || {}) as Record<string, unknown>;
-          const nodes = Array.isArray(stateObj.nodes) ? stateObj.nodes : [];
-          const edges = Array.isArray(stateObj.edges) ? stateObj.edges : [];
-          const snapshots = Array.isArray(raw.snapshots) ? raw.snapshots : [];
-          summaries.push({
-            id: raw.id || path.basename(file, '.json'),
-            name: raw.name || 'Untitled canvas',
-            nodeCount: nodes.length,
-            edgeCount: edges.length,
-            snapshotCount: snapshots.length,
-            updatedAt: raw.updatedAt || new Date(0).toISOString(),
-            createdAt: raw.createdAt || raw.updatedAt || new Date(0).toISOString(),
-          });
-        } catch {
-          // Skip malformed file
-        }
-      }
-
-      summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-      return summaries;
-    } catch {
-      return [];
+    const user = this.getCurrentRequestUser();
+    const summaries = [];
+    for (const raw of this.projectsIndex.values()) {
+      const ownerId = raw.ownerId || 'owner';
+      const isShared = Boolean(raw.isSharedWithTeam);
+      if (ownerId !== user.id && !isShared) continue;
+      const stateObj = (raw.state || {}) as Record<string, unknown>;
+      const nodes = Array.isArray(stateObj.nodes) ? stateObj.nodes : [];
+      const edges = Array.isArray(stateObj.edges) ? stateObj.edges : [];
+      const snapshots = Array.isArray(raw.snapshots) ? raw.snapshots : [];
+      summaries.push({
+        id: raw.id,
+        name: raw.name || 'Untitled canvas',
+        ownerId,
+        isSharedWithTeam: isShared,
+        nodeCount: nodes.length,
+        edgeCount: edges.length,
+        snapshotCount: snapshots.length,
+        updatedAt: raw.updatedAt || new Date(0).toISOString(),
+        createdAt: raw.createdAt || raw.updatedAt || new Date(0).toISOString(),
+      });
     }
+    summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return summaries;
   }
 
   public getProject(rawId: string): PersistedProjectRecord | null {
-    const { filePath } = this.getProjectFilePath(rawId);
-    if (!fs.existsSync(filePath)) return null;
-    try {
-      return JSON.parse(fs.readFileSync(filePath, 'utf8')) as PersistedProjectRecord;
-    } catch {
+    const user = this.getCurrentRequestUser();
+    const { id, filePath } = this.getProjectFilePath(rawId);
+    let rec = this.projectsIndex.get(id) || null;
+    if (!rec && fs.existsSync(filePath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as PersistedProjectRecord;
+        rec = {
+          ...parsed,
+          id: parsed.id || id,
+          ownerId: parsed.ownerId || 'owner',
+          isSharedWithTeam: Boolean(parsed.isSharedWithTeam),
+        };
+        this.projectsIndex.set(id, rec);
+      } catch {
+        return null;
+      }
+    }
+    if (!rec) return null;
+    const ownerId = rec.ownerId || 'owner';
+    if (ownerId !== user.id && !rec.isSharedWithTeam) {
       return null;
     }
+    return rec;
   }
 
   public saveProject(params: Record<string, unknown>): {
     ok: true;
     id: string;
     name: string;
+    ownerId: string;
+    isSharedWithTeam: boolean;
     updatedAt: string;
     snapshotCount: number;
     project: PersistedProjectRecord;
   } {
+    const user = this.getCurrentRequestUser();
     fs.mkdirSync(this.projectsDir, { recursive: true });
     const rawId = String(params.id || `proj_${Date.now()}`);
     const { id, filePath } = this.getProjectFilePath(rawId);
-    const existing = this.getProject(id);
+    let existing = this.projectsIndex.get(id) || null;
+    if (!existing && fs.existsSync(filePath)) {
+      try {
+        existing = JSON.parse(fs.readFileSync(filePath, 'utf8')) as PersistedProjectRecord;
+      } catch {
+        existing = null;
+      }
+    }
+    if (existing) {
+      const existingOwner = existing.ownerId || 'owner';
+      if (existingOwner !== user.id && !existing.isSharedWithTeam) {
+        throw new BridgeHttpError(403, 'You do not have permission to edit this project.');
+      }
+    }
+
     const nowIso = new Date().toISOString();
 
     const nextName =
@@ -2208,9 +2383,17 @@ export class McpStdioBridgeServer {
       }
     }
 
+    const existingOwner = existing?.ownerId || user.id;
+    const nextShared =
+      typeof params.isSharedWithTeam === 'boolean' && (existingOwner === user.id || user.role === 'owner')
+        ? params.isSharedWithTeam
+        : Boolean(existing?.isSharedWithTeam);
+
     const record: PersistedProjectRecord = {
       id,
       name: nextName,
+      ownerId: existingOwner,
+      isSharedWithTeam: nextShared,
       state: nextState,
       snapshots,
       createdAt: existing?.createdAt || nowIso,
@@ -2218,11 +2401,23 @@ export class McpStdioBridgeServer {
     };
 
     writeJsonAtomically(filePath, record);
+    this.projectsIndex.set(id, record);
+    this.broadcastBridgeWsPayload({
+      type: 'canvas_sync_update',
+      projectId: record.id,
+      name: record.name,
+      ownerId: record.ownerId,
+      isSharedWithTeam: record.isSharedWithTeam,
+      updatedBy: user.id,
+      updatedAt: record.updatedAt,
+    });
 
     return {
       ok: true,
       id: record.id,
       name: record.name,
+      ownerId: record.ownerId || 'owner',
+      isSharedWithTeam: Boolean(record.isSharedWithTeam),
       updatedAt: record.updatedAt,
       snapshotCount: record.snapshots.length,
       project: record,
@@ -2230,12 +2425,18 @@ export class McpStdioBridgeServer {
   }
 
   public deleteProject(rawId: string): { ok: true; id: string; deleted: boolean } {
+    const user = this.getCurrentRequestUser();
     const { id, filePath } = this.getProjectFilePath(rawId);
+    const existing = this.projectsIndex.get(id);
+    if (existing && (existing.ownerId || 'owner') !== user.id && user.role !== 'owner') {
+      throw new BridgeHttpError(403, 'You do not have permission to delete this project.');
+    }
     let deleted = false;
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
       deleted = true;
     }
+    this.projectsIndex.delete(id);
     return { ok: true, id, deleted };
   }
 
@@ -2244,6 +2445,7 @@ export class McpStdioBridgeServer {
     id: string;
     project: PersistedProjectRecord;
   } {
+    const user = this.getCurrentRequestUser();
     fs.mkdirSync(this.projectsDir, { recursive: true });
     const unwrapped =
       typeof bodyObj.bundle === 'object' && bodyObj.bundle !== null
@@ -2261,6 +2463,8 @@ export class McpStdioBridgeServer {
     const record: PersistedProjectRecord = {
       id,
       name: String(rawProject.name || 'Imported Canvas'),
+      ownerId: user.id,
+      isSharedWithTeam: Boolean(rawProject.isSharedWithTeam),
       state:
         typeof rawProject.state === 'object' && rawProject.state !== null
           ? (rawProject.state as Record<string, unknown>)
@@ -2273,6 +2477,7 @@ export class McpStdioBridgeServer {
     };
 
     writeJsonAtomically(filePath, record);
+    this.projectsIndex.set(id, record);
     return { ok: true, id: record.id, project: record };
   }
 
@@ -2574,9 +2779,11 @@ export class McpStdioBridgeServer {
     const outFullPath = path.join(this.mediaDir, filename);
     fs.writeFileSync(outFullPath, buf);
     this.mirrorToDistMedia(filename, outFullPath);
+    const contentType = detectedMime || MIME_BY_EXT[ext] || 'application/octet-stream';
+    const r2Url = await this.mirrorBufferToR2AndIndex(filename, buf, contentType, safePrefix);
 
     const mediaUrl = `/media/${filename}`;
-    const fullUrl = `${this.getPublicBaseUrl()}${mediaUrl}`;
+    const fullUrl = r2Url || `${this.getPublicBaseUrl()}${mediaUrl}`;
 
     return {
       mediaUrl,
@@ -3222,11 +3429,13 @@ export class McpStdioBridgeServer {
 
     const bytes = fs.statSync(outFullPath).size;
     this.mirrorToDistMedia(filename, outFullPath);
+    const finalBuf = fs.readFileSync(outFullPath);
+    const r2Url = await this.mirrorBufferToR2AndIndex(filename, finalBuf, 'image/png', 'google-flow');
     const imageUrl = `/media/${filename}`;
     return {
       filename,
       imageUrl,
-      fullUrl: `${this.getPublicBaseUrl()}${imageUrl}`,
+      fullUrl: r2Url || `${this.getPublicBaseUrl()}${imageUrl}`,
       bytes,
     };
   }
@@ -4387,20 +4596,182 @@ export class McpStdioBridgeServer {
     }
   }
 
+  private extractPlatformKeysFromByok(
+    byok: Record<string, string>,
+    platformId: string
+  ): { apiKey: string; accessKey: string; secretKey: string; baseUrl?: string } {
+    const pick = (...keys: string[]): string => {
+      for (const k of keys) {
+        if (typeof byok[k] === 'string' && byok[k].trim()) return byok[k].trim();
+      }
+      return '';
+    };
+    if (platformId === 'google-flow' || platformId === 'gemini') {
+      return { apiKey: pick('google-flow', 'gemini', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'), accessKey: '', secretKey: '' };
+    }
+    if (platformId === 'kling') {
+      return {
+        apiKey: pick('kling', 'KLING_API_KEY'),
+        accessKey: pick('klingAccessKey', 'kling_access_key', 'KLING_ACCESS_KEY'),
+        secretKey: pick('klingSecretKey', 'kling_secret_key', 'KLING_SECRET_KEY'),
+      };
+    }
+    if (platformId === 'higgsfield') {
+      return {
+        apiKey: pick('higgsfield', 'HIGGSFIELD_API_KEY'),
+        accessKey: '',
+        secretKey: pick('higgsfieldSecretKey', 'higgsfield_secret_key', 'HIGGSFIELD_SECRET_KEY'),
+      };
+    }
+    if (platformId === 'comfyui') {
+      const url = pick('comfyui', 'comfyuiBaseUrl', 'COMFYUI_URL');
+      return { apiKey: '', accessKey: '', secretKey: '', baseUrl: url || undefined };
+    }
+    if (platformId === 'dreamina') {
+      return { apiKey: pick('dreamina', 'ark', 'ARK_API_KEY', 'SEEDANCE_API_KEY'), accessKey: '', secretKey: '' };
+    }
+    return {
+      apiKey: pick(platformId, `${platformId}_api_key`, `${platformId}ApiKey`),
+      accessKey: '',
+      secretKey: pick(`${platformId}_secret`, `${platformId}SecretKey`),
+      baseUrl: pick(`${platformId}_base_url`, `${platformId}BaseUrl`) || undefined,
+    };
+  }
+
+  private getEnvKeysForPlatform(platformId: string): {
+    apiKey: string;
+    accessKey: string;
+    secretKey: string;
+    baseUrl?: string;
+  } {
+    if (platformId === 'google-flow' || platformId === 'gemini') {
+      return {
+        apiKey: String(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim(),
+        accessKey: '',
+        secretKey: '',
+      };
+    }
+    if (platformId === 'kling') {
+      return {
+        apiKey: String(process.env.KLING_API_KEY || '').trim(),
+        accessKey: String(process.env.KLING_ACCESS_KEY || '').trim(),
+        secretKey: String(process.env.KLING_SECRET_KEY || '').trim(),
+      };
+    }
+    if (platformId === 'elevenlabs') {
+      return { apiKey: String(process.env.ELEVENLABS_API_KEY || '').trim(), accessKey: '', secretKey: '' };
+    }
+    if (platformId === 'openai') {
+      return { apiKey: String(process.env.OPENAI_API_KEY || '').trim(), accessKey: '', secretKey: '' };
+    }
+    if (platformId === 'higgsfield') {
+      return {
+        apiKey: String(process.env.HIGGSFIELD_API_KEY || '').trim(),
+        accessKey: '',
+        secretKey: String(process.env.HIGGSFIELD_SECRET_KEY || '').trim(),
+      };
+    }
+    if (platformId === 'dreamina') {
+      return {
+        apiKey: String(process.env.ARK_API_KEY || process.env.SEEDANCE_API_KEY || '').trim(),
+        accessKey: '',
+        secretKey: '',
+      };
+    }
+    if (platformId === 'fal') {
+      return {
+        apiKey: String(process.env.FAL_KEY || process.env.FAL_API_KEY || '').trim(),
+        accessKey: '',
+        secretKey: '',
+      };
+    }
+    if (platformId === 'replicate') {
+      return { apiKey: String(process.env.REPLICATE_API_TOKEN || '').trim(), accessKey: '', secretKey: '' };
+    }
+    if (platformId === 'openart') {
+      return { apiKey: String(process.env.OPENART_API_KEY || '').trim(), accessKey: '', secretKey: '' };
+    }
+    if (platformId === 'imagineart') {
+      return {
+        apiKey: String(process.env.IMAGINEART_API_KEY || process.env.VYRO_API_KEY || '').trim(),
+        accessKey: '',
+        secretKey: '',
+      };
+    }
+    if (platformId === 'sume') {
+      return { apiKey: String(process.env.SUME_API_KEY || '').trim(), accessKey: '', secretKey: '' };
+    }
+    return { apiKey: '', accessKey: '', secretKey: '' };
+  }
+
+  private getUserVisibleServers(user: StoredUserRecord) {
+    const allServers = this.externalMcpHost.listServers();
+    if (user.role === 'owner') {
+      return allServers.filter((srv) => this.isServerOwnedByUser(srv.id, 'owner'));
+    }
+    return allServers
+      .filter((srv) => {
+        if (this.isServerOwnedByUser(srv.id, user.id)) return true;
+        if (!this.isOwnerSharedServer(srv.id)) return false;
+        const pid = srv.platformId || '';
+        const grant = pid ? user.sharedGrants[pid] : undefined;
+        return Boolean(grant?.enabled && (grant.capCredits === null || grant.usedCredits < grant.capCredits));
+      })
+      .map((srv) => {
+        if (this.isServerOwnedByUser(srv.id, user.id)) return srv;
+        return {
+          ...srv,
+          env: undefined,
+          headers: undefined,
+          sharedFromOwner: true,
+        };
+      });
+  }
+
+  private hasActiveSharedGrantForPlatform(user: StoredUserRecord, platformId: string): boolean {
+    if (user.role === 'owner') return false;
+    const grant = user.sharedGrants[platformId];
+    if (!grant || !grant.enabled) return false;
+    if (grant.capCredits !== null && grant.usedCredits >= grant.capCredits) return false;
+    return true;
+  }
+
+  private isPlatformConnectedForOwner(
+    platformId: string,
+    ownerServers: ReturnType<ExternalMcpHost['listServers']>,
+    ownerByok: Record<string, string>,
+    bridgeActive: boolean
+  ): boolean {
+    if (ownerServers.some((s) => s.status === 'connected' && (s.platformId === platformId || platformId === 'custom-mcp'))) {
+      return true;
+    }
+    const vaultKeys = this.extractPlatformKeysFromByok(ownerByok, platformId);
+    if (vaultKeys.apiKey || vaultKeys.accessKey || vaultKeys.baseUrl) return true;
+    if (this.hasServerEnvKeyForPlatform(platformId)) return true;
+    if (bridgeActive) return true;
+    return false;
+  }
+
   public async getConnectionsStatus(
     options: { forceRefresh?: boolean } = {}
   ): Promise<Record<string, unknown>> {
+    const user = this.getCurrentRequestUser();
     const forceRefresh = Boolean(options.forceRefresh);
     const cdpInfo = await this.checkBrowserConnectionsViaCdp();
-    const catalog = await this.getPlatformsCatalogWithStatus();
+    const catalog = await this.getPlatformsCatalogWithStatus({ forceRefresh });
     const rawPlatforms = (Array.isArray(catalog.platforms) ? catalog.platforms : []) as Array<
       Record<string, unknown> & { id: string; status?: Record<string, unknown> }
     >;
-    const rawMcpServers = this.externalMcpHost.listServers();
+    const allMcpServers = this.externalMcpHost.listServers();
+    const ownerServers = allMcpServers.filter((srv) => this.isServerOwnedByUser(srv.id, 'owner'));
+    const rawMcpServers = this.getUserVisibleServers(user);
+    const ownByok = this.authStore.getUserDecryptedByok(user.id);
+    const ownerByok =
+      user.role === 'owner' ? ownByok : this.authStore.getUserDecryptedByok('owner');
 
     const balanceByServerId = new Map<
       string,
-      { credits?: number; plan?: string; rawText: string } | null
+      { credits?: number; plan?: string; account?: string; rawText: string } | null
     >();
     await Promise.all(
       rawMcpServers
@@ -4418,31 +4789,73 @@ export class McpStdioBridgeServer {
     const connectedBrowserPlatforms: string[] = [];
     const connectedMcpPlatforms: string[] = [];
     const configuredApiKeyPlatforms: string[] = [];
+    const ownConnectedPlatforms: string[] = [];
+    const sharedAvailablePlatforms: string[] = [];
     const byId: Record<string, Record<string, unknown>> = {};
 
     const platformSummaries = rawPlatforms.map((p) => {
       const id = String(p.id || '');
       const st = (p.status || {}) as Record<string, unknown>;
-      const browserConnected = Boolean(st.browserBridgeActive);
-      const mcpConnected = Boolean(st.mcpConnected);
-      const serverEnvConfigured = Boolean(st.serverEnvConfigured);
-      const connected = Boolean(st.connected);
+      const bridgeActive = Boolean(st.browserBridgeActive);
+      const ownMatchingMcp = mcpServers.filter(
+        (srv) =>
+          (srv.platformId === id || id === 'custom-mcp') &&
+          srv.status === 'connected' &&
+          this.isServerOwnedByUser(srv.id, user.id)
+      );
+      const sharedMatchingMcp =
+        user.role === 'member'
+          ? mcpServers.filter(
+              (srv) =>
+                srv.platformId === id &&
+                srv.status === 'connected' &&
+                this.isOwnerSharedServer(srv.id)
+            )
+          : [];
+      const matchingMcp = [...ownMatchingMcp, ...sharedMatchingMcp];
+      const ownVaultKeys = this.extractPlatformKeysFromByok(ownByok, id);
+      const ownEnvConfigured =
+        user.role === 'owner'
+          ? Boolean(st.serverEnvConfigured) ||
+            Boolean(ownVaultKeys.apiKey || ownVaultKeys.accessKey || ownVaultKeys.baseUrl)
+          : Boolean(ownVaultKeys.apiKey || ownVaultKeys.accessKey || ownVaultKeys.baseUrl);
+      const ownConnected =
+        ownMatchingMcp.length > 0 || ownEnvConfigured || (user.role === 'owner' && bridgeActive);
+
+      const sharedGrantOk = this.hasActiveSharedGrantForPlatform(user, id);
+      const ownerConnected =
+        user.role === 'member' &&
+        sharedGrantOk &&
+        this.isPlatformConnectedForOwner(id, ownerServers, ownerByok, bridgeActive);
+      const sharedAvailable = Boolean(ownerConnected);
+      const connected = ownConnected || sharedAvailable;
+      const mcpConnected = matchingMcp.length > 0;
+      const serverEnvConfigured =
+        ownEnvConfigured ||
+        (sharedAvailable &&
+          (this.hasServerEnvKeyForPlatform(id) ||
+            Boolean(
+              this.extractPlatformKeysFromByok(ownerByok, id).apiKey ||
+                this.extractPlatformKeysFromByok(ownerByok, id).accessKey
+            )));
+
       const via = mcpConnected
         ? 'mcp'
-        : browserConnected
+        : bridgeActive && (user.role === 'owner' || sharedAvailable)
           ? 'browser-bridge'
           : serverEnvConfigured
             ? 'api-key'
             : null;
 
-      if (browserConnected) connectedBrowserPlatforms.push(id);
+      if (bridgeActive && (user.role === 'owner' || sharedAvailable)) {
+        connectedBrowserPlatforms.push(id);
+      }
       if (mcpConnected && id !== 'custom-mcp') connectedMcpPlatforms.push(id);
       if (serverEnvConfigured) configuredApiKeyPlatforms.push(id);
+      if (ownConnected) ownConnectedPlatforms.push(id);
+      if (sharedAvailable) sharedAvailablePlatforms.push(id);
 
-      const matchingMcp = mcpServers.filter(
-        (srv) => srv.platformId === id && srv.status === 'connected'
-      );
-      const primaryMcp = matchingMcp[0];
+      const primaryMcp = ownMatchingMcp[0] || sharedMatchingMcp[0];
 
       const summary = {
         id,
@@ -4454,11 +4867,13 @@ export class McpStdioBridgeServer {
         browserBridgeSupported: Boolean(p.browserBridgeSupported),
         apiKeySupported: Boolean(p.apiKeySupported),
         connected,
+        ownConnected,
+        sharedAvailable,
         via,
-        browserConnected,
+        browserConnected: bridgeActive,
         mcpConnected,
         serverEnvConfigured,
-        mcpServerIds: Array.isArray(st.mcpServerIds) ? st.mcpServerIds : [],
+        mcpServerIds: matchingMcp.map((s) => s.id),
         ...(primaryMcp
           ? {
               mcpAccount: primaryMcp.account || null,
@@ -4506,6 +4921,10 @@ export class McpStdioBridgeServer {
 
     return {
       ok: true,
+      userRole: user.role,
+      ownConnected: ownConnectedPlatforms,
+      sharedAvailable: sharedAvailablePlatforms,
+      connectedPlatforms: Array.from(new Set([...ownConnectedPlatforms, ...sharedAvailablePlatforms])),
       extensionConnected,
       cdpReachable: cdpInfo.cdpReachable,
       dreaminaLoggedIn: cdpInfo.dreaminaLoggedIn,
@@ -4548,6 +4967,8 @@ export class McpStdioBridgeServer {
     const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
     fs.writeFileSync(fullPath, buf);
     this.mirrorToDistMedia(filename, fullPath);
+    const contentType = MIME_BY_EXT[cleanExt.toLowerCase()] || 'application/octet-stream';
+    const r2Url = await this.mirrorBufferToR2AndIndex(filename, buf, contentType, safePrefix);
 
     let waveform: number[] | undefined;
     if (/\.(mp3|wav|m4a|aiff)$/i.test(cleanExt)) {
@@ -4561,7 +4982,7 @@ export class McpStdioBridgeServer {
     const mediaUrl = `/media/${filename}`;
     return {
       mediaUrl,
-      fullUrl: `${this.getPublicBaseUrl()}${mediaUrl}`,
+      fullUrl: r2Url || `${this.getPublicBaseUrl()}${mediaUrl}`,
       fullPath,
       filename,
       bytes: buf.length,
@@ -4569,11 +4990,685 @@ export class McpStdioBridgeServer {
     };
   }
 
+  private findMcpServerForUser(
+    user: StoredUserRecord,
+    platformId: string,
+    explicitServerId?: string,
+    creditSource: 'auto' | 'own' | 'shared' = 'auto'
+  ) {
+    const allServers = this.externalMcpHost.listServers();
+    if (explicitServerId) {
+      const match = allServers.find((s) => s.id === explicitServerId && s.status === 'connected');
+      if (!match) return null;
+      if (this.isServerOwnedByUser(match.id, user.id)) return match;
+      if (
+        user.role === 'member' &&
+        creditSource !== 'own' &&
+        this.isOwnerSharedServer(match.id) &&
+        this.hasActiveSharedGrantForPlatform(user, match.platformId || platformId)
+      ) {
+        return match;
+      }
+      throw new BridgeHttpError(
+        403,
+        `You do not have permission to invoke MCP server "${explicitServerId}".`,
+        platformId
+      );
+    }
+
+    const pickBest = (candidates: ReturnType<ExternalMcpHost['listServers']>) => {
+      if (platformId === 'custom-mcp') {
+        return candidates.find((s) => s.status === 'connected' && s.tools.length > 0) || null;
+      }
+      return (
+        candidates.find(
+          (s) => s.status === 'connected' && s.platformId === platformId && s.tools.length > 0
+        ) || null
+      );
+    };
+
+    const ownCandidates = allServers.filter((s) => this.isServerOwnedByUser(s.id, user.id));
+    const ownBest = pickBest(ownCandidates);
+    if (user.role === 'owner') return ownBest;
+    if (creditSource === 'own') return ownBest;
+
+    const grantOk = this.hasActiveSharedGrantForPlatform(user, platformId);
+    const ownerCandidates = allServers.filter((s) => this.isOwnerSharedServer(s.id));
+    const sharedBest = grantOk ? pickBest(ownerCandidates) : null;
+
+    if (creditSource === 'shared') return sharedBest;
+    return ownBest || sharedBest;
+  }
+
+  private getEffectiveDreaminaProfileForUser(
+    user: StoredUserRecord,
+    creditSource: 'auto' | 'own' | 'shared' = 'auto'
+  ): { profile: string; source: 'own' | 'shared' | 'owner' } {
+    if (user.role === 'owner') {
+      return { profile: 'default', source: 'owner' };
+    }
+    const ownProfile = user.id;
+    const hasOwn = this.dreaminaMcpEngine.hasProfileConnected(ownProfile);
+    if (creditSource === 'own') {
+      return { profile: ownProfile, source: 'own' };
+    }
+    const hasShared =
+      this.hasActiveSharedGrantForPlatform(user, 'dreamina') &&
+      this.dreaminaMcpEngine.hasProfileConnected('default');
+    if (creditSource === 'shared') {
+      return { profile: 'default', source: 'shared' };
+    }
+    if (hasOwn) return { profile: ownProfile, source: 'own' };
+    if (hasShared) return { profile: 'default', source: 'shared' };
+    return { profile: ownProfile, source: 'own' };
+  }
+
+  public estimateNodeCredits(params: {
+    platformId: string;
+    modelId?: string;
+    modality?: string;
+    resolution?: string;
+    durationSec?: number;
+    batchCount?: number;
+    prompt?: string;
+  }): { credits: number; unit: 'credits' | 'characters'; source: 'calibrated' | 'rate_table'; modelKey: string } {
+    const platformId = String(params.platformId || 'dreamina').trim().toLowerCase();
+    const modality = String(params.modality || 'image').trim().toLowerCase();
+    const modelId = String(params.modelId || '').trim().toLowerCase();
+    const resolution = String(params.resolution || (modality === 'video' ? '1080p' : '2k')).trim().toLowerCase();
+    const durationSec = Math.max(2, Math.min(30, Number(params.durationSec) || 5));
+    const batchCount = Math.max(1, Math.min(8, Math.round(Number(params.batchCount) || 1)));
+    const modelKey = `${platformId}:${modelId || 'default'}:${modality}:${resolution}`;
+
+    const calibrated = this.authStore.getCalibratedRates()[modelKey];
+    if (calibrated && calibrated.credits > 0) {
+      const mult = modality === 'image' ? batchCount : 1;
+      return {
+        credits: Math.round(calibrated.credits * mult * 100) / 100,
+        unit: platformId === 'elevenlabs' ? 'characters' : 'credits',
+        source: 'calibrated',
+        modelKey,
+      };
+    }
+
+    if (platformId === 'elevenlabs') {
+      const chars = Math.max(20, String(params.prompt || '').trim().length || 120);
+      return { credits: chars, unit: 'characters', source: 'rate_table', modelKey };
+    }
+
+    let base = 4;
+    if (platformId === 'dreamina') {
+      if (modality === 'video') {
+        const per5s = /seedance[-_ ]?(2\.0|2)/i.test(modelId) ? 35 : 22;
+        const resMult = resolution.includes('1080') ? 1.4 : resolution.includes('4k') ? 2 : 1;
+        base = Math.round((per5s * (durationSec / 5)) * resMult);
+      } else if (modality === 'audio') {
+        base = 5;
+      } else {
+        const is4k = resolution.includes('4k');
+        base = (/5\.0|5/i.test(modelId) ? 4 : 3) * (is4k ? 2 : 1) * batchCount;
+      }
+    } else if (platformId === 'higgsfield') {
+      if (modality === 'video') {
+        base = Math.round(20 * (durationSec / 5) * (resolution.includes('1080') ? 1.5 : 1));
+      } else if (modality === 'audio') {
+        base = 6;
+      } else {
+        base = (/nano|flux|soul/i.test(modelId) ? 3 : 5) * batchCount;
+      }
+    } else if (platformId === 'kling') {
+      base = modality === 'video' ? Math.round(25 * (durationSec / 5)) : 4 * batchCount;
+    } else if (platformId === 'google-flow' || platformId === 'gemini') {
+      base = modality === 'video' ? Math.round(20 * (durationSec / 5)) : 2 * batchCount;
+    } else if (platformId === 'openai') {
+      base = modality === 'video' ? 30 : 4 * batchCount;
+    } else if (platformId === 'comfyui') {
+      base = 0;
+    } else {
+      base = modality === 'video' ? 18 : 3 * batchCount;
+    }
+
+    return { credits: base, unit: 'credits', source: 'rate_table', modelKey };
+  }
+
+  public async quoteNodeCredits(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const user = this.getCurrentRequestUser();
+    const platformId = String(params.platformId || params.provider || 'dreamina').trim().toLowerCase();
+    const modelId = String(params.modelId || params.model || '').trim();
+    const modality = String(params.modality || params.kind || 'image').trim().toLowerCase() as
+      | 'image'
+      | 'video'
+      | 'audio';
+    const settings =
+      typeof params.settings === 'object' && params.settings !== null
+        ? (params.settings as Record<string, unknown>)
+        : {};
+    const resolution = String(settings.resolution ?? params.resolution ?? '').trim();
+    const durationSec = Number(settings.durationSec ?? params.durationSec ?? 5) || 5;
+    const batchCount = Number(settings.batchCount ?? params.batchCount ?? 1) || 1;
+    const aspectRatio = String(settings.aspectRatio ?? params.aspectRatio ?? '16:9').trim();
+    const prompt = typeof params.prompt === 'string' ? params.prompt : undefined;
+    const live = params.live === true;
+
+    const quoteKey = `${user.id}|${platformId}|${modelId}|${modality}|${resolution}|${durationSec}|${batchCount}|${aspectRatio}`;
+    const now = Date.now();
+    const cached = this.creditsQuoteCache.get(quoteKey);
+    if (!live && cached && now - cached.fetchedAt < 60_000) {
+      return { ...cached.payload, cached: true };
+    }
+
+    const est = this.estimateNodeCredits({
+      platformId,
+      modelId,
+      modality,
+      resolution,
+      durationSec,
+      batchCount,
+      prompt,
+    });
+
+    let finalCredits = est.credits;
+    let source: 'calibrated' | 'live_cli' | 'rate_table' = est.source;
+
+    if (live && platformId === 'dreamina') {
+      const { profile } = this.getEffectiveDreaminaProfileForUser(user, 'auto');
+      const liveCost = await this.dreaminaMcpEngine.quoteCliCost({
+        modality,
+        modelId,
+        prompt,
+        aspectRatio,
+        resolution,
+        durationSec,
+        batchCount,
+        profile,
+      });
+      if (liveCost !== null && liveCost >= 0) {
+        finalCredits = liveCost;
+        source = 'live_cli';
+      }
+    }
+
+    let supportsUnlimited = false;
+    let unlimitedEligible = false;
+    if (platformId === 'higgsfield') {
+      const hfServer = this.findMcpServerForUser(user, 'higgsfield', undefined, 'auto');
+      const cachedBal = hfServer ? this.mcpBalanceCache.get(hfServer.id)?.balance : null;
+      const planStr = String(cachedBal?.plan || '').toLowerCase();
+      supportsUnlimited = /ultimate|unlimited|pro/i.test(planStr);
+      unlimitedEligible = supportsUnlimited && batchCount === 1 && !/kling-o|sora-2-pro/i.test(modelId);
+    }
+
+    const payload: Record<string, unknown> = {
+      ok: true,
+      platformId,
+      modelId: modelId || 'default',
+      modality,
+      estimatedCredits: finalCredits,
+      unit: est.unit,
+      source,
+      supportsUnlimited,
+      unlimitedEligible,
+      cached: false,
+    };
+    this.creditsQuoteCache.set(quoteKey, { fetchedAt: now, payload });
+    return payload;
+  }
+
+  public async getCreditsSummary(
+    options: { forceRefresh?: boolean } = {}
+  ): Promise<Record<string, unknown>> {
+    const user = this.getCurrentRequestUser();
+    const forceRefresh = Boolean(options.forceRefresh);
+    const now = Date.now();
+    const cached = this.creditsSummaryCache.get(user.id);
+    if (!forceRefresh && cached && now - cached.fetchedAt < 20_000) {
+      return { ...cached.payload, cached: true };
+    }
+
+    const ownByok = this.authStore.getUserDecryptedByok(user.id);
+    const ownerByok =
+      user.role === 'owner' ? ownByok : this.authStore.getUserDecryptedByok('owner');
+    const billingMeta = this.authStore.getUserBillingMeta(user.id);
+    const visibleServers = this.getUserVisibleServers(user);
+
+    // 1. Dreamina Credits + Expiring Buckets
+    const dreaminaCtx = this.getEffectiveDreaminaProfileForUser(user, 'auto');
+    const dreaminaAvailable =
+      user.role === 'owner'
+        ? this.dreaminaMcpEngine.hasProfileConnected('default')
+        : this.dreaminaMcpEngine.hasProfileConnected(user.id) ||
+          (this.hasActiveSharedGrantForPlatform(user, 'dreamina') &&
+            this.dreaminaMcpEngine.hasProfileConnected('default'));
+
+    const dreaminaSummary: DreaminaFullCreditSummary = dreaminaAvailable
+      ? await this.dreaminaMcpEngine
+          .getFullCreditSummary(forceRefresh, dreaminaCtx.profile)
+          .catch((): DreaminaFullCreditSummary => ({
+            loggedIn: false,
+            profile: dreaminaCtx.profile,
+            buckets: [],
+          }))
+      : { loggedIn: false, profile: dreaminaCtx.profile, buckets: [] };
+
+    // 2. Higgsfield MCP Balance + Unlimited Eligibility
+    const hfServer = this.findMcpServerForUser(user, 'higgsfield', undefined, 'auto');
+    const hfBal = hfServer ? await this.getMcpBalanceWithCache(hfServer.id, forceRefresh) : null;
+    const hfPlan = hfBal?.plan || '';
+    const hfSupportsUnlimited = /ultimate|unlimited|pro/i.test(hfPlan);
+
+    // 3. ElevenLabs Quota (`/v1/user/subscription`)
+    const ownElKey = this.extractPlatformKeysFromByok(ownByok, 'elevenlabs').apiKey;
+    const ownerElKey =
+      this.extractPlatformKeysFromByok(ownerByok, 'elevenlabs').apiKey ||
+      this.getEnvKeysForPlatform('elevenlabs').apiKey;
+    const elApiKey =
+      user.role === 'owner'
+        ? ownElKey || ownerElKey
+        : ownElKey || (this.hasActiveSharedGrantForPlatform(user, 'elevenlabs') ? ownerElKey : '');
+    let elevenLabsQuota: {
+      connected: boolean;
+      characterCount?: number;
+      characterLimit?: number;
+      remainingCharacters?: number;
+      tier?: string;
+      nextResetUnix?: number;
+    } = {
+      connected: Boolean(elApiKey) || visibleServers.some((s) => s.platformId === 'elevenlabs' && s.status === 'connected'),
+    };
+    if (elApiKey) {
+      try {
+        const elRes = await fetch('https://api.elevenlabs.io/v1/user/subscription', {
+          headers: { 'xi-api-key': elApiKey },
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (elRes.ok) {
+          const elJson = (await elRes.json()) as Record<string, unknown>;
+          const used = Number(elJson.character_count);
+          const limit = Number(elJson.character_limit);
+          elevenLabsQuota = {
+            connected: true,
+            characterCount: Number.isFinite(used) ? used : undefined,
+            characterLimit: Number.isFinite(limit) ? limit : undefined,
+            remainingCharacters:
+              Number.isFinite(used) && Number.isFinite(limit) ? Math.max(0, limit - used) : undefined,
+            tier: typeof elJson.tier === 'string' ? elJson.tier : undefined,
+            nextResetUnix:
+              typeof elJson.next_character_count_reset_unix === 'number'
+                ? elJson.next_character_count_reset_unix
+                : undefined,
+          };
+        }
+      } catch {
+        // Non-fatal fallback
+      }
+    }
+
+    const expiringSoonAlerts: Array<{
+      platformId: string;
+      label: string;
+      credits: number;
+      expiresAt: string;
+      daysRemaining: number;
+    }> = [];
+    for (const b of dreaminaSummary.buckets || []) {
+      if (
+        typeof b.daysRemaining === 'number' &&
+        b.daysRemaining <= 7 &&
+        b.credits > 0 &&
+        b.expiresAt
+      ) {
+        expiringSoonAlerts.push({
+          platformId: 'dreamina',
+          label: `Dreamina credits (${b.daysRemaining}d left)`,
+          credits: b.credits,
+          expiresAt: b.expiresAt,
+          daysRemaining: b.daysRemaining,
+        });
+      }
+    }
+
+    const platformIds = [
+      'dreamina',
+      'higgsfield',
+      'elevenlabs',
+      'google-flow',
+      'kling',
+      'openai',
+      'fal',
+      'replicate',
+      'comfyui',
+      'openart',
+      'imagineart',
+      'sume',
+    ];
+
+    const platforms: Record<string, Record<string, unknown>> = {};
+    for (const pid of platformIds) {
+      const meta: UserBillingMetaEntry = billingMeta[pid] || {};
+      if (pid === 'dreamina') {
+        platforms[pid] = {
+          platformId: pid,
+          connected: Boolean(dreaminaSummary.loggedIn),
+          credits: dreaminaSummary.credits ?? null,
+          plan: dreaminaSummary.vipLevel || null,
+          vipLevelExpiresAt: dreaminaSummary.vipLevelExpiresAt || null,
+          tokenExpiresAt: dreaminaSummary.tokenExpiresAt || null,
+          account: dreaminaSummary.account || null,
+          buckets: dreaminaSummary.buckets || [],
+          source: dreaminaCtx.source,
+          resetDay: meta.resetDay ?? null,
+          manualBudgetCredits: meta.manualBudgetCredits ?? null,
+          manualExpiresAt: meta.manualExpiresAt ?? null,
+        };
+      } else if (pid === 'higgsfield') {
+        platforms[pid] = {
+          platformId: pid,
+          connected: Boolean(hfServer),
+          credits: hfBal?.credits ?? null,
+          plan: hfPlan || null,
+          supportsUnlimited: hfSupportsUnlimited,
+          account: hfBal?.account || hfServer?.account?.name || hfServer?.account?.username || null,
+          source: hfServer ? (this.isServerOwnedByUser(hfServer.id, user.id) ? 'own' : 'shared') : null,
+          resetDay: meta.resetDay ?? null,
+          manualBudgetCredits: meta.manualBudgetCredits ?? null,
+          manualExpiresAt: meta.manualExpiresAt ?? null,
+        };
+      } else if (pid === 'elevenlabs') {
+        platforms[pid] = {
+          platformId: pid,
+          ...elevenLabsQuota,
+          unit: 'characters',
+          resetDay: meta.resetDay ?? null,
+          manualBudgetCredits: meta.manualBudgetCredits ?? null,
+          manualExpiresAt: meta.manualExpiresAt ?? null,
+        };
+      } else {
+        const ownK = this.extractPlatformKeysFromByok(ownByok, pid);
+        const ownerK = this.extractPlatformKeysFromByok(ownerByok, pid);
+        const envK = this.getEnvKeysForPlatform(pid);
+        const hasOwn = Boolean(ownK.apiKey || ownK.accessKey || ownK.baseUrl);
+        const hasShared =
+          user.role === 'member' &&
+          this.hasActiveSharedGrantForPlatform(user, pid) &&
+          Boolean(ownerK.apiKey || ownerK.accessKey || envK.apiKey || envK.accessKey);
+        const connected =
+          hasOwn ||
+          hasShared ||
+          (user.role === 'owner' && Boolean(envK.apiKey || envK.accessKey)) ||
+          visibleServers.some((s) => s.platformId === pid && s.status === 'connected');
+        platforms[pid] = {
+          platformId: pid,
+          connected,
+          credits: meta.manualBudgetCredits ?? null,
+          resetDay: meta.resetDay ?? null,
+          manualBudgetCredits: meta.manualBudgetCredits ?? null,
+          manualExpiresAt: meta.manualExpiresAt ?? null,
+        };
+      }
+    }
+
+    const totalPoolCredits =
+      (typeof dreaminaSummary.credits === 'number' ? dreaminaSummary.credits : 0) +
+      (typeof hfBal?.credits === 'number' ? hfBal.credits : 0);
+
+    const sharedPools =
+      user.role === 'owner'
+        ? this.authStore.listTeamMembersForOwner().map((m) => ({
+            userId: m.id,
+            displayName: m.displayName,
+            email: m.email,
+            grants: m.sharedGrants,
+          }))
+        : Object.entries(user.sharedGrants).map(([pid, grant]) => ({
+            platformId: pid,
+            enabled: grant.enabled,
+            capCredits: grant.capCredits,
+            usedCredits: grant.usedCredits,
+            remainingCredits:
+              grant.capCredits !== null ? Math.max(0, grant.capCredits - grant.usedCredits) : null,
+            ownerPoolCredits:
+              typeof platforms[pid]?.credits === 'number' ? (platforms[pid].credits as number) : null,
+          }));
+
+    const payload: Record<string, unknown> = {
+      ok: true,
+      cached: false,
+      fetchedAt: new Date(now).toISOString(),
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.displayName,
+        role: user.role,
+      },
+      totalPoolCredits,
+      platforms,
+      expiringSoonAlerts,
+      sharedPools,
+      calibratedRates: this.authStore.getCalibratedRates(),
+    };
+    this.creditsSummaryCache.set(user.id, { fetchedAt: now, payload });
+    return payload;
+  }
+
+  public async listUnifiedAssets(options: {
+    source?: string;
+    forceRefresh?: boolean;
+  }): Promise<Record<string, unknown>> {
+    const user = this.getCurrentRequestUser();
+    const source = String(options.source || 'all').trim().toLowerCase();
+    const forceRefresh = Boolean(options.forceRefresh);
+    const idx = this.loadMediaIndex();
+    const items: Array<Record<string, unknown>> = [];
+    const seenFilenames = new Set<string>();
+
+    const classifyFile = (name: string) => {
+      const lower = name.toLowerCase();
+      const modality = /\.(mp4|webm|mov)$/i.test(lower)
+        ? 'video'
+        : /\.(mp3|wav|m4a|aiff)$/i.test(lower)
+          ? 'audio'
+          : 'image';
+      const platform = lower.startsWith('dreamina_')
+        ? 'dreamina'
+        : lower.startsWith('higgsfield_')
+          ? 'higgsfield'
+          : lower.startsWith('google_')
+            ? 'google-flow'
+            : lower.startsWith('elevenlabs_')
+              ? 'elevenlabs'
+              : lower.startsWith('kling_')
+                ? 'kling'
+                : lower.startsWith('upload_')
+                  ? 'upload'
+                  : 'studio';
+      return { modality, platform };
+    };
+
+    if (source === 'all' || source === 'storage' || source === 'higgsfield') {
+      try {
+        if (fs.existsSync(this.mediaDir)) {
+          const files = fs.readdirSync(this.mediaDir);
+          for (const filename of files) {
+            if (!filename || filename.startsWith('.') || /^real_/i.test(filename)) continue;
+            const fullPath = path.join(this.mediaDir, filename);
+            let st: fs.Stats;
+            try {
+              st = fs.statSync(fullPath);
+            } catch {
+              continue;
+            }
+            if (!st.isFile()) continue;
+            const { modality, platform } = classifyFile(filename);
+            if (source === 'higgsfield' && platform !== 'higgsfield') continue;
+            seenFilenames.add(filename);
+            const meta = idx[filename];
+            items.push({
+              id: `local:${filename}`,
+              filename,
+              source: 'storage',
+              platformId: meta?.platformId || platform,
+              modality,
+              mediaUrl: `/media/${filename}`,
+              fullUrl: meta?.r2Url || `${this.getPublicBaseUrl()}/media/${filename}`,
+              r2Url: meta?.r2Url,
+              bytes: st.size,
+              userId: meta?.userId || 'owner',
+              createdAt: meta?.createdAt || st.mtime.toISOString(),
+            });
+          }
+        }
+      } catch {
+        // Ignore scan errors
+      }
+
+      if (isR2Configured() && source !== 'higgsfield') {
+        const r2Objects = await listR2Objects('media/', 300).catch(() => []);
+        for (const obj of r2Objects) {
+          const filename = path.basename(obj.key);
+          if (!filename || /^real_/i.test(filename) || seenFilenames.has(filename)) continue;
+          const { modality, platform } = classifyFile(filename);
+          const meta = idx[filename];
+          items.push({
+            id: `r2:${obj.key}`,
+            filename,
+            source: 'storage',
+            platformId: meta?.platformId || platform,
+            modality,
+            mediaUrl: `/media/${filename}`,
+            fullUrl: obj.publicUrl,
+            r2Url: obj.publicUrl,
+            bytes: obj.size,
+            userId: meta?.userId || 'owner',
+            createdAt: meta?.createdAt || obj.lastModified,
+          });
+        }
+      }
+    }
+
+    if (source === 'all' || source === 'dreamina') {
+      const dreaminaCtx = this.getEffectiveDreaminaProfileForUser(user, 'auto');
+      const canUseDreamina =
+        user.role === 'owner'
+          ? this.dreaminaMcpEngine.hasProfileConnected('default')
+          : this.dreaminaMcpEngine.hasProfileConnected(user.id) ||
+            (this.hasActiveSharedGrantForPlatform(user, 'dreamina') &&
+              this.dreaminaMcpEngine.hasProfileConnected('default'));
+
+      if (canUseDreamina) {
+        const cloudAssets = await this.dreaminaMcpEngine
+          .listRecentCloudAssets(forceRefresh, dreaminaCtx.profile)
+          .catch(() => []);
+        for (const ca of cloudAssets) {
+          const safeId = ca.resourceId.replace(/[^a-zA-Z0-9_-]/g, '_');
+          const cachedName = fs.existsSync(this.mediaDir)
+            ? fs.readdirSync(this.mediaDir).find((f) => f.includes(`dreamina_mcp_${safeId}`))
+            : undefined;
+          const proxyUrl = `/api/assets/dreamina-resource?projectId=${encodeURIComponent(
+            ca.projectId
+          )}&resourceId=${encodeURIComponent(ca.resourceId)}&modality=${encodeURIComponent(
+            ca.kind
+          )}`;
+          items.push({
+            id: `dreamina:${ca.projectId}:${ca.resourceId}`,
+            source: 'dreamina',
+            platformId: 'dreamina',
+            projectId: ca.projectId,
+            title: ca.title,
+            nodeId: ca.id,
+            resourceId: ca.resourceId,
+            modality: ca.kind,
+            prompt: ca.prompt,
+            model: ca.model,
+            createdAt: ca.createdAt,
+            cachedLocally: Boolean(cachedName),
+            mediaUrl: cachedName ? `/media/${cachedName}` : proxyUrl,
+            previewUrl: cachedName ? `/media/${cachedName}` : proxyUrl,
+          });
+        }
+      }
+    }
+
+    items.sort((a, b) =>
+      String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+    );
+
+    return {
+      ok: true,
+      source,
+      total: items.length,
+      items,
+      r2: getR2ConfigSummary(),
+    };
+  }
+
+  public async downloadDreaminaAssetResource(params: {
+    projectId: string;
+    resourceId: string;
+    modality?: string;
+  }): Promise<{ filename: string; fullPath: string; mediaUrl: string; fullUrl: string; r2Url?: string }> {
+    const user = this.getCurrentRequestUser();
+    const { profile } = this.getEffectiveDreaminaProfileForUser(user, 'auto');
+    const mod: 'image' | 'video' | 'audio' =
+      params.modality === 'video' ? 'video' : params.modality === 'audio' ? 'audio' : 'image';
+    const safeId = params.resourceId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (fs.existsSync(this.mediaDir)) {
+      const existing = fs.readdirSync(this.mediaDir).find((f) => f.includes(`dreamina_mcp_${safeId}`));
+      if (existing) {
+        const fullPath = path.join(this.mediaDir, existing);
+        const mediaUrl = `/media/${existing}`;
+        return {
+          filename: existing,
+          fullPath,
+          mediaUrl,
+          fullUrl: `${this.getPublicBaseUrl()}${mediaUrl}`,
+        };
+      }
+    }
+    const localMediaUrl = await this.dreaminaMcpEngine.downloadResourceRawToMediaDir(
+      params.projectId,
+      params.resourceId,
+      mod,
+      profile
+    );
+    const filename = path.basename(localMediaUrl);
+    const fullPath = path.join(this.mediaDir, filename);
+    this.mirrorToDistMedia(filename, fullPath);
+    const buf = fs.readFileSync(fullPath);
+    const contentType = MIME_BY_EXT[path.extname(filename).toLowerCase()] || 'application/octet-stream';
+    const r2Url = await this.mirrorBufferToR2AndIndex(filename, buf, contentType, 'dreamina');
+    return {
+      filename,
+      fullPath,
+      mediaUrl: localMediaUrl,
+      fullUrl: r2Url || `${this.getPublicBaseUrl()}${localMediaUrl}`,
+      ...(r2Url ? { r2Url } : {}),
+    };
+  }
+
+  public async importAsset(bodyObj: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const projectId = typeof bodyObj.projectId === 'string' ? bodyObj.projectId.trim() : '';
+    const resourceId = typeof bodyObj.resourceId === 'string' ? bodyObj.resourceId.trim() : '';
+    const modality = typeof bodyObj.modality === 'string' ? bodyObj.modality.trim() : 'image';
+    const platformId = typeof bodyObj.platformId === 'string' ? bodyObj.platformId.trim() : 'imported';
+    if (projectId && resourceId) {
+      const dl = await this.downloadDreaminaAssetResource({ projectId, resourceId, modality });
+      return { ok: true, asset: { ...dl, modality, platformId: 'dreamina', source: 'dreamina' } };
+    }
+    const rawUrl = String(bodyObj.remoteUrl || bodyObj.mediaUrl || bodyObj.url || '').trim();
+    if (!rawUrl) {
+      throw new BridgeHttpError(400, 'POST /api/assets/import requires projectId+resourceId or mediaUrl/remoteUrl.');
+    }
+    const ingested = await this.ingestExternalMediaToDisk(rawUrl, `${platformId}_import`);
+    return { ok: true, asset: { ...ingested, platformId, source: 'storage' } };
+  }
+
   public async executeExternalMcpToolCall(
     params: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
+    const user = this.getCurrentRequestUser();
     const serverId = String(params.serverId || '').trim();
     const toolName = String(params.toolName || params.name || '').trim();
+    const internalBypass = params._internalSkipCreditCheck === true;
     const toolArgs =
       typeof params.arguments === 'object' && params.arguments !== null
         ? (params.arguments as Record<string, unknown>)
@@ -4588,12 +5683,122 @@ export class McpStdioBridgeServer {
       );
     }
 
+    const serverMeta = this.externalMcpHost.listServers().find((s) => s.id === serverId);
+    const serverPlatformId = serverMeta?.platformId || 'custom-mcp';
+    const isReadOnlyTool = /^(balance|job_status|models_explore|dreamina_models_explore|list_models|status|health|get_job|check_job|assets|jobs)$/i.test(
+      toolName
+    );
+    let resolvedCreditSource: 'own' | 'shared' | 'owner' = user.role === 'owner' ? 'owner' : 'own';
+
+    if (!internalBypass) {
+      const requestedSource = String(params.creditSource || 'auto').trim().toLowerCase();
+      if (this.isServerOwnedByUser(serverId, user.id)) {
+        if (requestedSource === 'shared' && user.role === 'member') {
+          throw new BridgeHttpError(
+            403,
+            `Shared server requested, but "${serverId}" is your own server.`,
+            serverPlatformId
+          );
+        }
+        resolvedCreditSource = user.role === 'owner' ? 'owner' : 'own';
+      } else if (user.role === 'member' && this.isOwnerSharedServer(serverId)) {
+        if (requestedSource === 'own') {
+          throw new BridgeHttpError(
+            403,
+            `No own connection exists for "${serverPlatformId}". Connect your own account or switch to Shared credits.`,
+            serverPlatformId
+          );
+        }
+        const grant = user.sharedGrants[serverPlatformId];
+        if (!grant || !grant.enabled) {
+          throw new BridgeHttpError(
+            403,
+            `Shared credit access for "${serverPlatformId}" is not enabled for your account.`,
+            serverPlatformId
+          );
+        }
+        if (!isReadOnlyTool && grant.capCredits !== null && grant.usedCredits >= grant.capCredits) {
+          throw new BridgeHttpError(
+            403,
+            `Shared credit cap reached for "${serverPlatformId}" (${grant.usedCredits}/${grant.capCredits} credits used).`,
+            serverPlatformId
+          );
+        }
+        resolvedCreditSource = 'shared';
+      } else {
+        throw new BridgeHttpError(
+          403,
+          `You do not have permission to call MCP server "${serverId}".`,
+          serverPlatformId
+        );
+      }
+    }
+
+    const shouldMeterCall = !internalBypass && !isReadOnlyTool;
+    let preCredits: number | undefined;
+    if (
+      shouldMeterCall &&
+      serverMeta?.tools.some((t) => t.name === 'balance')
+    ) {
+      const preBal = await this.getMcpBalanceWithCache(serverId, false).catch(() => null);
+      if (typeof preBal?.credits === 'number' && Number.isFinite(preBal.credits)) {
+        preCredits = preBal.credits;
+      }
+    }
+
     const callOut = await this.externalMcpHost.callTool({
       serverId,
       toolName,
       arguments: toolArgs,
       timeoutMs: Number(params.timeoutMs) || 180_000,
     });
+
+    if (shouldMeterCall) {
+      let postCredits: number | undefined;
+      if (
+        preCredits !== undefined &&
+        serverMeta?.tools.some((t) => t.name === 'balance')
+      ) {
+        const postBal = await this.getMcpBalanceWithCache(serverId, true).catch(() => null);
+        if (typeof postBal?.credits === 'number' && Number.isFinite(postBal.credits)) {
+          postCredits = postBal.credits;
+        }
+      }
+      const observedDelta =
+        preCredits !== undefined && postCredits !== undefined && preCredits > postCredits
+          ? Math.round((preCredits - postCredits) * 100) / 100
+          : undefined;
+      const inferredModality = /video/i.test(toolName)
+        ? 'video'
+        : /audio|voice|music|sfx|speech/i.test(toolName)
+          ? 'audio'
+          : 'image';
+      const fallbackEst =
+        typeof params.estimatedCredits === 'number' && params.estimatedCredits >= 0
+          ? params.estimatedCredits
+          : this.estimateNodeCredits({
+              platformId: callOut.server.platformId || serverPlatformId,
+              modelId: toolName,
+              modality: inferredModality,
+            }).credits;
+      const creditsCharged = observedDelta !== undefined ? observedDelta : fallbackEst;
+      if (observedDelta !== undefined && observedDelta > 0) {
+        this.authStore.updateCalibratedRate(
+          `${callOut.server.platformId || serverPlatformId}:${toolName}:${inferredModality}:`,
+          observedDelta
+        );
+      }
+      this.authStore.recordCreditUsage({
+        userId: user.id,
+        platformId: callOut.server.platformId || serverPlatformId,
+        modelId: toolName,
+        modality: inferredModality,
+        creditsUsed: creditsCharged,
+        creditSource: resolvedCreditSource,
+      });
+      this.creditsSummaryCache.delete(user.id);
+      this.creditsSummaryCache.delete('owner');
+    }
 
     const maxOutputsRaw = Number(params.maxOutputs ?? params.batchCount ?? 1);
     const maxOutputs =
@@ -5337,6 +6542,257 @@ export class McpStdioBridgeServer {
    * NEVER silently fakes cloud/MCP/browser generations with local FFmpeg.
    */
   public async generateNode(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const user = this.getCurrentRequestUser();
+    const rawKind = String(params.kind || params.modality || params.mode || 'image')
+      .trim()
+      .toLowerCase();
+    const kind: 'image' | 'video' | 'audio' =
+      rawKind === 'video' ? 'video' : rawKind === 'audio' ? 'audio' : 'image';
+    const platformId = String(params.platformId || params.provider || 'higgsfield')
+      .trim()
+      .toLowerCase();
+    const modelId = String(params.modelId || params.model || '').trim();
+    const prompt = String(params.prompt || '').trim();
+    if (!prompt) {
+      throw new BridgeHttpError(400, 'Prompt is required to generate this node.', platformId);
+    }
+
+    const settings =
+      typeof params.settings === 'object' && params.settings !== null
+        ? (params.settings as Record<string, unknown>)
+        : {};
+    const requestedCreditSourceRaw = String(params.creditSource || 'auto').trim().toLowerCase();
+    const requestedCreditSource: 'auto' | 'own' | 'shared' =
+      requestedCreditSourceRaw === 'own'
+        ? 'own'
+        : requestedCreditSourceRaw === 'shared'
+          ? 'shared'
+          : 'auto';
+
+    let explicitMcpServerId = typeof params.mcpServerId === 'string' ? params.mcpServerId.trim() : '';
+    if (!explicitMcpServerId && modelId.includes('::')) {
+      explicitMcpServerId = modelId.split('::')[0] || '';
+    }
+
+    const rawCreds =
+      typeof params.credentials === 'object' && params.credentials !== null
+        ? (params.credentials as Record<string, unknown>)
+        : {};
+    const explicitApiKey = String(rawCreds.apiKey ?? params.apiKey ?? '').trim();
+    const explicitAccessKey = String(rawCreds.accessKey ?? params.accessKey ?? '').trim();
+    const explicitSecretKey = String(rawCreds.secretKey ?? params.secretKey ?? '').trim();
+    const explicitBaseUrl = String(rawCreds.baseUrl ?? params.baseUrl ?? '').trim() || undefined;
+    const hasExplicitCreds = Boolean(explicitApiKey || explicitAccessKey);
+
+    const ownByok = this.authStore.getUserDecryptedByok(user.id);
+    const ownVaultKeys = this.extractPlatformKeysFromByok(ownByok, platformId);
+    const hasOwnVault = Boolean(ownVaultKeys.apiKey || ownVaultKeys.accessKey || ownVaultKeys.baseUrl);
+    const ownMcp = this.findMcpServerForUser(user, platformId, explicitMcpServerId || undefined, 'own');
+
+    let effectiveCreditSource: 'own' | 'shared' | 'owner' =
+      user.role === 'owner' ? 'owner' : 'own';
+    let effectiveKeys = {
+      apiKey: explicitApiKey || ownVaultKeys.apiKey,
+      accessKey: explicitAccessKey || ownVaultKeys.accessKey,
+      secretKey: explicitSecretKey || ownVaultKeys.secretKey,
+      baseUrl: explicitBaseUrl || ownVaultKeys.baseUrl,
+    };
+    let effectiveMcpServer = ownMcp;
+
+    if (user.role === 'owner') {
+      const envKeys = this.getEnvKeysForPlatform(platformId);
+      effectiveKeys = {
+        apiKey: effectiveKeys.apiKey || envKeys.apiKey,
+        accessKey: effectiveKeys.accessKey || envKeys.accessKey,
+        secretKey: effectiveKeys.secretKey || envKeys.secretKey,
+        baseUrl: effectiveKeys.baseUrl,
+      };
+    } else {
+      const bridgeActive = this.isBridgeSessionRecentlyActive(normalizeBridgeTarget(platformId));
+      const hasOwnConnection = Boolean(hasExplicitCreds || hasOwnVault || ownMcp);
+      const grant = user.sharedGrants[platformId];
+      const grantEnabled = Boolean(grant?.enabled);
+      const capReached = Boolean(grantEnabled && grant?.capCredits !== null && (grant?.usedCredits ?? 0) >= (grant?.capCredits ?? 0));
+
+      const ownerUser = this.authStore.getOwnerUser();
+      const ownerByok = this.authStore.getUserDecryptedByok(ownerUser.id);
+      const ownerVaultKeys = this.extractPlatformKeysFromByok(ownerByok, platformId);
+      const envKeys = this.getEnvKeysForPlatform(platformId);
+      const ownerMcp = this.findMcpServerForUser(user, platformId, explicitMcpServerId || undefined, 'shared');
+      const ownerHasCreds = Boolean(
+        ownerMcp ||
+          ownerVaultKeys.apiKey ||
+          ownerVaultKeys.accessKey ||
+          ownerVaultKeys.baseUrl ||
+          envKeys.apiKey ||
+          envKeys.accessKey ||
+          bridgeActive
+      );
+
+      if (requestedCreditSource === 'own') {
+        if (!hasOwnConnection) {
+          throw new BridgeHttpError(
+            403,
+            `No own connection or BYOK key found for "${platformId}". Connect your own account or switch to Shared credits.`,
+            platformId
+          );
+        }
+        effectiveCreditSource = 'own';
+      } else if (requestedCreditSource === 'shared') {
+        if (!grantEnabled) {
+          throw new BridgeHttpError(
+            403,
+            `Shared credit pool for "${platformId}" is not enabled for your account.`,
+            platformId
+          );
+        }
+        if (capReached) {
+          throw new BridgeHttpError(
+            403,
+            `Shared credit cap reached for "${platformId}" (${grant!.usedCredits}/${grant!.capCredits} credits used).`,
+            platformId
+          );
+        }
+        if (!ownerHasCreds) {
+          throw new BridgeHttpError(
+            403,
+            `Shared pool for "${platformId}" is granted, but the workspace owner has not connected "${platformId}" yet.`,
+            platformId
+          );
+        }
+        effectiveCreditSource = 'shared';
+        effectiveMcpServer = ownerMcp;
+        effectiveKeys = {
+          apiKey: ownerVaultKeys.apiKey || envKeys.apiKey,
+          accessKey: ownerVaultKeys.accessKey || envKeys.accessKey,
+          secretKey: ownerVaultKeys.secretKey || envKeys.secretKey,
+          baseUrl: ownerVaultKeys.baseUrl,
+        };
+      } else {
+        if (hasOwnConnection) {
+          effectiveCreditSource = 'own';
+        } else if (grantEnabled) {
+          if (capReached) {
+            throw new BridgeHttpError(
+              403,
+              `Shared credit cap reached for "${platformId}" (${grant!.usedCredits}/${grant!.capCredits} credits used).`,
+              platformId
+            );
+          }
+          if (!ownerHasCreds) {
+            throw new BridgeHttpError(
+              403,
+              `Shared pool for "${platformId}" is granted, but the workspace owner has not connected "${platformId}" yet.`,
+              platformId
+            );
+          }
+          effectiveCreditSource = 'shared';
+          effectiveMcpServer = ownerMcp;
+          effectiveKeys = {
+            apiKey: ownerVaultKeys.apiKey || envKeys.apiKey,
+            accessKey: ownerVaultKeys.accessKey || envKeys.accessKey,
+            secretKey: ownerVaultKeys.secretKey || envKeys.secretKey,
+            baseUrl: ownerVaultKeys.baseUrl,
+          };
+        } else {
+          throw new BridgeHttpError(
+            403,
+            `No own connection or shared credit grant available for "${platformId}". Add your own key/MCP connection or ask the workspace owner for a shared grant.`,
+            platformId
+          );
+        }
+      }
+    }
+
+    const resolution = String(settings.resolution ?? params.resolution ?? (kind === 'video' ? '1080p' : '2K')).trim();
+    const durationSec = Math.max(
+      2,
+      Math.min(30, Math.round(Number(settings.durationSec ?? params.durationSec ?? params.durationSeconds ?? 5) || 5))
+    );
+    const batchCount = Math.max(
+      1,
+      Math.min(4, Math.round(Number(settings.batchCount ?? params.batchCount ?? 1) || 1))
+    );
+    const est = this.estimateNodeCredits({
+      platformId,
+      modelId,
+      modality: kind,
+      resolution,
+      durationSec,
+      batchCount,
+      prompt,
+    });
+
+    let preCredits: number | undefined;
+    if (
+      effectiveMcpServer &&
+      effectiveMcpServer.tools.some((t) => t.name === 'balance')
+    ) {
+      const preBal = await this.getMcpBalanceWithCache(effectiveMcpServer.id, false).catch(() => null);
+      if (typeof preBal?.credits === 'number' && Number.isFinite(preBal.credits)) {
+        preCredits = preBal.credits;
+      }
+    }
+
+    const enrichedParams: Record<string, unknown> = {
+      ...params,
+      ...(effectiveMcpServer ? { mcpServerId: effectiveMcpServer.id } : {}),
+      credentials: {
+        ...rawCreds,
+        ...(effectiveKeys.apiKey ? { apiKey: effectiveKeys.apiKey } : {}),
+        ...(effectiveKeys.accessKey ? { accessKey: effectiveKeys.accessKey } : {}),
+        ...(effectiveKeys.secretKey ? { secretKey: effectiveKeys.secretKey } : {}),
+        ...(effectiveKeys.baseUrl ? { baseUrl: effectiveKeys.baseUrl } : {}),
+      },
+    };
+
+    const result = await this.executeGenerateNodeCore(enrichedParams, {
+      user,
+      resolvedMcpServerId: effectiveMcpServer?.id,
+    });
+
+    let creditsUsed = est.credits;
+    if (
+      preCredits !== undefined &&
+      effectiveMcpServer &&
+      effectiveMcpServer.tools.some((t) => t.name === 'balance')
+    ) {
+      const postBal = await this.getMcpBalanceWithCache(effectiveMcpServer.id, true).catch(() => null);
+      if (typeof postBal?.credits === 'number' && Number.isFinite(postBal.credits)) {
+        const delta = Math.round((preCredits - postBal.credits) * 100) / 100;
+        if (delta >= 0 && delta < 1000) {
+          creditsUsed = delta;
+          if (delta > 0) {
+            const perUnit = kind === 'image' && batchCount > 1 ? delta / batchCount : delta;
+            this.authStore.updateCalibratedRate(est.modelKey, perUnit);
+          }
+        }
+      }
+    }
+
+    this.authStore.recordCreditUsage({
+      userId: user.id,
+      platformId,
+      modelId: modelId || String(result.modelId || 'default'),
+      modality: kind,
+      creditsUsed,
+      creditSource: effectiveCreditSource,
+      nodeId: typeof params.nodeId === 'string' ? params.nodeId : undefined,
+    });
+    this.creditsSummaryCache.delete(user.id);
+    this.creditsSummaryCache.delete('owner');
+
+    return {
+      ...result,
+      creditSourceUsed: effectiveCreditSource,
+      creditsUsed,
+    };
+  }
+
+  private async executeGenerateNodeCore(
+    params: Record<string, unknown>,
+    ctx: { user: StoredUserRecord; resolvedMcpServerId?: string }
+  ): Promise<Record<string, unknown>> {
     const nodeId = typeof params.nodeId === 'string' ? params.nodeId : undefined;
     const rawKind = String(params.kind || params.modality || params.mode || 'image')
       .trim()
@@ -5467,7 +6923,7 @@ export class McpStdioBridgeServer {
     let secretKey = String(credsObj.secretKey ?? params.secretKey ?? '').trim();
     const baseUrl = String(credsObj.baseUrl ?? params.baseUrl ?? '').trim() || undefined;
 
-    if (!apiKey && !accessKey) {
+    if (!apiKey && !accessKey && ctx.user.role === 'owner') {
       if (platformId === 'google-flow') {
         apiKey = String(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
       } else if (platformId === 'kling') {
@@ -5509,10 +6965,16 @@ export class McpStdioBridgeServer {
     // -------------------------------------------------------------------------
     const candidateMcpServer =
       connectionMode === 'mcp' || connectionMode === 'auto' || platformId === 'custom-mcp'
-        ? this.externalMcpHost.findBestServerForExecution({
-            mcpServerId: mcpServerId || undefined,
-            platformId,
-          })
+        ? (ctx.resolvedMcpServerId
+            ? this.externalMcpHost
+                .listServers()
+                .find((s) => s.id === ctx.resolvedMcpServerId && s.status === 'connected') || null
+            : this.findMcpServerForUser(
+                ctx.user,
+                platformId,
+                mcpServerId || undefined,
+                'auto'
+              ))
         : null;
 
     if (connectionMode === 'mcp' || platformId === 'custom-mcp' || candidateMcpServer) {
@@ -5823,6 +7285,7 @@ export class McpStdioBridgeServer {
             arguments: pollArgs,
             timeoutMs: usesSync ? 60_000 : 30_000,
             maxOutputs: maxPerJob,
+            _internalSkipCreditCheck: true,
           });
           const urls = collectOutUrls(lastOut);
           if (urls.length > 0) {
@@ -5869,6 +7332,7 @@ export class McpStdioBridgeServer {
           arguments: callArgs,
           timeoutMs: effectiveMcpTimeoutMs ?? params.timeoutMs,
           maxOutputs: maxOutputsForCall,
+          _internalSkipCreditCheck: true,
         });
         let stObj = readStructuredObj(out);
         let jids = this.extractPendingMcpJobIds(stObj, out.textContent);
@@ -5902,6 +7366,7 @@ export class McpStdioBridgeServer {
                   },
                   timeoutMs: params.timeoutMs,
                   maxOutputs: maxOutputsForCall,
+                  _internalSkipCreditCheck: true,
                 });
                 stObj = readStructuredObj(out);
                 jids = this.extractPendingMcpJobIds(stObj, out.textContent);
@@ -5924,6 +7389,7 @@ export class McpStdioBridgeServer {
                   },
                   timeoutMs: params.timeoutMs,
                   maxOutputs: maxOutputsForCall,
+                  _internalSkipCreditCheck: true,
                 });
                 stObj = readStructuredObj(out);
                 jids = this.extractPendingMcpJobIds(stObj, out.textContent);
@@ -5938,6 +7404,7 @@ export class McpStdioBridgeServer {
                     ...callArgs,
                     params: { ...baseP, use_unlim: false },
                   },
+                  _internalSkipCreditCheck: true,
                   timeoutMs: params.timeoutMs,
                   maxOutputs: maxOutputsForCall,
                 });
@@ -9267,13 +10734,56 @@ export class McpStdioBridgeServer {
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-Goog-Api-Key, Mcp-Session-Id, Accept, Range'
+      'Content-Type, Authorization, X-Goog-Api-Key, X-Dreamflow-Require-Auth, Mcp-Session-Id, Accept, Range'
     );
     res.setHeader('Access-Control-Allow-Private-Network', 'true');
     res.setHeader(
       'Access-Control-Expose-Headers',
       'Mcp-Session-Id, Content-Length, Content-Range, Accept-Ranges, Content-Disposition'
     );
+  }
+
+  private serveStaticBrand(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    pathname: string
+  ): void {
+    const relRequested = decodeURIComponent(pathname.replace(/^\/brands\/+/, ''));
+    const safeBase = path.basename(relRequested);
+    const studioDist = this.resolveStudioDistDir();
+    const candidates = [
+      studioDist ? path.resolve(studioDist, 'brands', safeBase) : null,
+      path.resolve(this.mediaDir, '../brands', safeBase),
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../apps/web-studio/public/brands', safeBase),
+    ].filter((c): c is string => Boolean(c));
+
+    let foundPath: string | null = null;
+    for (const candidate of candidates) {
+      if (safeBase && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        foundPath = candidate;
+        break;
+      }
+    }
+
+    if (!foundPath) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: `Brand icon not found: ${safeBase}` }));
+      return;
+    }
+
+    const stat = fs.statSync(foundPath);
+    const ext = path.extname(safeBase).toLowerCase();
+    const contentType = MIME_BY_EXT[ext] || 'application/octet-stream';
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': stat.size,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    });
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    fs.createReadStream(foundPath).pipe(res);
   }
 
   private serveStaticMedia(
@@ -9291,6 +10801,17 @@ export class McpStdioBridgeServer {
       !fs.existsSync(primaryTargetPath) ||
       !fs.statSync(primaryTargetPath).isFile()
     ) {
+      if (safeBase && isR2Configured()) {
+        const r2Info = getR2ConfigSummary();
+        if (r2Info.publicBaseUrl) {
+          res.writeHead(302, {
+            Location: `${r2Info.publicBaseUrl.replace(/\/+$/, '')}/media/${encodeURIComponent(safeBase)}`,
+            'Cache-Control': 'public, max-age=31536000, immutable',
+          });
+          res.end();
+          return;
+        }
+      }
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: `Media file not found: ${safeBase}` }));
       return;
@@ -9303,7 +10824,7 @@ export class McpStdioBridgeServer {
     const contentType = MIME_BY_EXT[ext] || 'application/octet-stream';
 
     res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
 
     const rangeHeader = req.headers.range;
     if (rangeHeader && /^bytes=\d*-\d*$/.test(rangeHeader)) {
@@ -9445,13 +10966,17 @@ export class McpStdioBridgeServer {
     const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const pathname = reqUrl.pathname;
 
-    // 1. Static Media Serving (`GET /media/*` & `HEAD /media/*`)
+    // 1. Public Static Assets & Health / OAuth Callback / Auth Bootstrap
     if ((req.method === 'GET' || req.method === 'HEAD') && pathname.startsWith('/media/')) {
       this.serveStaticMedia(req, res, pathname);
       return;
     }
 
-    // 1b. Self-Contained Live Browser Bridge Connector (`GET /bridge-connector.js`)
+    if ((req.method === 'GET' || req.method === 'HEAD') && pathname.startsWith('/brands/')) {
+      this.serveStaticBrand(req, res, pathname);
+      return;
+    }
+
     if (
       (req.method === 'GET' || req.method === 'HEAD') &&
       (pathname === '/bridge-connector.js' || pathname === '/api/bridge/connector.js')
@@ -9470,7 +10995,6 @@ export class McpStdioBridgeServer {
       return;
     }
 
-    // 2. Health Check (`GET /api/health` & `GET /health`)
     if (req.method === 'GET' && (pathname === '/api/health' || pathname === '/health')) {
       const projects = this.listProjects();
       this.sendJson(res, 200, {
@@ -9491,7 +11015,368 @@ export class McpStdioBridgeServer {
         mediaDir: this.mediaDir,
         dataDir: this.dataDir,
         mediaFiles: this.listMediaFiles(),
+        r2: getR2ConfigSummary(),
       });
+      return;
+    }
+
+    if (pathname === '/api/auth/bootstrap-info' && req.method === 'GET') {
+      const headerReqAuth = String(req.headers['x-dreamflow-require-auth'] || '').trim() === '1';
+      const envReqAuth = process.env.DREAMFLOW_REQUIRE_AUTH === 'true';
+      const isLocal = isLocalhostHttpRequest(req);
+      const requireAuth = headerReqAuth || envReqAuth || !isLocal;
+      this.sendJson(res, 200, {
+        ok: true,
+        requireAuth,
+        localhostBypass: !requireAuth,
+        ...(isLocal ? { defaultOwnerEmail: this.authStore.getOwnerDefaultEmail() } : {}),
+      });
+      return;
+    }
+
+    if (pathname === '/api/auth/login' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const loginOut = this.authStore.login(
+          typeof bodyObj.email === 'string' ? bodyObj.email : '',
+          typeof bodyObj.passcode === 'string' ? bodyObj.passcode : ''
+        );
+        if (!loginOut.ok) {
+          this.sendJson(res, 401, loginOut);
+          return;
+        }
+        this.sendJson(res, 200, loginOut);
+      } catch (err) {
+        this.sendJson(res, 400, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (
+      pathname === '/api/mcp/oauth/callback' &&
+      (req.method === 'GET' || req.method === 'POST')
+    ) {
+      await this.handleMcpOAuthCallbackRequest(req, res, reqUrl);
+      return;
+    }
+
+    if (
+      (req.method === 'GET' || req.method === 'HEAD') &&
+      !pathname.startsWith('/api/') &&
+      !pathname.startsWith('/mcp') &&
+      !pathname.startsWith('/media/')
+    ) {
+      if (this.serveStudioStaticOrSpa(req, res, pathname)) {
+        return;
+      }
+    }
+
+    // 2. Auth Resolution Gate for all /api/* and /mcp* routes
+    const authRes = this.authStore.resolveRequestAuth(req, reqUrl);
+    if (!authRes.ok) {
+      this.sendJson(res, authRes.status, { ok: false, error: authRes.error });
+      return;
+    }
+
+    await this.requestUserStorage.run(authRes.user, async () => {
+      await this.handleAuthenticatedHttpRequest(req, res, reqUrl, pathname, authRes.user);
+    });
+  }
+
+  private async handleMcpOAuthCallbackRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    reqUrl: URL
+  ): Promise<void> {
+    let code = reqUrl.searchParams.get('code') || undefined;
+    let state = reqUrl.searchParams.get('state') || undefined;
+    let error = reqUrl.searchParams.get('error') || undefined;
+    let errorDescription = reqUrl.searchParams.get('error_description') || undefined;
+
+    if (req.method === 'POST') {
+      const rawBody = await this.readRawBody(req);
+      if (rawBody) {
+        const contentType = String(req.headers['content-type'] || '').toLowerCase();
+        if (contentType.includes('application/json')) {
+          try {
+            const j = JSON.parse(rawBody) as Record<string, unknown>;
+            if (typeof j.code === 'string') code = code || j.code;
+            if (typeof j.state === 'string') state = state || j.state;
+            if (typeof j.error === 'string') error = error || j.error;
+            if (typeof j.error_description === 'string') {
+              errorDescription = errorDescription || j.error_description;
+            }
+          } catch {
+            // Ignore malformed JSON
+          }
+        } else {
+          const form = new URLSearchParams(rawBody);
+          code = code || form.get('code') || undefined;
+          state = state || form.get('state') || undefined;
+          error = error || form.get('error') || undefined;
+          errorDescription = errorDescription || form.get('error_description') || undefined;
+        }
+      }
+    }
+
+    const result = await this.mcpOAuthManager.handleCallback({
+      code,
+      state,
+      error,
+      errorDescription,
+    });
+    res.writeHead(result.statusCode, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': this.corsOrigin,
+    });
+    res.end(result.html);
+  }
+
+  private async handleAuthenticatedHttpRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    reqUrl: URL,
+    pathname: string,
+    user: StoredUserRecord
+  ): Promise<void> {
+    // Stage 11 Auth, Profile, Vault & Team Pool Routes
+    if (pathname === '/api/auth/logout' && req.method === 'POST') {
+      const token = this.authStore.extractTokenFromRequest(req, reqUrl);
+      this.authStore.logout(token);
+      this.sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (pathname === '/api/auth/me' && req.method === 'GET') {
+      this.sendJson(res, 200, this.authStore.getMePayload(user));
+      return;
+    }
+
+    if (pathname === '/api/auth/profile' && req.method === 'PUT') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const updated = this.authStore.updateProfile(user.id, {
+          displayName: typeof bodyObj.displayName === 'string' ? bodyObj.displayName : undefined,
+          email: typeof bodyObj.email === 'string' ? bodyObj.email : undefined,
+          passcode: typeof bodyObj.passcode === 'string' ? bodyObj.passcode : undefined,
+        });
+        this.sendJson(res, 200, { ok: true, user: updated });
+      } catch (err) {
+        this.sendJson(res, 400, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/user/vault' && req.method === 'PUT') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const updatedUser = this.authStore.saveUserVault(user.id, {
+          byok:
+            typeof bodyObj.byok === 'object' && bodyObj.byok !== null
+              ? (bodyObj.byok as Record<string, unknown>)
+              : undefined,
+          billingMeta:
+            typeof bodyObj.billingMeta === 'object' && bodyObj.billingMeta !== null
+              ? (bodyObj.billingMeta as Record<string, UserBillingMetaEntry>)
+              : undefined,
+        });
+        this.creditsSummaryCache.delete(user.id);
+        this.creditsSummaryCache.delete('owner');
+        this.sendJson(res, 200, this.authStore.getMePayload(updatedUser));
+      } catch (err) {
+        this.sendJson(res, 400, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/team/invites' && req.method === 'POST') {
+      if (user.role !== 'owner') {
+        this.sendJson(res, 403, { ok: false, error: 'Only workspace owners can manage team invites.' });
+        return;
+      }
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const member = this.authStore.upsertInvite({
+          email: typeof bodyObj.email === 'string' ? bodyObj.email : '',
+          displayName: typeof bodyObj.displayName === 'string' ? bodyObj.displayName : '',
+          passcode: typeof bodyObj.passcode === 'string' ? bodyObj.passcode : '',
+          sharedGrants:
+            typeof bodyObj.sharedGrants === 'object' && bodyObj.sharedGrants !== null
+              ? (bodyObj.sharedGrants as Record<string, { enabled: boolean; capCredits: number | null }>)
+              : undefined,
+        });
+        this.creditsSummaryCache.delete(member.id);
+        this.creditsSummaryCache.delete('owner');
+        this.sendJson(res, 200, {
+          ok: true,
+          member,
+          teamMembers: this.authStore.listTeamMembersForOwner(),
+        });
+      } catch (err) {
+        this.sendJson(res, 400, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    const teamGrantMatch = /^\/api\/team\/members\/([^/]+)\/grants$/.exec(pathname);
+    if (teamGrantMatch && req.method === 'PUT') {
+      if (user.role !== 'owner') {
+        this.sendJson(res, 403, { ok: false, error: 'Only workspace owners can update team grants.' });
+        return;
+      }
+      try {
+        const targetId = decodeURIComponent(teamGrantMatch[1]);
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const member = this.authStore.updateMemberGrants(targetId, {
+          grants:
+            typeof bodyObj.grants === 'object' && bodyObj.grants !== null
+              ? (bodyObj.grants as Record<string, { enabled: boolean; capCredits: number | null }>)
+              : undefined,
+          resetUsagePlatformId:
+            typeof bodyObj.resetUsagePlatformId === 'string'
+              ? bodyObj.resetUsagePlatformId
+              : undefined,
+          passcode: typeof bodyObj.passcode === 'string' ? bodyObj.passcode : undefined,
+          displayName: typeof bodyObj.displayName === 'string' ? bodyObj.displayName : undefined,
+        });
+        this.creditsSummaryCache.delete(targetId);
+        this.creditsSummaryCache.delete('owner');
+        this.sendJson(res, 200, {
+          ok: true,
+          member,
+          teamMembers: this.authStore.listTeamMembersForOwner(),
+        });
+      } catch (err) {
+        this.sendJson(res, 400, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    const teamMemberDeleteMatch = /^\/api\/team\/members\/([^/]+)$/.exec(pathname);
+    if (teamMemberDeleteMatch && req.method === 'DELETE') {
+      if (user.role !== 'owner') {
+        this.sendJson(res, 403, { ok: false, error: 'Only workspace owners can remove team members.' });
+        return;
+      }
+      const targetId = decodeURIComponent(teamMemberDeleteMatch[1]);
+      const deleted = this.authStore.deleteMember(targetId);
+      if (deleted) {
+        void this.dreaminaMcpEngine.disconnect(targetId).catch(() => {});
+        const suffix = `__${targetId}`;
+        for (const srv of this.externalMcpHost.listServers()) {
+          if (srv.id.endsWith(suffix)) {
+            void this.externalMcpHost.removeServer(srv.id).catch(() => {});
+          }
+        }
+      }
+      this.creditsSummaryCache.delete(targetId);
+      this.creditsSummaryCache.delete('owner');
+      this.sendJson(res, 200, {
+        ok: true,
+        deleted,
+        teamMembers: this.authStore.listTeamMembersForOwner(),
+      });
+      return;
+    }
+
+    // Stage 11 Credit Intelligence Hub & Pre-Run Quote Routes
+    if (pathname === '/api/credits/summary' && req.method === 'GET') {
+      try {
+        const refreshParam = String(reqUrl.searchParams.get('refresh') || '').trim().toLowerCase();
+        const forceRefresh = refreshParam === '1' || refreshParam === 'true';
+        this.sendJson(res, 200, await this.getCreditsSummary({ forceRefresh }));
+      } catch (err) {
+        this.sendJson(res, 500, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/credits/quote' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        this.sendJson(res, 200, await this.quoteNodeCredits(bodyObj));
+      } catch (err) {
+        this.sendJson(res, 400, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    // Stage 11 Unified Asset Library & R2 / Dreamina Proxy Routes
+    if (pathname === '/api/assets' && req.method === 'GET') {
+      try {
+        const source = String(reqUrl.searchParams.get('source') || 'all').trim();
+        const refreshParam = String(reqUrl.searchParams.get('refresh') || '').trim().toLowerCase();
+        const forceRefresh = refreshParam === '1' || refreshParam === 'true';
+        this.sendJson(res, 200, await this.listUnifiedAssets({ source, forceRefresh }));
+      } catch (err) {
+        this.sendJson(res, 500, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/assets/dreamina-resource' && req.method === 'GET') {
+      try {
+        const projectId = String(reqUrl.searchParams.get('projectId') || '').trim();
+        const resourceId = String(reqUrl.searchParams.get('resourceId') || '').trim();
+        const modality = String(reqUrl.searchParams.get('modality') || 'image').trim();
+        if (!projectId || !resourceId) {
+          this.sendJson(res, 400, { ok: false, error: 'Missing projectId or resourceId.' });
+          return;
+        }
+        const dl = await this.downloadDreaminaAssetResource({ projectId, resourceId, modality });
+        const wantJson =
+          reqUrl.searchParams.get('format') === 'json' ||
+          String(req.headers.accept || '').includes('application/json');
+        if (wantJson) {
+          this.sendJson(res, 200, { ok: true, ...dl });
+          return;
+        }
+        this.serveStaticMedia(req, res, `/media/${dl.filename}`);
+      } catch (err) {
+        this.sendJson(res, 502, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/assets/import' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        this.sendJson(res, 200, await this.importAsset(bodyObj));
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 400;
+        this.sendJson(res, status, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       return;
     }
 
@@ -9507,7 +11392,8 @@ export class McpStdioBridgeServer {
         const saved = this.saveProject(bodyObj);
         this.sendJson(res, 200, saved);
       } catch (err) {
-        this.sendJson(res, 500, {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+        this.sendJson(res, status, {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
         });
@@ -9568,8 +11454,16 @@ export class McpStdioBridgeServer {
         return;
       }
       if (req.method === 'DELETE') {
-        const deleted = this.deleteProject(rawId);
-        this.sendJson(res, 200, deleted);
+        try {
+          const deleted = this.deleteProject(rawId);
+          this.sendJson(res, 200, deleted);
+        } catch (err) {
+          const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+          this.sendJson(res, status, {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
         return;
       }
     }
@@ -9784,6 +11678,7 @@ export class McpStdioBridgeServer {
           mcpUrl: typeof bodyObj.mcpUrl === 'string' ? bodyObj.mcpUrl : undefined,
           serverName: typeof bodyObj.serverName === 'string' ? bodyObj.serverName : undefined,
           redirectUri,
+          userId: user.id,
         });
 
         this.sendJson(res, 200, {
@@ -9803,56 +11698,6 @@ export class McpStdioBridgeServer {
           error: err instanceof Error ? err.message : String(err),
         });
       }
-      return;
-    }
-
-    if (
-      pathname === '/api/mcp/oauth/callback' &&
-      (req.method === 'GET' || req.method === 'POST')
-    ) {
-      let code = reqUrl.searchParams.get('code') || undefined;
-      let state = reqUrl.searchParams.get('state') || undefined;
-      let error = reqUrl.searchParams.get('error') || undefined;
-      let errorDescription = reqUrl.searchParams.get('error_description') || undefined;
-
-      if (req.method === 'POST') {
-        const rawBody = await this.readRawBody(req);
-        if (rawBody) {
-          const contentType = String(req.headers['content-type'] || '').toLowerCase();
-          if (contentType.includes('application/json')) {
-            try {
-              const j = JSON.parse(rawBody) as Record<string, unknown>;
-              if (typeof j.code === 'string') code = code || j.code;
-              if (typeof j.state === 'string') state = state || j.state;
-              if (typeof j.error === 'string') error = error || j.error;
-              if (typeof j.error_description === 'string') {
-                errorDescription = errorDescription || j.error_description;
-              }
-            } catch {
-              // Ignore malformed JSON
-            }
-          } else {
-            const form = new URLSearchParams(rawBody);
-            code = code || form.get('code') || undefined;
-            state = state || form.get('state') || undefined;
-            error = error || form.get('error') || undefined;
-            errorDescription = errorDescription || form.get('error_description') || undefined;
-          }
-        }
-      }
-
-      const result = await this.mcpOAuthManager.handleCallback({
-        code,
-        state,
-        error,
-        errorDescription,
-      });
-      res.writeHead(result.statusCode, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-store',
-        'Access-Control-Allow-Origin': this.corsOrigin,
-      });
-      res.end(result.html);
       return;
     }
 
@@ -9887,8 +11732,10 @@ export class McpStdioBridgeServer {
     if (pathname === '/api/mcp/dreamina/connect' && req.method === 'POST') {
       try {
         const bodyObj = (await this.readJsonBody(req)) || {};
+        const dreaminaProfile = user.id === 'owner' ? 'default' : user.id;
         const session = await this.dreaminaMcpEngine.connect({
           mode: typeof bodyObj.mode === 'string' ? bodyObj.mode : undefined,
+          profile: dreaminaProfile,
           force: typeof bodyObj.force === 'boolean' ? bodyObj.force : undefined,
           sessionIdCookie:
             typeof bodyObj.sessionIdCookie === 'string' ? bodyObj.sessionIdCookie : undefined,
@@ -9897,6 +11744,8 @@ export class McpStdioBridgeServer {
           launchBrowser:
             typeof bodyObj.launchBrowser === 'boolean' ? bodyObj.launchBrowser : undefined,
         });
+        this.creditsSummaryCache.delete(user.id);
+        if (user.id === 'owner') this.creditsSummaryCache.delete('owner');
         if (session.step === 'error') {
           this.sendJson(res, 400, {
             ok: false,
@@ -9948,7 +11797,9 @@ export class McpStdioBridgeServer {
 
     if (pathname === '/api/mcp/dreamina/disconnect' && req.method === 'POST') {
       try {
-        const out = await this.dreaminaMcpEngine.disconnect();
+        const dreaminaProfile = user.id === 'owner' ? 'default' : user.id;
+        const out = await this.dreaminaMcpEngine.disconnect(dreaminaProfile);
+        this.creditsSummaryCache.delete(user.id);
         this.sendJson(res, 200, out);
       } catch (err) {
         this.sendJson(res, 500, {
@@ -9998,7 +11849,7 @@ export class McpStdioBridgeServer {
     if (pathname === '/api/mcp/servers' && req.method === 'GET') {
       this.sendJson(res, 200, {
         ok: true,
-        servers: this.externalMcpHost.listServers(),
+        servers: this.getUserVisibleServers(user),
       });
       return;
     }
@@ -10006,6 +11857,14 @@ export class McpStdioBridgeServer {
     if (pathname === '/api/mcp/servers' && req.method === 'POST') {
       try {
         const bodyObj = (await this.readJsonBody(req)) || {};
+        if (user.role === 'member') {
+          const rawId = typeof bodyObj.id === 'string' && bodyObj.id.trim()
+            ? bodyObj.id.trim()
+            : `mcp_${String(bodyObj.platformId || 'custom').replace(/[^a-z0-9_-]/gi, '')}_${Date.now()}`;
+          if (!rawId.includes('__usr_')) {
+            bodyObj.id = `${rawId}__${user.id}`;
+          }
+        }
         const server = await this.externalMcpHost.registerOrUpdateServer(bodyObj);
         this.clearMcpRefUploadCache(server.id);
         this.sendJson(res, 200, { ok: true, server });
@@ -10022,6 +11881,10 @@ export class McpStdioBridgeServer {
     if (mcpRefreshMatch && req.method === 'POST') {
       try {
         const serverId = decodeURIComponent(mcpRefreshMatch[1]);
+        if (!this.isServerOwnedByUser(serverId, user.id)) {
+          this.sendJson(res, 403, { ok: false, error: `Permission denied for MCP server: ${serverId}` });
+          return;
+        }
         const server = await this.externalMcpHost.refreshServerTools(serverId);
         this.sendJson(res, 200, { ok: true, server });
       } catch (err) {
@@ -10037,6 +11900,10 @@ export class McpStdioBridgeServer {
     if (mcpDeleteMatch && req.method === 'DELETE') {
       try {
         const serverId = decodeURIComponent(mcpDeleteMatch[1]);
+        if (!this.isServerOwnedByUser(serverId, user.id)) {
+          this.sendJson(res, 403, { ok: false, error: `Permission denied for MCP server: ${serverId}` });
+          return;
+        }
         const out = await this.externalMcpHost.removeServer(serverId);
         this.clearMcpRefUploadCache(serverId);
         this.sendJson(res, 200, out);
@@ -10221,6 +12088,13 @@ export class McpStdioBridgeServer {
     }
 
     const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const authRes = this.authStore.resolveRequestAuth(req, reqUrl);
+    if (!authRes.ok) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
     const isBridgeChannel =
       reqUrl.pathname === '/bridge' || reqUrl.pathname.startsWith('/bridge/');
 

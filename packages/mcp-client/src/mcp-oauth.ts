@@ -38,6 +38,7 @@ export interface PublicMcpOAuthSession {
   sessionId: string;
   state: string;
   platformId: string;
+  userId?: string;
   serverName: string;
   mcpUrl: string;
   redirectUri: string;
@@ -195,6 +196,7 @@ export class McpOAuthManager {
       sessionId: session.sessionId,
       state: session.state,
       platformId: session.platformId,
+      ...(session.userId ? { userId: session.userId } : {}),
       serverName: session.serverName,
       mcpUrl: session.mcpUrl,
       redirectUri: session.redirectUri,
@@ -382,11 +384,13 @@ export class McpOAuthManager {
 
   public async startOAuth(options: {
     platformId?: string;
+    userId?: string;
     mcpUrl?: string;
     serverName?: string;
     redirectUri: string;
   }): Promise<PublicMcpOAuthSession> {
     const platformId = String(options.platformId || 'higgsfield').trim().toLowerCase() || 'higgsfield';
+    const userId = String(options.userId || 'owner').trim() || 'owner';
     const preset = DEFAULT_OAUTH_MCP_ENDPOINTS[platformId];
     const mcpUrl = (options.mcpUrl || preset?.mcpUrl || '').trim();
     if (!mcpUrl) {
@@ -407,6 +411,7 @@ export class McpOAuthManager {
       sessionId,
       state,
       platformId,
+      userId,
       serverName,
       mcpUrl,
       redirectUri,
@@ -572,7 +577,9 @@ export class McpOAuthManager {
       session.account = account;
       this.emitUpdate(session);
 
-      const serverId = `mcp_${session.platformId}`;
+      const baseServerId = `mcp_${session.platformId}`;
+      const uid = String(session.userId || 'owner').trim() || 'owner';
+      const serverId = uid === 'owner' ? baseServerId : `${baseServerId}__${uid}`;
       const server = await this.externalMcpHost.registerOrUpdateServer({
         id: serverId,
         name: session.serverName,

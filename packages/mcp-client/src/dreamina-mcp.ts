@@ -19,6 +19,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type {
@@ -67,6 +68,7 @@ export interface PersistedDreaminaMcpConfig {
 export interface DreaminaMcpSession {
   sessionId: string;
   platformId: 'dreamina';
+  profile?: string;
   serverId: string;
   serverName: string;
   mode: DreaminaConnectionMode;
@@ -91,6 +93,37 @@ export interface DreaminaMcpSession {
   updatedAt: string;
 }
 
+export interface DreaminaCreditBucket {
+  credits: number;
+  expiresAt: string;
+  daysRemaining: number;
+}
+
+export interface DreaminaFullCreditSummary {
+  loggedIn: boolean;
+  profile: string;
+  credits?: number;
+  vipLevel?: string;
+  vipLevelExpiresAt?: string;
+  tokenExpiresAt?: string;
+  account?: string;
+  buckets: DreaminaCreditBucket[];
+}
+
+export interface DreaminaCloudAssetItem {
+  id: string;
+  title: string;
+  kind: 'image' | 'video' | 'audio';
+  url: string;
+  thumbnailUrl?: string;
+  resourceId: string;
+  projectId: string;
+  createdAt: string;
+  prompt?: string;
+  model?: string;
+  creditsAmount?: number;
+}
+
 export interface DreaminaBrowserProbeResult {
   extensionTabActive: boolean;
   cdpDreaminaOpen: boolean;
@@ -108,7 +141,9 @@ export interface DreaminaCliAuthProbe {
   availableCredits?: number;
   isVip?: boolean;
   vipLevel?: string;
+  vipLevelExpiresAt?: string;
   expiresAt?: string;
+  creditBuckets?: DreaminaCreditBucket[];
 }
 
 export interface DreaminaMcpEngineDeps {
@@ -1042,6 +1077,26 @@ export class DreaminaMcpEngine {
   private readonly deps: DreaminaMcpEngineDeps;
   private readonly sessions = new Map<string, DreaminaMcpSession>();
   private config: PersistedDreaminaMcpConfig | null = null;
+  private readonly profileStorage = new AsyncLocalStorage<string>();
+  private readonly profileConfigs = new Map<string, PersistedDreaminaMcpConfig>();
+  private readonly profileBalances = new Map<
+    string,
+    {
+      fetchedAt: number;
+      credits?: number;
+      plan?: string;
+      account?: string;
+      rawText: string;
+      vipLevelExpiresAt?: string;
+      tokenExpiresAt?: string;
+      buckets: DreaminaCreditBucket[];
+    }
+  >();
+  private readonly lastAutoRefreshByProfile = new Map<string, number>();
+  private readonly recentAssetsCacheByProfile = new Map<
+    string,
+    { fetchedAt: number; items: DreaminaCloudAssetItem[] }
+  >();
   private cachedCliPath: string | null = null;
   private cachedCliVersion: string | null = null;
   private cachedBalance: {
@@ -1066,6 +1121,73 @@ export class DreaminaMcpEngine {
     return this.config ? { ...this.config } : null;
   }
 
+  public getProfileConfig(profile = 'default'): PersistedDreaminaMcpConfig | null {
+    const p = profile.trim() || 'default';
+    if (p === 'default') return this.config ? { ...this.config } : null;
+    const found = this.profileConfigs.get(p);
+    return found ? { ...found } : null;
+  }
+
+  public hasProfileConnected(profile = 'default'): boolean {
+    const cfg = this.getProfileConfig(profile);
+    return Boolean(cfg?.connected);
+  }
+
+  public async runWithProfile<T>(profile: string, fn: () => Promise<T>): Promise<T> {
+    const clean = String(profile || 'default').trim() || 'default';
+    return await this.profileStorage.run(clean, fn);
+  }
+
+  private getActiveProfile(explicitProfile?: string): string {
+    return String(explicitProfile || this.profileStorage.getStore() || 'default').trim() || 'default';
+  }
+
+  private getActiveConfig(explicitProfile?: string): PersistedDreaminaMcpConfig | null {
+    const p = this.getActiveProfile(explicitProfile);
+    return p === 'default' ? this.config : this.profileConfigs.get(p) || null;
+  }
+
+  private setActiveConfig(
+    cfg: PersistedDreaminaMcpConfig | null,
+    explicitProfile?: string
+  ): void {
+    const p = this.getActiveProfile(explicitProfile);
+    if (p === 'default') {
+      this.config = cfg;
+      if (cfg) this.writeConfigToDisk(cfg);
+      else this.clearConfigFromDisk();
+      return;
+    }
+    if (cfg) {
+      this.profileConfigs.set(p, cfg);
+    } else {
+      this.profileConfigs.delete(p);
+    }
+    this.writeProfilesToDisk();
+  }
+
+  private resolveProfilesPath(): string {
+    return path.join(path.dirname(resolveDreaminaConfigPath()), 'dreamina-profiles.json');
+  }
+
+  private writeProfilesToDisk(): void {
+    const targetPath = this.resolveProfilesPath();
+    const obj: Record<string, PersistedDreaminaMcpConfig> = {};
+    for (const [k, v] of this.profileConfigs.entries()) {
+      obj[k] = v;
+    }
+    try {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+      const tmp = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), { encoding: 'utf8', mode: 0o600 });
+      fs.chmodSync(tmp, 0o600);
+      fs.renameSync(tmp, targetPath);
+      fs.chmodSync(targetPath, 0o600);
+    } catch {
+      // Ignore profile persistence failure
+    }
+  }
+
   private getMediaDir(): string {
     return (
       this.deps.mediaDir ||
@@ -1075,6 +1197,26 @@ export class DreaminaMcpEngine {
   }
 
   public hydrateOnStartup(): void {
+    const profilesPath = this.resolveProfilesPath();
+    try {
+      if (fs.existsSync(profilesPath)) {
+        const parsed = JSON.parse(fs.readFileSync(profilesPath, 'utf8')) as Record<
+          string,
+          PersistedDreaminaMcpConfig
+        >;
+        if (parsed && typeof parsed === 'object') {
+          for (const [prof, raw] of Object.entries(parsed)) {
+            if (raw && raw.connected === true && raw.mode) {
+              this.profileConfigs.set(prof, raw);
+              this.registerVirtualServer(prof);
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore invalid profile file
+    }
+
     const cfgPath = resolveDreaminaConfigPath();
     try {
       if (!fs.existsSync(cfgPath)) return;
@@ -1099,7 +1241,7 @@ export class DreaminaMcpEngine {
         connectedAt: raw.connectedAt || new Date().toISOString(),
         updatedAt: raw.updatedAt || new Date().toISOString(),
       };
-      this.registerVirtualServer();
+      this.registerVirtualServer('default');
     } catch {
       // Ignore invalid persisted Dreamina MCP config on startup
     }
@@ -1216,20 +1358,29 @@ export class DreaminaMcpEngine {
     };
   }
 
-  public registerVirtualServer(): void {
-    const account = this.buildAccountInfo(this.config);
+  public registerVirtualServer(profile = 'default'): void {
+    const cleanProfile = String(profile || 'default').trim() || 'default';
+    const cfg = this.getActiveConfig(cleanProfile);
+    const account = this.buildAccountInfo(cfg);
+    const serverId =
+      cleanProfile === 'default'
+        ? DREAMINA_MCP_SERVER_ID
+        : `${DREAMINA_MCP_SERVER_ID}__${cleanProfile}`;
     this.deps.externalMcpHost.registerVirtualServer({
-      id: DREAMINA_MCP_SERVER_ID,
-      name: 'Dreamina MCP (CLI Engine · Seedream & Seedance)',
+      id: serverId,
+      name:
+        cleanProfile === 'default'
+          ? 'Dreamina MCP (CLI Engine · Seedream & Seedance)'
+          : `Dreamina MCP (${cleanProfile})`,
       platformId: 'dreamina',
-      url: 'builtin://mcp_dreamina',
+      url: cleanProfile === 'default' ? 'builtin://mcp_dreamina' : `builtin://mcp_dreamina/${cleanProfile}`,
       account,
-      authType: this.config?.mode === 'ark_api_key' ? 'headers' : 'oauth',
+      authType: cfg?.mode === 'ark_api_key' ? 'headers' : 'oauth',
       getTools: () => DREAMINA_TOOLS,
-      callTool: (toolName, args, timeoutMs) => this.executeToolCall(toolName, args, timeoutMs),
+      callTool: (toolName, args, timeoutMs) =>
+        this.runWithProfile(cleanProfile, () => this.executeToolCall(toolName, args, timeoutMs)),
       onRemove: () => {
-        this.config = null;
-        this.clearConfigFromDisk();
+        this.setActiveConfig(null, cleanProfile);
       },
     });
   }
@@ -1363,10 +1514,17 @@ export class DreaminaMcpEngine {
 
   private async runCliJson(
     args: string[],
-    options: { timeoutMs?: number; binaryPath?: string } = {}
+    options: { timeoutMs?: number; binaryPath?: string; profile?: string } = {}
   ): Promise<Record<string, unknown>> {
     const binaryPath = options.binaryPath || (await this.ensureDreaminaCliBinary()).binaryPath;
-    const fullArgs = ['--format', 'json', '--non-interactive', ...args];
+    const activeProfile = this.getActiveProfile(options.profile);
+    const fullArgs = [
+      '--format',
+      'json',
+      '--non-interactive',
+      ...(activeProfile !== 'default' ? ['--profile', activeProfile] : []),
+      ...args,
+    ];
     let stdout = '';
     let stderr = '';
     try {
@@ -1413,28 +1571,46 @@ export class DreaminaMcpEngine {
     return parsed;
   }
 
-  public async probeCliAuth(): Promise<DreaminaCliAuthProbe> {
+  public async probeCliAuth(explicitProfile?: string): Promise<DreaminaCliAuthProbe> {
+    const profile = this.getActiveProfile(explicitProfile);
     const { binaryPath, version } = await this.ensureDreaminaCliBinary();
     const statusRes = await this.runCliJson(['auth', 'status'], {
       binaryPath,
+      profile,
       timeoutMs: 12_000,
     });
     const statusData = (statusRes.data || {}) as Record<string, unknown>;
     const loggedIn = Boolean(statusData.loggedIn);
+    const expiresAt = typeof statusData.expiresAt === 'string' ? statusData.expiresAt : undefined;
 
     if (!loggedIn) {
       return {
         cliBinaryPath: binaryPath,
         cliVersion: version,
         loggedIn: false,
-        expiresAt: typeof statusData.expiresAt === 'string' ? statusData.expiresAt : undefined,
+        expiresAt,
       };
+    }
+
+    // Proactively refresh CLI token in background if within 48h of expiry
+    if (expiresAt) {
+      const msLeft = Date.parse(expiresAt) - Date.now();
+      const lastRefresh = this.lastAutoRefreshByProfile.get(profile) || 0;
+      if (Number.isFinite(msLeft) && msLeft > 0 && msLeft < 48 * 3600_000 && Date.now() - lastRefresh > 3600_000) {
+        this.lastAutoRefreshByProfile.set(profile, Date.now());
+        void this.runCliJson(['auth', 'refresh'], {
+          binaryPath,
+          profile,
+          timeoutMs: 20_000,
+        }).catch(() => {});
+      }
     }
 
     let accountData: Record<string, unknown> = {};
     try {
       const accRes = await this.runCliJson(['auth', 'account'], {
         binaryPath,
+        profile,
         timeoutMs: 12_000,
       });
       accountData = (accRes.data || {}) as Record<string, unknown>;
@@ -1442,8 +1618,15 @@ export class DreaminaMcpEngine {
       // Account fetch optional if status succeeded
     }
 
+    const creditsObj =
+      typeof accountData.credits === 'object' && accountData.credits !== null
+        ? (accountData.credits as Record<string, unknown>)
+        : undefined;
     const rawCredits =
-      accountData.availableCredits ?? accountData.credits ?? accountData.balance;
+      accountData.availableCredits ??
+      creditsObj?.available ??
+      accountData.credits ??
+      accountData.balance;
     let availableCredits: number | undefined;
     if (typeof rawCredits === 'number' && Number.isFinite(rawCredits)) {
       availableCredits = rawCredits;
@@ -1451,6 +1634,28 @@ export class DreaminaMcpEngine {
       const n = Number(rawCredits.replace(/,/g, '').trim());
       if (Number.isFinite(n)) availableCredits = n;
     }
+
+    const rawDetails = Array.isArray(creditsObj?.details) ? creditsObj!.details : [];
+    const nowMs = Date.now();
+    const creditBuckets: DreaminaCreditBucket[] = rawDetails
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null;
+        const rec = item as Record<string, unknown>;
+        const rawAmt = rec.available ?? rec.credits ?? rec.amount;
+        const amt =
+          typeof rawAmt === 'number'
+            ? rawAmt
+            : Number(String(rawAmt || '').replace(/,/g, '').trim());
+        const exp = typeof rec.expiresAt === 'string' ? rec.expiresAt.trim() : '';
+        if (!Number.isFinite(amt) || amt <= 0 || !exp) return null;
+        const expMs = Date.parse(exp);
+        const daysRemaining = Number.isFinite(expMs)
+          ? Math.max(0, Math.ceil((expMs - nowMs) / (24 * 3600_000)))
+          : 0;
+        return { credits: amt, expiresAt: exp, daysRemaining };
+      })
+      .filter((b): b is DreaminaCreditBucket => b !== null)
+      .sort((a, b) => Date.parse(a.expiresAt) - Date.parse(b.expiresAt));
 
     return {
       cliBinaryPath: binaryPath,
@@ -1467,18 +1672,37 @@ export class DreaminaMcpEngine {
         typeof accountData.vipLevel === 'string' && accountData.vipLevel.trim()
           ? accountData.vipLevel.trim()
           : undefined,
-      expiresAt: typeof statusData.expiresAt === 'string' ? statusData.expiresAt : undefined,
+      vipLevelExpiresAt:
+        typeof accountData.vipLevelExpiresAt === 'string' && accountData.vipLevelExpiresAt.trim()
+          ? accountData.vipLevelExpiresAt.trim()
+          : undefined,
+      expiresAt,
+      creditBuckets,
     };
   }
 
-  public async getBalanceInfo(forceRefresh = false): Promise<{
+  public async getBalanceInfo(
+    forceRefresh = false,
+    explicitProfile?: string
+  ): Promise<{
     credits?: number;
     plan?: string;
     account?: string;
     rawText: string;
   } | null> {
+    const profile = this.getActiveProfile(explicitProfile);
+    const activeCfg = this.getActiveConfig(profile);
     const now = Date.now();
-    if (!forceRefresh && this.cachedBalance && now - this.cachedBalance.fetchedAt < 25_000) {
+    const cachedProf = this.profileBalances.get(profile);
+    if (!forceRefresh && cachedProf && now - cachedProf.fetchedAt < 25_000) {
+      return {
+        credits: cachedProf.credits,
+        plan: cachedProf.plan,
+        account: cachedProf.account,
+        rawText: cachedProf.rawText,
+      };
+    }
+    if (profile === 'default' && !forceRefresh && this.cachedBalance && now - this.cachedBalance.fetchedAt < 25_000) {
       return {
         credits: this.cachedBalance.credits,
         plan: this.cachedBalance.plan,
@@ -1487,24 +1711,36 @@ export class DreaminaMcpEngine {
       };
     }
 
-    if (this.config?.mode === 'cli_oauth') {
+    if (activeCfg?.mode === 'cli_oauth') {
       try {
-        const auth = await this.probeCliAuth();
+        const auth = await this.probeCliAuth(profile);
         if (auth.loggedIn) {
           const credits = auth.availableCredits;
           const plan = auth.vipLevel || (auth.isVip ? 'vip' : 'dreamina');
-          const account = auth.displayName || this.config.account;
+          const account = auth.displayName || activeCfg.account;
           const rawText = `${credits !== undefined ? `Credits: ${credits}` : ''}${
             credits !== undefined && plan ? ' | ' : ''
           }${plan ? `Plan: ${plan}` : ''}`.trim();
-          this.cachedBalance = { fetchedAt: now, credits, plan, account, rawText };
-          if (this.config) {
+          this.profileBalances.set(profile, {
+            fetchedAt: now,
+            credits,
+            plan,
+            account,
+            rawText,
+            vipLevelExpiresAt: auth.vipLevelExpiresAt,
+            tokenExpiresAt: auth.expiresAt,
+            buckets: auth.creditBuckets || [],
+          });
+          if (profile === 'default') {
+            this.cachedBalance = { fetchedAt: now, credits, plan, account, rawText };
+          }
+          if (activeCfg) {
             const creditsLabel =
               credits !== undefined ? ` · ${credits.toLocaleString('en-US')} credits` : '';
-            this.config.availableCredits = credits;
-            this.config.vipLevel = plan;
-            this.config.account = `${auth.displayName || 'Dreamina'}${plan ? ` (${plan}${creditsLabel})` : ''}`;
-            this.config.updatedAt = new Date().toISOString();
+            activeCfg.availableCredits = credits;
+            activeCfg.vipLevel = plan;
+            activeCfg.account = `${auth.displayName || 'Dreamina'}${plan ? ` (${plan}${creditsLabel})` : ''}`;
+            activeCfg.updatedAt = new Date().toISOString();
           }
           return { credits, plan, account, rawText };
         }
@@ -1513,7 +1749,15 @@ export class DreaminaMcpEngine {
       }
     }
 
-    if (this.cachedBalance) {
+    if (cachedProf) {
+      return {
+        credits: cachedProf.credits,
+        plan: cachedProf.plan,
+        account: cachedProf.account,
+        rawText: cachedProf.rawText,
+      };
+    }
+    if (profile === 'default' && this.cachedBalance) {
       return {
         credits: this.cachedBalance.credits,
         plan: this.cachedBalance.plan,
@@ -1522,29 +1766,297 @@ export class DreaminaMcpEngine {
       };
     }
 
-    if (this.config?.availableCredits !== undefined || this.config?.vipLevel) {
+    if (activeCfg?.availableCredits !== undefined || activeCfg?.vipLevel) {
       return {
-        credits: this.config.availableCredits,
-        plan: this.config.vipLevel || this.config.mode,
-        account: this.config.account,
+        credits: activeCfg.availableCredits,
+        plan: activeCfg.vipLevel || activeCfg.mode,
+        account: activeCfg.account,
         rawText:
-          this.config.availableCredits !== undefined
-            ? `Credits: ${this.config.availableCredits} | Plan: ${this.config.vipLevel || 'dreamina'}`
-            : `Plan: ${this.config.vipLevel || this.config.mode}`,
+          activeCfg.availableCredits !== undefined
+            ? `Credits: ${activeCfg.availableCredits} | Plan: ${activeCfg.vipLevel || 'dreamina'}`
+            : `Plan: ${activeCfg.vipLevel || activeCfg.mode}`,
       };
     }
 
     return null;
   }
 
+  public async getFullCreditSummary(
+    forceRefresh = false,
+    explicitProfile?: string
+  ): Promise<DreaminaFullCreditSummary> {
+    const profile = this.getActiveProfile(explicitProfile);
+    const activeCfg = this.getActiveConfig(profile);
+    const now = Date.now();
+    const cachedProf = this.profileBalances.get(profile);
+    if (!forceRefresh && cachedProf && now - cachedProf.fetchedAt < 20_000) {
+      return {
+        loggedIn: true,
+        profile,
+        credits: cachedProf.credits,
+        vipLevel: cachedProf.plan,
+        vipLevelExpiresAt: cachedProf.vipLevelExpiresAt,
+        tokenExpiresAt: cachedProf.tokenExpiresAt,
+        account: cachedProf.account,
+        buckets: cachedProf.buckets,
+      };
+    }
+    if (!activeCfg?.connected || activeCfg.mode !== 'cli_oauth') {
+      return { loggedIn: false, profile, buckets: [] };
+    }
+    const auth = await this.probeCliAuth(profile);
+    if (!auth.loggedIn) {
+      return { loggedIn: false, profile, buckets: [] };
+    }
+    const plan = auth.vipLevel || (auth.isVip ? 'vip' : 'dreamina');
+    const rawText = `${auth.availableCredits !== undefined ? `Credits: ${auth.availableCredits}` : ''}${
+      auth.availableCredits !== undefined && plan ? ' | ' : ''
+    }${plan ? `Plan: ${plan}` : ''}`.trim();
+    const buckets = auth.creditBuckets || [];
+    this.profileBalances.set(profile, {
+      fetchedAt: now,
+      credits: auth.availableCredits,
+      plan,
+      account: auth.displayName || activeCfg.account,
+      rawText,
+      vipLevelExpiresAt: auth.vipLevelExpiresAt,
+      tokenExpiresAt: auth.expiresAt,
+      buckets,
+    });
+    if (profile === 'default') {
+      this.cachedBalance = {
+        fetchedAt: now,
+        credits: auth.availableCredits,
+        plan,
+        account: auth.displayName || activeCfg.account,
+        rawText,
+      };
+    }
+    return {
+      loggedIn: true,
+      profile,
+      credits: auth.availableCredits,
+      vipLevel: plan,
+      vipLevelExpiresAt: auth.vipLevelExpiresAt,
+      tokenExpiresAt: auth.expiresAt,
+      account: auth.displayName || activeCfg.account,
+      buckets,
+    };
+  }
+
+  public async downloadResourceRawToMediaDir(
+    projectId: string,
+    resourceId: string,
+    modality: 'image' | 'video' | 'audio' = 'image',
+    explicitProfile?: string
+  ): Promise<string> {
+    const profile = this.getActiveProfile(explicitProfile);
+    return await this.runWithProfile(profile, () =>
+      this.downloadResourceToMediaDir(projectId, resourceId, modality)
+    );
+  }
+
+  public async listRecentCloudAssets(
+    forceRefresh = false,
+    explicitProfile?: string
+  ): Promise<DreaminaCloudAssetItem[]> {
+    const profile = this.getActiveProfile(explicitProfile);
+    const now = Date.now();
+    const cached = this.recentAssetsCacheByProfile.get(profile);
+    if (!forceRefresh && cached && now - cached.fetchedAt < 20_000) {
+      return cached.items;
+    }
+
+    const activeCfg = this.getActiveConfig(profile);
+    if (!activeCfg?.connected || activeCfg.mode !== 'cli_oauth') {
+      return [];
+    }
+
+    return await this.runWithProfile(profile, async () => {
+      try {
+        const canvasesRes = await this.runCliJson(['canvas', 'ls', '--limit', '3'], {
+          profile,
+          timeoutMs: 15_000,
+        });
+        const canvasesData = (canvasesRes.data || {}) as Record<string, unknown>;
+        const canvasItems = (Array.isArray(canvasesData.items) ? canvasesData.items : []) as Array<
+          Record<string, unknown>
+        >;
+        const projectIds: string[] = [];
+        if (activeCfg.projectId) projectIds.push(activeCfg.projectId);
+        for (const c of canvasItems) {
+          const pid = typeof c.projectId === 'string' ? c.projectId.trim() : '';
+          if (pid && !projectIds.includes(pid)) projectIds.push(pid);
+        }
+
+        const collected: DreaminaCloudAssetItem[] = [];
+        for (const pid of projectIds.slice(0, 2)) {
+          const findRes = await this.runCliJson(
+            ['node', 'find', '--project-id', pid, '--status', 'success', '--limit', '12'],
+            { profile, timeoutMs: 15_000 }
+          );
+          const findItems = (Array.isArray((findRes.data as Record<string, unknown> | undefined)?.items)
+            ? (findRes.data as Record<string, unknown>).items
+            : []) as Array<Record<string, unknown>>;
+          const nodeIds = findItems
+            .filter((n) => ['image', 'video', 'audio'].includes(String(n.type || '')))
+            .map((n) => String(n.nodeId || '').trim())
+            .filter(Boolean)
+            .slice(0, 8);
+          if (nodeIds.length === 0) continue;
+
+          const showRes = await this.runCliJson(
+            ['node', 'show', '--project-id', pid, ...nodeIds.flatMap((id) => ['--node-id', id])],
+            { profile, timeoutMs: 20_000 }
+          );
+          const showNodes = (Array.isArray((showRes.data as Record<string, unknown> | undefined)?.nodes)
+            ? (showRes.data as Record<string, unknown>).nodes
+            : []) as Array<Record<string, unknown>>;
+
+          for (const wrap of showNodes) {
+            const node = (wrap.node && typeof wrap.node === 'object' ? wrap.node : wrap) as Record<
+              string,
+              unknown
+            >;
+            const resources = Array.isArray(node.resources)
+              ? (node.resources as Array<Record<string, unknown>>)
+              : [];
+            const gen = (node.generation && typeof node.generation === 'object'
+              ? node.generation
+              : {}) as Record<string, unknown>;
+            for (const r of resources) {
+              const rid = typeof r.resourceId === 'string' ? r.resourceId.trim() : '';
+              const rType = String(r.type || node.type || 'image').toLowerCase();
+              const kind: 'image' | 'video' | 'audio' =
+                rType === 'video' ? 'video' : rType === 'audio' ? 'audio' : 'image';
+              if (!rid) continue;
+              const directUrl =
+                typeof r.url === 'string' && /^https?:\/\//i.test(r.url)
+                  ? r.url
+                  : `/api/assets/dreamina-resource?projectId=${encodeURIComponent(
+                      pid
+                    )}&resourceId=${encodeURIComponent(rid)}&modality=${kind}`;
+              const createdMs = Number(r.createdAt || 0);
+              const createdIso =
+                Number.isFinite(createdMs) && createdMs > 1_000_000_000_000
+                  ? new Date(createdMs > 1_750_000_000_000 ? Date.now() : createdMs).toISOString()
+                  : new Date().toISOString();
+              collected.push({
+                id: `drm_${rid}`,
+                title: String(node.title || gen.prompt || `Dreamina ${kind}`).slice(0, 60),
+                kind,
+                url: directUrl,
+                ...(kind === 'image' ? { thumbnailUrl: directUrl } : {}),
+                resourceId: rid,
+                projectId: pid,
+                createdAt: createdIso,
+                prompt: typeof gen.prompt === 'string' ? gen.prompt : undefined,
+                model: typeof gen.model === 'string' ? gen.model : undefined,
+                creditsAmount: typeof r.creditsAmount === 'number' ? r.creditsAmount : undefined,
+              });
+            }
+          }
+        }
+
+        this.recentAssetsCacheByProfile.set(profile, { fetchedAt: now, items: collected });
+        return collected;
+      } catch {
+        return cached?.items || [];
+      }
+    });
+  }
+
+  public async quoteCliCost(params: {
+    modality: 'image' | 'video' | 'audio';
+    modelId: string;
+    prompt?: string;
+    aspectRatio?: string;
+    resolution?: string;
+    durationSec?: number;
+    batchCount?: number;
+    profile?: string;
+  }): Promise<number | null> {
+    const profile = this.getActiveProfile(params.profile);
+    const activeCfg = this.getActiveConfig(profile);
+    if (!activeCfg?.connected || activeCfg.mode !== 'cli_oauth') return null;
+    return await this.runWithProfile(profile, async () => {
+      const sdk = await this.deps.loadProviderSdk();
+      const mapToCli =
+        typeof sdk.mapCanonicalDreaminaToCliModel === 'function'
+          ? (sdk.mapCanonicalDreaminaToCliModel as (r?: string, m?: 'image' | 'video' | 'audio') => string)
+          : defaultCliModelForCanonical;
+      const cliModel = mapToCli(params.modelId, params.modality);
+      const pid = await this.ensureWorkspaceProjectId();
+      const mode =
+        params.modality === 'image' ? 't2i' : params.modality === 'audio' ? 'tts' : 't2v';
+      const args = [
+        'node',
+        'create',
+        params.modality,
+        '--project-id',
+        pid,
+        '--mode',
+        mode,
+        '--model',
+        cliModel,
+        '--prompt',
+        params.prompt || 'Quote check scene',
+        ...(params.aspectRatio ? ['--ratio', params.aspectRatio] : []),
+        ...(params.resolution ? ['--resolution', params.resolution] : []),
+        ...(params.modality === 'video' && params.durationSec
+          ? ['--duration', String(Math.round(params.durationSec))]
+          : []),
+        ...(params.modality === 'image' && params.batchCount
+          ? ['--count', String(Math.max(1, Math.min(8, Math.round(params.batchCount))))]
+          : []),
+      ];
+      let createdNodeId = '';
+      try {
+        const cr = await this.runCliJson(args, { profile, timeoutMs: 25_000 });
+        createdNodeId = String((cr.data as Record<string, unknown> | undefined)?.nodeId || '').trim();
+        if (!createdNodeId) return null;
+        const qt = await this.runCliJson(
+          ['node', 'quote', '--project-id', pid, '--node-id', createdNodeId],
+          { profile, timeoutMs: 20_000 }
+        );
+        const qtData = (qt.data || {}) as Record<string, unknown>;
+        const est = Number(qtData.estimatedCredits ?? qtData.credits ?? qtData.totalMaxCredits);
+        return Number.isFinite(est) ? est : null;
+      } catch {
+        return null;
+      } finally {
+        if (createdNodeId) {
+          void this.runCliJson(
+            [
+              'node',
+              'delete',
+              'confirm',
+              '--project-id',
+              pid,
+              '--node-id',
+              createdNodeId,
+              '--update-id',
+              crypto.randomUUID(),
+            ],
+            { profile, timeoutMs: 15_000 }
+          ).catch(() => {});
+        }
+      }
+    });
+  }
+
   public async connect(params: {
     mode?: string;
+    profile?: string;
     force?: boolean;
     sessionIdCookie?: string;
     arkApiKey?: string;
     arkEndpoint?: string;
     launchBrowser?: boolean;
   }): Promise<DreaminaMcpSession> {
+    const profile = this.getActiveProfile(params.profile);
+    const serverId =
+      profile === 'default' ? DREAMINA_MCP_SERVER_ID : `${DREAMINA_MCP_SERVER_ID}__${profile}`;
     const rawMode = String(params.mode || '').trim().toLowerCase();
     const mode: DreaminaConnectionMode =
       rawMode === 'ark_api_key' || rawMode === 'api_key' || rawMode === 'ark'
@@ -1561,8 +2073,12 @@ export class DreaminaMcpEngine {
     const session: DreaminaMcpSession = {
       sessionId,
       platformId: 'dreamina',
-      serverId: DREAMINA_MCP_SERVER_ID,
-      serverName: 'Dreamina MCP (CLI Engine · Seedream & Seedance)',
+      profile,
+      serverId,
+      serverName:
+        profile === 'default'
+          ? 'Dreamina MCP (CLI Engine · Seedream & Seedance)'
+          : `Dreamina MCP (${profile})`,
       mode,
       step: 'initializing',
       authorizeUrl: DREAMINA_STUDIO_URL,
@@ -1595,9 +2111,8 @@ export class DreaminaMcpEngine {
         connectedAt: now,
         updatedAt: now,
       };
-      this.config = cfg;
-      this.writeConfigToDisk(cfg);
-      this.registerVirtualServer();
+      this.setActiveConfig(cfg, profile);
+      this.registerVirtualServer(profile);
 
       session.step = 'connected';
       session.account = this.buildAccountInfo(cfg);
@@ -1625,9 +2140,8 @@ export class DreaminaMcpEngine {
         connectedAt: now,
         updatedAt: now,
       };
-      this.config = cfg;
-      this.writeConfigToDisk(cfg);
-      this.registerVirtualServer();
+      this.setActiveConfig(cfg, profile);
+      this.registerVirtualServer(profile);
 
       session.step = 'connected';
       session.account = this.buildAccountInfo(cfg);
@@ -1655,9 +2169,9 @@ export class DreaminaMcpEngine {
           connectedAt: now,
           updatedAt: now,
         };
-        this.config = cfg;
-        this.writeConfigToDisk(cfg);
-        this.registerVirtualServer();
+        const sessProfile = session.profile || 'default';
+        this.setActiveConfig(cfg, sessProfile);
+        this.registerVirtualServer(sessProfile);
 
         session.step = 'connected';
         session.account = this.buildAccountInfo(cfg);
@@ -1687,19 +2201,19 @@ export class DreaminaMcpEngine {
       session.cliVersion = version;
 
       if (!params.force) {
-        const existingAuth = await this.probeCliAuth();
+        const existingAuth = await this.probeCliAuth(profile);
         if (existingAuth.loggedIn) {
           return await this.finalizeCliConnectedSession(session, existingAuth, now);
         }
       }
 
       const loginArgs = ['auth', 'login', ...(params.force ? ['--force'] : [])];
-      const loginRes = await this.runCliJson(loginArgs, { binaryPath, timeoutMs: 20_000 });
+      const loginRes = await this.runCliJson(loginArgs, { binaryPath, profile, timeoutMs: 20_000 });
       const loginData = (loginRes.data || {}) as Record<string, unknown>;
       const loginStatus = String(loginData.status || '').toLowerCase();
 
       if (loginStatus === 'logged_in') {
-        const freshAuth = await this.probeCliAuth();
+        const freshAuth = await this.probeCliAuth(profile);
         return await this.finalizeCliConnectedSession(session, freshAuth, now);
       }
 
@@ -1737,12 +2251,13 @@ export class DreaminaMcpEngine {
           ];
           const waitRes = await this.runCliJson(waitArgs, {
             binaryPath,
+            profile,
             timeoutMs: 315_000,
           });
           const waitData = (waitRes.data || {}) as Record<string, unknown>;
           const waitStatus = String(waitData.status || '').toLowerCase();
           if (waitStatus === 'logged_in' || waitRes.ok === true) {
-            const verifiedAuth = await this.probeCliAuth();
+            const verifiedAuth = await this.probeCliAuth(profile);
             if (verifiedAuth.loggedIn) {
               await this.finalizeCliConnectedSession(session, verifiedAuth, new Date().toISOString());
               return;
@@ -1775,6 +2290,8 @@ export class DreaminaMcpEngine {
     auth: DreaminaCliAuthProbe,
     connectedAtIso: string
   ): Promise<DreaminaMcpSession> {
+    const profile = this.getActiveProfile(session.profile);
+    const prevCfg = this.getActiveConfig(profile);
     const creditsLabel =
       auth.availableCredits !== undefined
         ? ` · ${auth.availableCredits.toLocaleString('en-US')} credits`
@@ -1791,23 +2308,35 @@ export class DreaminaMcpEngine {
       availableCredits: auth.availableCredits,
       cliBinaryPath: auth.cliBinaryPath,
       cliVersion: auth.cliVersion,
-      projectId: this.config?.projectId,
-      connectedAt: this.config?.connectedAt || connectedAtIso,
+      projectId: prevCfg?.projectId,
+      connectedAt: prevCfg?.connectedAt || connectedAtIso,
       updatedAt: connectedAtIso,
     };
-    this.config = cfg;
-    this.writeConfigToDisk(cfg);
-    this.registerVirtualServer();
-    this.cachedBalance = {
+    this.setActiveConfig(cfg, profile);
+    this.registerVirtualServer(profile);
+    const rawText =
+      auth.availableCredits !== undefined
+        ? `Credits: ${auth.availableCredits}${auth.vipLevel ? ` | Plan: ${auth.vipLevel}` : ''}`
+        : `Plan: ${auth.vipLevel || 'dreamina'}`;
+    this.profileBalances.set(profile, {
       fetchedAt: Date.now(),
       credits: auth.availableCredits,
       plan: auth.vipLevel || 'dreamina',
       account: auth.displayName || accountLabel,
-      rawText:
-        auth.availableCredits !== undefined
-          ? `Credits: ${auth.availableCredits}${auth.vipLevel ? ` | Plan: ${auth.vipLevel}` : ''}`
-          : `Plan: ${auth.vipLevel || 'dreamina'}`,
-    };
+      rawText,
+      vipLevelExpiresAt: auth.vipLevelExpiresAt,
+      tokenExpiresAt: auth.expiresAt,
+      buckets: auth.creditBuckets || [],
+    });
+    if (profile === 'default') {
+      this.cachedBalance = {
+        fetchedAt: Date.now(),
+        credits: auth.availableCredits,
+        plan: auth.vipLevel || 'dreamina',
+        account: auth.displayName || accountLabel,
+        rawText,
+      };
+    }
 
     session.step = 'connected';
     session.account = this.buildAccountInfo(cfg);
@@ -1815,7 +2344,10 @@ export class DreaminaMcpEngine {
       ...(auth.availableCredits !== undefined ? { credits: auth.availableCredits } : {}),
       ...(auth.vipLevel ? { plan: auth.vipLevel } : {}),
       ...(auth.displayName ? { account: auth.displayName } : {}),
-      rawText: this.cachedBalance.rawText,
+      rawText:
+        this.profileBalances.get(profile)?.rawText ||
+        this.cachedBalance?.rawText ||
+        (auth.availableCredits !== undefined ? `Credits: ${auth.availableCredits}` : ''),
     };
     session.tools = DREAMINA_TOOLS.map((t) => ({ name: t.name, description: t.description }));
     session.availableCredits = auth.availableCredits;
@@ -1847,9 +2379,9 @@ export class DreaminaMcpEngine {
           connectedAt: now,
           updatedAt: now,
         };
-        this.config = cfg;
-        this.writeConfigToDisk(cfg);
-        this.registerVirtualServer();
+        const sessProfile = session.profile || 'default';
+        this.setActiveConfig(cfg, sessProfile);
+        this.registerVirtualServer(sessProfile);
 
         session.step = 'connected';
         session.account = this.buildAccountInfo(cfg);
@@ -1862,15 +2394,21 @@ export class DreaminaMcpEngine {
     return { ...session };
   }
 
-  public async disconnect(): Promise<{ ok: true; disconnected: boolean }> {
+  public async disconnect(explicitProfile?: string): Promise<{ ok: true; disconnected: boolean }> {
+    const profile = this.getActiveProfile(explicitProfile);
+    const serverId =
+      profile === 'default' ? DREAMINA_MCP_SERVER_ID : `${DREAMINA_MCP_SERVER_ID}__${profile}`;
+    const activeCfg = this.getActiveConfig(profile);
     const wasConnected =
-      Boolean(this.config?.connected) ||
-      this.deps.externalMcpHost.listServers().some((s) => s.id === DREAMINA_MCP_SERVER_ID);
-    this.config = null;
-    this.cachedBalance = null;
-    this.refUploadCache.clear();
-    this.clearConfigFromDisk();
-    this.deps.externalMcpHost.unregisterVirtualServer(DREAMINA_MCP_SERVER_ID);
+      Boolean(activeCfg?.connected) ||
+      this.deps.externalMcpHost.listServers().some((s) => s.id === serverId);
+    this.setActiveConfig(null, profile);
+    this.profileBalances.delete(profile);
+    if (profile === 'default') {
+      this.cachedBalance = null;
+      this.refUploadCache.clear();
+    }
+    this.deps.externalMcpHost.unregisterVirtualServer(serverId);
     return { ok: true, disconnected: wasConnected };
   }
 
@@ -1880,7 +2418,7 @@ export class DreaminaMcpEngine {
       return fs.existsSync(process.env.DREAMFLOW_DREAMINA_BINARY_PATH.trim());
     }
     if (this.cachedCliPath && fs.existsSync(this.cachedCliPath)) return true;
-    if (this.config?.mode === 'cli_oauth') return true;
+    if (this.getActiveConfig()?.mode === 'cli_oauth') return true;
     const candidates = [
       path.join(os.homedir(), '.open-dreamflow', 'bin', 'dreamina-canvas'),
       path.join(os.homedir(), '.local', 'bin', 'dreamina-canvas'),
@@ -2021,8 +2559,10 @@ export class DreaminaMcpEngine {
   }
 
   private async ensureWorkspaceProjectId(): Promise<string> {
-    if (this.config?.projectId && /^[0-9a-f-]{8,}$/i.test(this.config.projectId)) {
-      return this.config.projectId;
+    const activeProfile = this.getActiveProfile();
+    const activeCfg = this.getActiveConfig(activeProfile);
+    if (activeCfg?.projectId && /^[0-9a-f-]{8,}$/i.test(activeCfg.projectId)) {
+      return activeCfg.projectId;
     }
 
     try {
@@ -2040,10 +2580,10 @@ export class DreaminaMcpEngine {
       );
       if (existing && typeof existing.projectId === 'string' && existing.projectId.trim()) {
         const pid = existing.projectId.trim();
-        if (this.config) {
-          this.config.projectId = pid;
-          this.config.updatedAt = new Date().toISOString();
-          this.writeConfigToDisk(this.config);
+        if (activeCfg) {
+          activeCfg.projectId = pid;
+          activeCfg.updatedAt = new Date().toISOString();
+          this.setActiveConfig(activeCfg, activeProfile);
         }
         return pid;
       }
@@ -2060,10 +2600,11 @@ export class DreaminaMcpEngine {
     const projectId =
       String(createData.projectId || (createData.canvas as Record<string, unknown> | undefined)?.projectId || clientProjectId).trim();
 
-    if (this.config) {
-      this.config.projectId = projectId;
-      this.config.updatedAt = new Date().toISOString();
-      this.writeConfigToDisk(this.config);
+    const updatedCfg = this.getActiveConfig(activeProfile);
+    if (updatedCfg) {
+      updatedCfg.projectId = projectId;
+      updatedCfg.updatedAt = new Date().toISOString();
+      this.setActiveConfig(updatedCfg, activeProfile);
     }
     return projectId;
   }
@@ -2907,10 +3448,11 @@ export class DreaminaMcpEngine {
       const pid = strArg(args.project_id);
       if (!pid) return errToolResult('dreamina_canvas_use requires project_id.');
       const res = await this.runCliJson(['canvas', 'use', pid], { timeoutMs: 20_000 });
-      if (this.config) {
-        this.config.projectId = pid;
-        this.config.updatedAt = new Date().toISOString();
-        this.writeConfigToDisk(this.config);
+      const activeCfg = this.getActiveConfig();
+      if (activeCfg) {
+        activeCfg.projectId = pid;
+        activeCfg.updatedAt = new Date().toISOString();
+        this.setActiveConfig(activeCfg);
       }
       return okToolResult({ ok: true, projectId: pid, data: res.data || res });
     }
@@ -2931,10 +3473,11 @@ export class DreaminaMcpEngine {
       const createdPid = String(
         data.projectId || (data.canvas as Record<string, unknown> | undefined)?.projectId || pid || ''
       ).trim();
-      if (args.use && createdPid && this.config) {
-        this.config.projectId = createdPid;
-        this.config.updatedAt = new Date().toISOString();
-        this.writeConfigToDisk(this.config);
+      const activeCfg = this.getActiveConfig();
+      if (args.use && createdPid && activeCfg) {
+        activeCfg.projectId = createdPid;
+        activeCfg.updatedAt = new Date().toISOString();
+        this.setActiveConfig(activeCfg);
       }
       return okToolResult({ ok: true, projectId: createdPid, data });
     }
@@ -3487,36 +4030,38 @@ export class DreaminaMcpEngine {
     }
 
     if (toolName === 'dreamina_session_status' || toolName === 'balance') {
+      const activeCfg = this.getActiveConfig();
       const [probe, balance] = await Promise.all([
         this.deps.checkBrowserStatus(),
         this.getBalanceInfo(toolName === 'balance'),
       ]);
-      const mode = this.config?.mode || 'cli_oauth';
+      const mode = activeCfg?.mode || 'cli_oauth';
       const hasApiKey = Boolean(
-        this.config?.arkApiKey || process.env.ARK_API_KEY || process.env.SEEDANCE_API_KEY
+        activeCfg?.arkApiKey || process.env.ARK_API_KEY || process.env.SEEDANCE_API_KEY
       );
       const browserHonestlyLoggedIn =
         probe.extensionTabActive || (probe.cdpDreaminaOpen && Boolean(probe.cdpDreaminaLoggedIn));
       const payload = {
         ok: true,
-        connected: Boolean(this.config?.connected || browserHonestlyLoggedIn || hasApiKey),
+        connected: Boolean(activeCfg?.connected || browserHonestlyLoggedIn || hasApiKey),
         mode,
-        account: balance?.account || this.config?.account || 'Dreamina MCP',
+        profile: this.getActiveProfile(),
+        account: balance?.account || activeCfg?.account || 'Dreamina MCP',
         credits: balance?.credits,
         balance: balance?.credits,
         availableCredits: balance?.credits,
         plan:
           balance?.plan ||
-          this.config?.vipLevel ||
+          activeCfg?.vipLevel ||
           (mode === 'ark_api_key' ? 'BytePlus ModelArk' : 'Dreamina Subscription'),
-        vipLevel: this.config?.vipLevel,
-        projectId: this.config?.projectId,
-        cliVersion: this.config?.cliVersion,
+        vipLevel: activeCfg?.vipLevel,
+        projectId: activeCfg?.projectId,
+        cliVersion: activeCfg?.cliVersion,
         browserExtensionActive: probe.extensionTabActive,
         cdpDreaminaOpen: probe.cdpDreaminaOpen,
         cdpDreaminaLoggedIn: Boolean(probe.cdpDreaminaLoggedIn),
         hasArkApiKey: hasApiKey,
-        hasSessionCookie: Boolean(this.config?.sessionIdCookie),
+        hasSessionCookie: Boolean(activeCfg?.sessionIdCookie),
       };
       return {
         structuredContent: payload,
@@ -3558,7 +4103,8 @@ export class DreaminaMcpEngine {
           : undefined;
 
       // Primary Path 1: Official `dreamina-canvas` 1.3.0 CLI Engine (`cli_oauth`)
-      if (this.config?.mode === 'cli_oauth') {
+      const activeCfg = this.getActiveConfig();
+      if (activeCfg?.mode === 'cli_oauth') {
         const projectId = await this.ensureWorkspaceProjectId();
         const cliModel = mapToCliModel(canonicalModel, 'image');
         const liveSpecs = await this.getLiveCliModels('image');
@@ -3646,10 +4192,10 @@ export class DreaminaMcpEngine {
 
       // Path 2: BytePlus ModelArk API Key (`ark_api_key`)
       const effectiveArkKey = String(
-        this.config?.arkApiKey || process.env.ARK_API_KEY || process.env.SEEDANCE_API_KEY || ''
+        activeCfg?.arkApiKey || process.env.ARK_API_KEY || process.env.SEEDANCE_API_KEY || ''
       ).trim();
 
-      if (this.config?.mode === 'ark_api_key' || effectiveArkKey) {
+      if (activeCfg?.mode === 'ark_api_key' || effectiveArkKey) {
         const SeedanceClientCtor = sdk.SeedanceClient as new (cfg: {
           apiKey: string;
           baseUrl?: string;
@@ -3662,7 +4208,7 @@ export class DreaminaMcpEngine {
           }>;
         };
         const client = new SeedanceClientCtor({ apiKey: effectiveArkKey });
-        const arkModel = mapCanonicalDreaminaToArkModel(canonicalModel, this.config);
+        const arkModel = mapCanonicalDreaminaToArkModel(canonicalModel, activeCfg);
         const firstOut = await client.generateImage({
           model: arkModel,
           prompt,
@@ -3724,7 +4270,7 @@ export class DreaminaMcpEngine {
       const probe = await this.deps.checkBrowserStatus();
       const browserHonestlyLoggedIn =
         probe.extensionTabActive || (probe.cdpDreaminaOpen && Boolean(probe.cdpDreaminaLoggedIn));
-      if (this.config?.mode === 'browser' && browserHonestlyLoggedIn) {
+      if (activeCfg?.mode === 'browser' && browserHonestlyLoggedIn) {
         const bridgeOut = await this.deps.runBrowserGeneration({
           target: 'dreamina',
           mode: 'image',
@@ -3815,7 +4361,8 @@ export class DreaminaMcpEngine {
           : undefined;
 
       // Primary Path 1: Official `dreamina-canvas` 1.3.0 CLI Engine (`cli_oauth`)
-      if (this.config?.mode === 'cli_oauth') {
+      const activeCfg = this.getActiveConfig();
+      if (activeCfg?.mode === 'cli_oauth') {
         const projectId = await this.ensureWorkspaceProjectId();
         const cliModel = mapToCliModel(canonicalModel, 'video');
         const liveSpecs = await this.getLiveCliModels('video');
@@ -3942,10 +4489,10 @@ export class DreaminaMcpEngine {
 
       // Path 2: BytePlus ModelArk API Key (`ark_api_key`)
       const effectiveArkKey = String(
-        this.config?.arkApiKey || process.env.ARK_API_KEY || process.env.SEEDANCE_API_KEY || ''
+        activeCfg?.arkApiKey || process.env.ARK_API_KEY || process.env.SEEDANCE_API_KEY || ''
       ).trim();
 
-      if (this.config?.mode === 'ark_api_key' || effectiveArkKey) {
+      if (activeCfg?.mode === 'ark_api_key' || effectiveArkKey) {
         const SeedanceClientCtor = sdk.SeedanceClient as new (cfg: {
           apiKey: string;
           baseUrl?: string;
@@ -3959,7 +4506,7 @@ export class DreaminaMcpEngine {
         };
         const client = new SeedanceClientCtor({ apiKey: effectiveArkKey });
         const out = await client.generateVideo({
-          model: mapCanonicalDreaminaToArkModel(canonicalModel, this.config),
+          model: mapCanonicalDreaminaToArkModel(canonicalModel, activeCfg),
           prompt,
           aspectRatio,
           resolution,
@@ -3988,7 +4535,7 @@ export class DreaminaMcpEngine {
       const probe = await this.deps.checkBrowserStatus();
       const browserHonestlyLoggedIn =
         probe.extensionTabActive || (probe.cdpDreaminaOpen && Boolean(probe.cdpDreaminaLoggedIn));
-      if (this.config?.mode === 'browser' && browserHonestlyLoggedIn) {
+      if (activeCfg?.mode === 'browser' && browserHonestlyLoggedIn) {
         const allRefs = [startImageUrl, ...refImages, endImageUrl].filter((x): x is string =>
           Boolean(x)
         );
@@ -4039,7 +4586,7 @@ export class DreaminaMcpEngine {
           content: [{ type: 'text', text: 'dreamina_generate_audio requires a non-empty prompt.' }],
         };
       }
-      if (this.config?.mode !== 'cli_oauth') {
+      if (this.getActiveConfig()?.mode !== 'cli_oauth') {
         return {
           isError: true,
           content: [
