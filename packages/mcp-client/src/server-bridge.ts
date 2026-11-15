@@ -476,8 +476,11 @@ async function computeFileCrc32AndSize(filePath: string): Promise<{ crc: number;
 
 function sanitizeDownloadStem(rawTitle: string | undefined, fallbackStem: string): string {
   const stripped = String(rawTitle || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
     .trim()
     .replace(/\.(png|jpe?g|webp|avif|gif|mp4|mov|webm|mp3|wav|ogg|flac)$/i, '')
+    .replace(/[^\x20-\x7E]+/g, '-')
     .replace(/[<>:"/\\|?*\x00-\x1F]+/g, ' ')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
