@@ -48,6 +48,7 @@ export type ResolutionTier =
   | '768sq'
   | '1080p'
   | '2160p'
+  | '0.5K'
   | '1K'
   | '1.5K'
   | '2K'
@@ -105,6 +106,14 @@ export interface PlatformModelDefinition {
   providerFamily?: string;
   supportsUnlim?: boolean;
   supportsStartEndFrames?: boolean;
+  supportsSingleStartFrame?: boolean;
+  supportsTailFrame?: boolean;
+  supportsOmniRef?: boolean;
+  supportsVideoRef?: boolean;
+  supportsAudioRef?: boolean;
+  supportsMotionControl?: boolean;
+  supportsNativeAudio?: boolean;
+  audioToggleModes?: Array<'t2v' | 'start-end' | 'multi-ref'>;
   mediaRoles?: string[];
   aspectRatios?: string[];
   resolutions?: string[];

@@ -1516,6 +1516,9 @@ export class ExternalMcpHost {
       visited.add(obj);
 
       const urlKeys: Array<{ key: string; hint?: 'image' | 'video' | 'audio'; deferred?: boolean }> = [
+        { key: 'urlWithoutWatermark' },
+        { key: 'url_without_watermark' },
+        { key: 'watermarkFreeUrl' },
         { key: 'rawUrl' },
         { key: 'raw_url' },
         { key: 'downloadUrl' },
@@ -1530,6 +1533,12 @@ export class ExternalMcpHost {
         { key: 'media_url' },
         { key: 'dataUrl' },
         { key: 'url' },
+        { key: 'coverUrl', deferred: true },
+        { key: 'cover_url', deferred: true },
+        { key: 'thumbnailUrl', deferred: true },
+        { key: 'thumbnail_url', deferred: true },
+        { key: 'posterUrl', deferred: true },
+        { key: 'poster_url', deferred: true },
         { key: 'minUrl', deferred: true },
         { key: 'min_url', deferred: true },
       ];
@@ -1542,6 +1551,9 @@ export class ExternalMcpHost {
             ...(deferred ? { isThumbnail: true } : {}),
           });
         }
+      }
+      if (typeof obj.resource === 'string' && /^https?:\/\//i.test(obj.resource.trim())) {
+        candidates.push({ source: obj.resource.trim() });
       }
 
       const b64Keys: Array<{ key: string; mime: string; hint: 'image' | 'video' | 'audio' }> = [
@@ -1579,7 +1591,21 @@ export class ExternalMcpHost {
       if (Array.isArray(obj.videos)) {
         inspectNestedValue(obj.videos, 'video');
       }
-      for (const nestedKey of ['generation', 'results', 'outputs', 'items', 'data', 'works']) {
+      for (const nestedKey of [
+        'generation',
+        'results',
+        'result',
+        'outputs',
+        'items',
+        'data',
+        'tasks',
+        'task',
+        'works',
+        'work',
+        'resources',
+        'resource',
+        'media',
+      ]) {
         const nestedVal = obj[nestedKey];
         if (nestedVal && typeof nestedVal === 'object') {
           inspectNestedValue(nestedVal);

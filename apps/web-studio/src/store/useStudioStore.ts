@@ -6399,6 +6399,38 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         externalMcpServers
       ) || platformId;
 
+    const canOmniRef =
+      chosenModel?.supportsReferences !== false && chosenModel?.supportsOmniRef !== false;
+    const canStartEndFrame =
+      chosenModel?.supportsStartEndFrames !== false || Boolean(chosenModel?.supportsSingleStartFrame);
+    const nextReferenceFrameMode =
+      modality !== 'video'
+        ? undefined
+        : target.referenceFrameMode === 'multi-ref'
+        ? canOmniRef
+          ? 'multi-ref'
+          : canStartEndFrame
+          ? 'start-end'
+          : undefined
+        : target.referenceFrameMode === 'start-end'
+        ? canStartEndFrame
+          ? 'start-end'
+          : canOmniRef
+          ? 'multi-ref'
+          : undefined
+        : target.referenceFrameMode;
+
+    const nextAudioEnabled =
+      modality === 'video'
+        ? chosenModel?.supportsAudio === false ||
+          chosenModel?.supportsNativeAudio === false ||
+          (platformId === 'kling' &&
+            resolvedModelId === 'kling-video-v2_6' &&
+            String(nextResolution).toLowerCase() === '720p')
+          ? false
+          : target.audioEnabled
+        : target.audioEnabled;
+
     set((s) => ({
       lastImagePlatformId: modality === 'image' ? platformId : s.lastImagePlatformId,
       lastVideoPlatformId: modality === 'video' ? platformId : s.lastVideoPlatformId,
@@ -6416,6 +6448,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               resolution: nextResolution,
               durationSec: nextDurationSec,
               quality: nextQuality,
+              referenceFrameMode: nextReferenceFrameMode,
+              audioEnabled: nextAudioEnabled,
               modelParams: Object.keys(nextModelParams).length > 0 ? nextModelParams : undefined,
               audioMode:
                 modality === 'audio' && resolvedModelId.includes('sound')
@@ -6968,14 +7002,28 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const referenceHandlesList = Array.from(handleMap.values());
 
     // Infer whether this video node is First/Last-Frame (`start-end`) vs Omni Reference-to-Video (`multi-ref`)
+    const activeExecPlatDef = state.platformsCatalog.find((p) => p.id === platformId);
+    const activeExecModelDef = activeExecPlatDef?.models.find((m) => m.id === modelId);
+    const canExecOmni = activeExecModelDef?.supportsOmniRef !== false;
+    const canExecKeyframe =
+      activeExecModelDef?.supportsStartEndFrames !== false ||
+      Boolean(activeExecModelDef?.supportsSingleStartFrame);
+    const canExecTail =
+      activeExecModelDef?.supportsStartEndFrames !== false &&
+      activeExecModelDef?.supportsTailFrame !== false;
+
     const explicitModeParam = String(node.modelParams?.mode || '').toLowerCase();
+    const isExplicitT2vOverride =
+      modality === 'video' && (explicitModeParam === 't2v' || explicitModeParam === 'text-to-video');
     const hasPromptAtTag = /@[A-Za-z0-9_]+/.test(effectivePrompt);
     const hasUpstreamElementNode = upstreamNodes.some(
       (up) => up.kind === 'element' && Boolean(up.imageUrl)
     );
-    const effectiveReferenceFrameMode: 'multi-ref' | 'start-end' | undefined =
+    const rawInferredFrameMode: 'multi-ref' | 'start-end' | undefined =
       modality !== 'video'
         ? node.referenceFrameMode
+        : isExplicitT2vOverride
+        ? undefined
         : explicitModeParam === 'first_last_frame' || explicitModeParam === 'image-to-video'
         ? 'start-end'
         : explicitModeParam === 'm2v' ||
@@ -6988,18 +7036,40 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         : imageRefsList.length > 0 &&
           (hasPromptAtTag || hasUpstreamElementNode || imageRefsList.length >= 2)
         ? 'multi-ref'
+        : imageRefsList.length > 0
+        ? 'start-end'
         : undefined;
 
-    const effectiveStartImg =
-      node.startImageUrl ||
-      (effectiveReferenceFrameMode === 'start-end' && imageRefsList.length >= 1
-        ? imageRefsList[0]
-        : undefined);
+    const effectiveReferenceFrameMode: 'multi-ref' | 'start-end' | undefined =
+      modality !== 'video' || !rawInferredFrameMode
+        ? rawInferredFrameMode
+        : rawInferredFrameMode === 'multi-ref' && !canExecOmni
+        ? canExecKeyframe
+          ? 'start-end'
+          : undefined
+        : rawInferredFrameMode === 'start-end' && !canExecKeyframe
+        ? canExecOmni
+          ? 'multi-ref'
+          : undefined
+        : rawInferredFrameMode;
+
+    const finalImageRefsList = isExplicitT2vOverride ? [] : imageRefsList;
+    const finalVideoRefsList = isExplicitT2vOverride ? [] : videoRefsList;
+    const finalAudioRefsList = isExplicitT2vOverride ? [] : audioRefsList;
+
+    const effectiveStartImg = isExplicitT2vOverride
+      ? undefined
+      : node.startImageUrl ||
+        (effectiveReferenceFrameMode === 'start-end' && finalImageRefsList.length >= 1
+          ? finalImageRefsList[0]
+          : undefined);
     const effectiveEndImg =
-      node.endImageUrl ||
-      (effectiveReferenceFrameMode === 'start-end' && imageRefsList.length >= 2
-        ? imageRefsList[1]
-        : undefined);
+      isExplicitT2vOverride || !canExecTail
+        ? undefined
+        : node.endImageUrl ||
+          (effectiveReferenceFrameMode === 'start-end' && finalImageRefsList.length >= 2
+            ? finalImageRefsList[1]
+            : undefined);
 
     let mcpServerId = node.mcpServerId;
     let mcpToolName = node.mcpToolName;
@@ -7161,10 +7231,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         ...(mergedModelParams ? { modelParams: mergedModelParams } : {}),
       },
       ...(mergedModelParams ? { modelParams: mergedModelParams } : {}),
-      referenceImages: imageRefsList,
-      ...(videoRefsList.length > 0 ? { videoReferences: videoRefsList } : {}),
-      ...(audioRefsList.length > 0 ? { audioReferences: audioRefsList } : {}),
-      ...(referenceHandlesList.length > 0 ? { referenceHandles: referenceHandlesList } : {}),
+      referenceImages: finalImageRefsList,
+      ...(finalVideoRefsList.length > 0 ? { videoReferences: finalVideoRefsList } : {}),
+      ...(finalAudioRefsList.length > 0 ? { audioReferences: finalAudioRefsList } : {}),
+      ...(!isExplicitT2vOverride && referenceHandlesList.length > 0
+        ? { referenceHandles: referenceHandlesList }
+        : {}),
       ...(effectiveReferenceFrameMode ? { referenceFrameMode: effectiveReferenceFrameMode } : {}),
       ...(effectiveStartImg ? { startImageUrl: effectiveStartImg } : {}),
       ...(effectiveEndImg ? { endImageUrl: effectiveEndImg } : {}),
@@ -7746,11 +7818,19 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             const existingIdx = mergedModels.findIndex((lm) => lm.id === rm.id);
             if (existingIdx >= 0) {
               const lm = mergedModels[existingIdx];
+              const rmRec = rm as typeof lm & {
+                supportsNativeAudio?: boolean;
+                defaultAspectRatio?: AspectRatio;
+              };
               mergedModels[existingIdx] = {
                 ...lm,
                 ...rm,
                 label: lm.label || rm.label,
                 providerFamily: rm.providerFamily || lm.providerFamily,
+                supportsAudio:
+                  rm.supportsAudio ?? rmRec.supportsNativeAudio ?? lm.supportsAudio,
+                defaultAspect:
+                  rm.defaultAspect ?? rmRec.defaultAspectRatio ?? lm.defaultAspect,
                 parameters: Array.isArray(rm.parameters) ? rm.parameters : lm.parameters,
                 aspectRatios: rm.aspectRatios?.length ? rm.aspectRatios : lm.aspectRatios,
                 resolutions: rm.resolutions?.length ? rm.resolutions : lm.resolutions,

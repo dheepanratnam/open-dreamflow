@@ -5976,7 +5976,10 @@ export class McpStdioBridgeServer {
       const res = await this.externalMcpHost.callTool({
         serverId,
         toolName: balanceToolName,
-        arguments: {},
+        arguments:
+          balanceToolName === 'query_membership_and_credits'
+            ? { taskTraceId: generateRfc4122UuidV7() }
+            : {},
         timeoutMs: 8_000,
       });
       const rawText = String(res.textSummary || '').trim();
@@ -6704,7 +6707,18 @@ export class McpStdioBridgeServer {
         base = (/nano|seedream|soul/i.test(modelId) ? 0.5 : 1.5) * batchCount;
       }
     } else if (platformId === 'kling') {
-      base = modality === 'video' ? Math.round(25 * (durationSec / 5)) : 4 * batchCount;
+      if (modality === 'video') {
+        const isFastVid = /flash|turbo|v2_5/i.test(modelId);
+        const is4kVid = resolution.includes('4k');
+        const is1080Vid = resolution.includes('1080');
+        const per5s = isFastVid ? 15 : is4kVid ? 60 : is1080Vid ? 35 : 20;
+        base = Math.max(5, Math.round(per5s * (durationSec / 5)));
+      } else {
+        const is4kImg = resolution.includes('4k');
+        const isGptOrPro = /gpt-image|gemini-3-pro/i.test(modelId);
+        const perImg = isGptOrPro ? (quality === 'xhigh' || quality === 'high' ? 8 : 4) : is4kImg ? 4 : 2;
+        base = perImg * batchCount;
+      }
     } else if (platformId === 'google-flow' || platformId === 'gemini') {
       base = modality === 'video' ? Math.round(20 * (durationSec / 5)) : 2 * batchCount;
     } else if (platformId === 'openai') {
@@ -7896,7 +7910,7 @@ export class McpStdioBridgeServer {
       (toolArgs.params as Record<string, unknown>).get_cost === true;
     const isReadOnlyTool =
       isGetCostPreflight ||
-      /^(balance|show_plans_and_credits|job_status|models_explore|dreamina_models_explore|list_models|status|health|get_job|check_job|assets|jobs|quote)$/i.test(
+      /^(balance|query_membership_and_credits|who_am_i|query_tasks|element_list|element_get|motion_library_list|show_plans_and_credits|job_status|models_explore|dreamina_models_explore|list_models|status|health|get_job|check_job|assets|jobs|quote)$/i.test(
         toolName
       );
     let resolvedCreditSource: 'own' | 'shared' | 'owner' = user.role === 'owner' ? 'owner' : 'own';
@@ -7945,12 +7959,14 @@ export class McpStdioBridgeServer {
       }
     }
 
+    const hasBalanceQueryTool = Boolean(
+      serverMeta?.tools.some(
+        (t) => t.name === 'balance' || t.name === 'query_membership_and_credits'
+      )
+    );
     const shouldMeterCall = !internalBypass && !isReadOnlyTool;
     let preCredits: number | undefined;
-    if (
-      shouldMeterCall &&
-      serverMeta?.tools.some((t) => t.name === 'balance')
-    ) {
+    if (shouldMeterCall && hasBalanceQueryTool) {
       const preBal = await this.getMcpBalanceWithCache(serverId, false).catch(() => null);
       if (typeof preBal?.credits === 'number' && Number.isFinite(preBal.credits)) {
         preCredits = preBal.credits;
@@ -7966,10 +7982,7 @@ export class McpStdioBridgeServer {
 
     if (shouldMeterCall) {
       let postCredits: number | undefined;
-      if (
-        preCredits !== undefined &&
-        serverMeta?.tools.some((t) => t.name === 'balance')
-      ) {
+      if (preCredits !== undefined && hasBalanceQueryTool) {
         const postBal = await this.getMcpBalanceWithCache(serverId, true).catch(() => null);
         if (typeof postBal?.credits === 'number' && Number.isFinite(postBal.credits)) {
           postCredits = postBal.credits;
@@ -8458,10 +8471,28 @@ export class McpStdioBridgeServer {
     taskTraceId: string,
     mediaHint: 'image' | 'video' | 'audio' = 'image'
   ): Promise<string> {
-    const trimmed = String(refSource || '').trim();
+    let trimmed = String(refSource || '').trim();
     if (!trimmed) return '';
     if (/^https?:\/\/[^/]*klingai\.com\//i.test(trimmed)) {
       return trimmed;
+    }
+
+    const relMediaMatch = /^\/media\/([^?#]+)$/i.exec(trimmed);
+    if (relMediaMatch && this.mediaDir) {
+      const relFilename = path.basename(decodeURIComponent(relMediaMatch[1]));
+      if (relFilename) {
+        const localMediaCandidate = path.join(this.mediaDir, relFilename);
+        if (!fs.existsSync(localMediaCandidate) && isR2Configured()) {
+          const dlR2 = await downloadObjectFromR2(`media/${relFilename}`);
+          if (dlR2.ok && dlR2.body && dlR2.body.length > 0) {
+            fs.mkdirSync(this.mediaDir, { recursive: true });
+            fs.writeFileSync(localMediaCandidate, dlR2.body);
+          }
+        }
+        if (fs.existsSync(localMediaCandidate) && fs.statSync(localMediaCandidate).isFile()) {
+          trimmed = localMediaCandidate;
+        }
+      }
     }
 
     const hasUploadTool = tools.some((t) => t.name === 'file_upload');
@@ -9519,6 +9550,34 @@ export class McpStdioBridgeServer {
           : undefined;
     const audioMode = String(settings.audioMode ?? params.audioMode ?? '').toLowerCase();
 
+    // Hydrate any missing `/media/<filename>` references from Cloudflare R2 into `this.mediaDir`
+    // so ephemeral containers resolve upstream canvas anchors identically to local dev.
+    const hydrateLocalMediaRef = async (rawRef: unknown): Promise<void> => {
+      if (typeof rawRef !== 'string' || !rawRef.trim() || !this.mediaDir) return;
+      const t = rawRef.trim();
+      const m =
+        /^\/media\/([^?#]+)$/i.exec(t) ||
+        /^https?:\/\/[^/]+\/media\/([^?#]+)$/i.exec(t);
+      if (!m) return;
+      const filename = path.basename(decodeURIComponent(m[1]));
+      if (!filename) return;
+      const primaryCandidate = path.join(this.mediaDir, filename);
+      const studioDistMediaCandidate = path.resolve(this.mediaDir, '../../dist/media', filename);
+      if (
+        (fs.existsSync(primaryCandidate) && fs.statSync(primaryCandidate).isFile()) ||
+        (fs.existsSync(studioDistMediaCandidate) && fs.statSync(studioDistMediaCandidate).isFile())
+      ) {
+        return;
+      }
+      if (isR2Configured()) {
+        const dl = await downloadObjectFromR2(`media/${filename}`);
+        if (dl.ok && dl.body && dl.body.length > 0) {
+          fs.mkdirSync(this.mediaDir, { recursive: true });
+          fs.writeFileSync(primaryCandidate, dl.body);
+        }
+      }
+    };
+
     // Collect & resolve all local `/media/*` / `http://localhost:3001/media/*` references to `data:<mime>;base64,...`
     const collectedRefs: string[] = [];
     if (typeof params.startImageUrl === 'string' && params.startImageUrl.trim()) {
@@ -9533,6 +9592,10 @@ export class McpStdioBridgeServer {
     }
     if (typeof params.endImageUrl === 'string' && params.endImageUrl.trim()) {
       collectedRefs.push(params.endImageUrl.trim());
+    }
+
+    for (const ref of collectedRefs) {
+      await hydrateLocalMediaRef(ref);
     }
 
     const resolvedReferenceImages = collectedRefs
@@ -9553,6 +9616,9 @@ export class McpStdioBridgeServer {
       const v = params.videoReferenceUrl.trim();
       if (!rawVideoRefs.includes(v)) rawVideoRefs.push(v);
     }
+    for (const vRef of rawVideoRefs) {
+      await hydrateLocalMediaRef(vRef);
+    }
     const resolvedVideoReferences = rawVideoRefs
       .map((ref) =>
         resolveReferenceToPublicOrDataUrl(ref, this.mediaDir, { allowAbsFileForVideo: true })
@@ -9568,6 +9634,9 @@ export class McpStdioBridgeServer {
           }
         }
       }
+    }
+    for (const aRef of rawAudioRefs) {
+      await hydrateLocalMediaRef(aRef);
     }
     const resolvedAudioReferences = rawAudioRefs
       .map((ref) =>
@@ -9602,9 +9671,12 @@ export class McpStdioBridgeServer {
       const h = typeof rec.handle === 'string' ? rec.handle.trim() : '';
       const rawUrl = typeof rec.url === 'string' ? rec.url.trim() : '';
       if (!h) continue;
+      if (rawUrl) {
+        await hydrateLocalMediaRef(rawUrl);
+      }
       const resolvedUrl = rawUrl
         ? resolveReferenceToPublicOrDataUrl(rawUrl, this.mediaDir, {
-            allowAbsFileForVideo: rec.kind === 'video',
+            allowAbsFileForVideo: rec.kind === 'video' || rec.kind === 'audio',
           }) || rawUrl
         : '';
       resolvedReferenceHandles.push({
@@ -9745,10 +9817,32 @@ export class McpStdioBridgeServer {
       if (!effectiveToolNameHint) {
         const srvToolNames = new Set(candidateMcpServer.tools.map((t) => t.name));
         if (kind === 'video') {
+          const hasStartImage = Boolean(
+            typeof params.startImageUrl === 'string' && params.startImageUrl.trim()
+          );
+          const hasEndImage = Boolean(
+            typeof params.endImageUrl === 'string' && params.endImageUrl.trim()
+          );
+          const hasElementsParam = Boolean(
+            typeof mergedModelParams.elements === 'string' && mergedModelParams.elements.trim()
+          );
+          const hasMotionIdParam = Boolean(
+            mergedModelParams.motionId !== undefined &&
+              mergedModelParams.motionId !== null &&
+              String(mergedModelParams.motionId).trim() !== ''
+          );
+          const hasAnyVideoRefsOrElements =
+            resolvedReferenceImages.length > 0 ||
+            resolvedVideoReferences.length > 0 ||
+            resolvedAudioReferences.length > 0 ||
+            hasStartImage ||
+            hasEndImage ||
+            hasElementsParam;
+
           const isExplicitKeyframe =
             referenceFrameMode === 'start-end' ||
-            Boolean(typeof params.startImageUrl === 'string' && params.startImageUrl.trim()) ||
-            Boolean(typeof params.endImageUrl === 'string' && params.endImageUrl.trim()) ||
+            hasStartImage ||
+            hasEndImage ||
             requestedModeHint === 'image-to-video' ||
             requestedModeHint === 'first_last_frame';
           const wantsOmniRef =
@@ -9758,24 +9852,30 @@ export class McpStdioBridgeServer {
               requestedModeHint === 'reference-to-video' ||
               requestedModeHint === 'omni_reference' ||
               modelId === 'kling-elements' ||
+              hasElementsParam ||
               resolvedVideoReferences.length > 0 ||
+              resolvedAudioReferences.length > 0 ||
               resolvedReferenceImages.length >= 2 ||
               (resolvedReferenceImages.length >= 1 &&
                 (hasPromptHandleTag || resolvedReferenceHandles.length > 0)));
           if (
-            (requestedModeHint === 'motion_control' || requestedModeHint === 'motion-control') &&
+            (requestedModeHint === 'motion_control' ||
+              requestedModeHint === 'motion-control' ||
+              hasMotionIdParam) &&
+            hasAnyVideoRefsOrElements &&
             srvToolNames.has('motion_control')
           ) {
             effectiveToolNameHint = 'motion_control';
+          } else if (!hasAnyVideoRefsOrElements && srvToolNames.has('text_to_video')) {
+            effectiveToolNameHint = 'text_to_video';
           } else if (wantsOmniRef && srvToolNames.has('omni_ref_video')) {
             effectiveToolNameHint = 'omni_ref_video';
           } else if (
-            (resolvedReferenceImages.length > 0 ||
-              Boolean(typeof params.startImageUrl === 'string' && params.startImageUrl.trim())) &&
+            (resolvedReferenceImages.length > 0 || hasStartImage) &&
             srvToolNames.has('image_to_video')
           ) {
             effectiveToolNameHint = 'image_to_video';
-          } else if (resolvedReferenceImages.length === 0 && srvToolNames.has('text_to_video')) {
+          } else if (srvToolNames.has('text_to_video')) {
             effectiveToolNameHint = 'text_to_video';
           }
         } else if (kind === 'image') {
@@ -9989,6 +10089,20 @@ export class McpStdioBridgeServer {
               kind
             );
           }
+        } else if (
+          chosenTool.name === 'image_to_video' &&
+          (resolvedVideoReferences.length > 0 || resolvedAudioReferences.length > 0) &&
+          omniModels.some((m) => String(m.model || '') === klingModelId)
+        ) {
+          const upgradeOmniTool = candidateMcpServer.tools.find((t) => t.name === 'omni_ref_video');
+          if (upgradeOmniTool) {
+            chosenTool = upgradeOmniTool;
+            klingModelId = normalizeKlingOfficialMcpModelId(
+              rawModelForMcpResolved,
+              chosenTool.name,
+              kind
+            );
+          }
         }
 
         const toolSection = whoAmI[chosenTool.name] || {};
@@ -10015,6 +10129,8 @@ export class McpStdioBridgeServer {
 
         const klingInputs: Array<{ inputType: 'URL'; name: string; url: string }> = [];
         const orderedRawImageRefs: string[] = [];
+        const orderedRawVideoRefs: string[] = [];
+        const orderedRawAudioRefs: string[] = [];
 
         const startRaw =
           typeof params.startImageUrl === 'string' ? params.startImageUrl.trim() : '';
@@ -10024,6 +10140,7 @@ export class McpStdioBridgeServer {
         if (chosenTool.name === 'motion_control') {
           const subjRef = startRaw || resolvedReferenceImages[0] || '';
           if (subjRef) {
+            await hydrateLocalMediaRef(subjRef);
             const url = await this.uploadReferenceForKlingMcp(
               candidateMcpServer.id,
               resolveReferenceToPublicOrDataUrl(subjRef, this.mediaDir),
@@ -10034,7 +10151,11 @@ export class McpStdioBridgeServer {
             klingInputs.push({ inputType: 'URL', name: 'image', url });
             orderedRawImageRefs.push(subjRef);
           }
-          if (resolvedVideoReferences[0]) {
+          const hasExplicitMotionId =
+            mergedModelParams.motionId !== undefined &&
+            mergedModelParams.motionId !== null &&
+            String(mergedModelParams.motionId).trim() !== '';
+          if (!hasExplicitMotionId && resolvedVideoReferences[0]) {
             const vUrl = await this.uploadReferenceForKlingMcp(
               candidateMcpServer.id,
               resolvedVideoReferences[0],
@@ -10043,51 +10164,121 @@ export class McpStdioBridgeServer {
               'video'
             );
             klingInputs.push({ inputType: 'URL', name: 'video', url: vUrl });
+            orderedRawVideoRefs.push(resolvedVideoReferences[0]);
           }
         } else if (inputNames.has('first_image')) {
           const firstSource = startRaw || resolvedReferenceImages[0] || '';
           const tailSource =
             endRaw ||
-            (referenceFrameMode === 'start-end' && resolvedReferenceImages[1]
-              ? resolvedReferenceImages[1]
+            (referenceFrameMode === 'start-end' && resolvedReferenceImages.length >= 2
+              ? resolvedReferenceImages[resolvedReferenceImages.length - 1]
               : !startRaw && resolvedReferenceImages.length === 2
                 ? resolvedReferenceImages[1]
                 : '');
           if (firstSource) {
+            await hydrateLocalMediaRef(firstSource);
+            const resolvedFirst = resolveReferenceToPublicOrDataUrl(firstSource, this.mediaDir);
             const firstUrl = await this.uploadReferenceForKlingMcp(
               candidateMcpServer.id,
-              resolveReferenceToPublicOrDataUrl(firstSource, this.mediaDir),
+              resolvedFirst,
               candidateMcpServer.tools,
               klingTaskTraceId,
               'image'
             );
             klingInputs.push({ inputType: 'URL', name: 'first_image', url: firstUrl });
-            orderedRawImageRefs.push(firstSource);
+            orderedRawImageRefs.push(resolvedFirst);
+          }
+          if (
+            inputNames.has('keyframe_1') &&
+            referenceFrameMode === 'start-end' &&
+            resolvedReferenceImages.length > 2
+          ) {
+            const middleRefs = resolvedReferenceImages.slice(1, -1).slice(0, 8);
+            for (let kIdx = 0; kIdx < middleRefs.length; kIdx++) {
+              const kfSlot = `keyframe_${kIdx + 1}`;
+              if (!inputNames.has(kfSlot)) break;
+              const kfUrl = await this.uploadReferenceForKlingMcp(
+                candidateMcpServer.id,
+                middleRefs[kIdx],
+                candidateMcpServer.tools,
+                klingTaskTraceId,
+                'image'
+              );
+              klingInputs.push({ inputType: 'URL', name: kfSlot, url: kfUrl });
+            }
           }
           if (tailSource && inputNames.has('tail_image')) {
+            await hydrateLocalMediaRef(tailSource);
+            const resolvedTail = resolveReferenceToPublicOrDataUrl(tailSource, this.mediaDir);
             const tailUrl = await this.uploadReferenceForKlingMcp(
               candidateMcpServer.id,
-              resolveReferenceToPublicOrDataUrl(tailSource, this.mediaDir),
+              resolvedTail,
               candidateMcpServer.tools,
               klingTaskTraceId,
               'image'
             );
             klingInputs.push({ inputType: 'URL', name: 'tail_image', url: tailUrl });
-            orderedRawImageRefs.push(tailSource);
+            orderedRawImageRefs.push(resolvedTail);
           }
         } else if (inputNames.has('subject_image_0')) {
-          for (let i = 0; i < Math.min(resolvedReferenceImages.length, 4); i++) {
-            const slotName = `subject_image_${i}`;
-            if (!inputNames.has(slotName)) break;
+          // `kling-image-v2_1` image_to_image: uses `subject_image_0..3`, `scene_image`, `style_image`
+          // and requires >= 2 total reference inputs (`v21ReferenceCount`).
+          let sceneAssigned = false;
+          let styleAssigned = false;
+          let subjectIdx = 0;
+          for (let i = 0; i < resolvedReferenceImages.length; i++) {
+            const refImg = resolvedReferenceImages[i];
+            const matchingBinding = resolvedReferenceHandles.find((b) => b.url === refImg);
+            const hintStr = `${matchingBinding?.handle || ''} ${matchingBinding?.label || ''}`.toLowerCase();
+            let targetSlot = '';
+            if (
+              !sceneAssigned &&
+              inputNames.has('scene_image') &&
+              /(scene|sanctum|bg|background|courtyard|room|location|env|stage)/i.test(hintStr)
+            ) {
+              targetSlot = 'scene_image';
+              sceneAssigned = true;
+            } else if (
+              !styleAssigned &&
+              inputNames.has('style_image') &&
+              /(style|palette|aesthetic|look)/i.test(hintStr)
+            ) {
+              targetSlot = 'style_image';
+              styleAssigned = true;
+            } else if (subjectIdx < 4 && inputNames.has(`subject_image_${subjectIdx}`)) {
+              targetSlot = `subject_image_${subjectIdx}`;
+              subjectIdx += 1;
+            } else if (!sceneAssigned && inputNames.has('scene_image')) {
+              targetSlot = 'scene_image';
+              sceneAssigned = true;
+            } else if (!styleAssigned && inputNames.has('style_image')) {
+              targetSlot = 'style_image';
+              styleAssigned = true;
+            }
+            if (!targetSlot) continue;
             const upUrl = await this.uploadReferenceForKlingMcp(
               candidateMcpServer.id,
-              resolvedReferenceImages[i],
+              refImg,
               candidateMcpServer.tools,
               klingTaskTraceId,
               'image'
             );
-            klingInputs.push({ inputType: 'URL', name: slotName, url: upUrl });
-            orderedRawImageRefs.push(resolvedReferenceImages[i]);
+            klingInputs.push({ inputType: 'URL', name: targetSlot, url: upUrl });
+            orderedRawImageRefs.push(refImg);
+          }
+          // Guarantee >= 2 reference inputs for `kling-image-v2_1` when only 1 image was supplied
+          if (klingInputs.length === 1 && inputNames.has('style_image') && !styleAssigned) {
+            klingInputs.push({
+              inputType: 'URL',
+              name: 'style_image',
+              url: klingInputs[0].url,
+            });
+          } else if (klingInputs.length === 1 && inputNames.has('scene_image') && !sceneAssigned) {
+            klingInputs.push({
+              inputType: 'URL',
+              name: 'scene_image',
+              url: klingInputs[0].url,
+            });
           }
         } else if (inputNames.has('image_1') || specInputs.length === 0) {
           const maxImgSlots =
@@ -10119,19 +10310,88 @@ export class McpStdioBridgeServer {
                 'video'
               );
               klingInputs.push({ inputType: 'URL', name: slotName, url: upVUrl });
+              orderedRawVideoRefs.push(resolvedVideoReferences[i]);
+            }
+          }
+          if (inputNames.has('audio_1') && resolvedAudioReferences.length > 0) {
+            const maxAudSlots =
+              specInputs.filter((inp) => /^audio_\d+$/.test(String(inp.name || ''))).length || 3;
+            for (let i = 0; i < Math.min(resolvedAudioReferences.length, maxAudSlots); i++) {
+              const slotName = `audio_${i + 1}`;
+              if (!inputNames.has(slotName)) break;
+              const upAUrl = await this.uploadReferenceForKlingMcp(
+                candidateMcpServer.id,
+                resolvedAudioReferences[i],
+                candidateMcpServer.tools,
+                klingTaskTraceId,
+                'audio'
+              );
+              klingInputs.push({ inputType: 'URL', name: slotName, url: upAUrl });
+              orderedRawAudioRefs.push(resolvedAudioReferences[i]);
             }
           }
         }
 
-        const effectiveKlingPrompt =
-          orderedRawImageRefs.length > 0
-            ? rewritePromptHandlesForKlingOfficialMcp(
-                prompt,
-                orderedRawImageRefs,
-                resolvedReferenceHandles,
-                (n) => `图片${n}`
-              )
-            : prompt;
+        const promptArgDesc = String(argSpecByName.get('prompt')?.description || '');
+        const usesChineseSlotSyntax = /图片/.test(promptArgDesc);
+        let effectiveKlingPrompt = prompt;
+
+        if (orderedRawVideoRefs.length > 0 && effectiveKlingPrompt.includes('@')) {
+          const vidPairs: Array<{ alias: string; token: string }> = [];
+          orderedRawVideoRefs.forEach((vUrl, idx) => {
+            const slot = usesChineseSlotSyntax ? `视频${idx + 1}` : `Video ${idx + 1}`;
+            vidPairs.push(
+              { alias: `@Video${idx + 1}`, token: slot },
+              { alias: `@Video_${idx + 1}`, token: slot }
+            );
+            for (const b of resolvedReferenceHandles) {
+              if (b.url === vUrl || (b.kind === 'video' && orderedRawVideoRefs.length === 1)) {
+                vidPairs.push({ alias: b.handle, token: slot });
+              }
+            }
+          });
+          vidPairs.sort((a, b) => b.alias.length - a.alias.length);
+          for (const { alias, token } of vidPairs) {
+            const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            effectiveKlingPrompt = effectiveKlingPrompt.replace(
+              new RegExp(`${escaped}(?![a-zA-Z0-9_-])`, 'gi'),
+              token
+            );
+          }
+        }
+
+        if (orderedRawAudioRefs.length > 0 && effectiveKlingPrompt.includes('@')) {
+          const audPairs: Array<{ alias: string; token: string }> = [];
+          orderedRawAudioRefs.forEach((aUrl, idx) => {
+            const slot = usesChineseSlotSyntax ? `音频${idx + 1}` : `Audio ${idx + 1}`;
+            audPairs.push(
+              { alias: `@Audio${idx + 1}`, token: slot },
+              { alias: `@Audio_${idx + 1}`, token: slot }
+            );
+            for (const b of resolvedReferenceHandles) {
+              if (b.url === aUrl || (b.kind === 'audio' && orderedRawAudioRefs.length === 1)) {
+                audPairs.push({ alias: b.handle, token: slot });
+              }
+            }
+          });
+          audPairs.sort((a, b) => b.alias.length - a.alias.length);
+          for (const { alias, token } of audPairs) {
+            const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            effectiveKlingPrompt = effectiveKlingPrompt.replace(
+              new RegExp(`${escaped}(?![a-zA-Z0-9_-])`, 'gi'),
+              token
+            );
+          }
+        }
+
+        if (orderedRawImageRefs.length > 0) {
+          effectiveKlingPrompt = rewritePromptHandlesForKlingOfficialMcp(
+            effectiveKlingPrompt,
+            orderedRawImageRefs,
+            resolvedReferenceHandles.filter((b) => b.kind !== 'video' && b.kind !== 'audio'),
+            (n) => (usesChineseSlotSyntax ? `图片${n}` : `Image ${n}`)
+          );
+        }
 
         const kvArgs: Array<{ name: string; value: string }> = [];
         const pushAllowedArg = (argName: string, candidateVal: unknown) => {
@@ -10156,25 +10416,80 @@ export class McpStdioBridgeServer {
         kvArgs.push({ name: 'prompt', value: effectiveKlingPrompt });
 
         if (kind === 'video') {
+          const hasTailInput = klingInputs.some((i) => i.name === 'tail_image');
+          const hasFirstInput = klingInputs.some((i) => i.name === 'first_image');
+          const effectiveVidRes =
+            klingModelId === 'kling-video-v2_6' && hasTailInput
+              ? '1080p'
+              : String(resolution || '').trim().toLowerCase();
+
           if (durationSec) pushAllowedArg('duration', Math.round(Number(durationSec)));
-          if (resolution) pushAllowedArg('resolution', String(resolution).toLowerCase());
-          if (aspectRatio) pushAllowedArg('aspect_ratio', aspectRatio);
-          if (typeof audioEnabled === 'boolean') {
-            if (resolvedVideoReferences.length > 0 && klingModelId === 'kling-video-v3_0_omni') {
-              pushAllowedArg('enable_audio', 'false');
-            } else {
-              pushAllowedArg('enable_audio', audioEnabled ? 'true' : 'false');
-            }
+          if (effectiveVidRes) pushAllowedArg('resolution', effectiveVidRes);
+
+          const shouldOmitKeyframeAspect =
+            chosenTool.name === 'image_to_video' &&
+            hasFirstInput &&
+            !mergedModelParams.force_aspect_ratio;
+          if (!shouldOmitKeyframeAspect && aspectRatio) {
+            const effVidAspect =
+              chosenTool.name === 'omni_ref_video' &&
+              klingInputs.length === 0 &&
+              aspectRatio.toLowerCase() === 'auto'
+                ? '16:9'
+                : aspectRatio;
+            pushAllowedArg('aspect_ratio', effVidAspect);
           }
+
+          const keepOrig =
+            mergedModelParams.keepOriginalSound === true ||
+            String(mergedModelParams.keepOriginalSound || '').toLowerCase() === 'true';
+          if (keepOrig && orderedRawVideoRefs.length > 0) {
+            pushAllowedArg('keepOriginalSound', 'true');
+          }
+
+          const forceSilentAudio =
+            (keepOrig && orderedRawVideoRefs.length > 0) ||
+            (orderedRawVideoRefs.length > 0 && klingModelId === 'kling-video-v3_0_omni') ||
+            (klingModelId === 'kling-video-v2_6' &&
+              (hasTailInput || effectiveVidRes === '720p'));
+
+          if (forceSilentAudio) {
+            pushAllowedArg('enable_audio', 'false');
+          } else if (typeof audioEnabled === 'boolean') {
+            pushAllowedArg('enable_audio', audioEnabled ? 'true' : 'false');
+          }
+
+          if (batchCount && batchCount > 1) {
+            pushAllowedArg('imageCount', Math.min(4, Math.round(Number(batchCount))));
+          }
+
           if (chosenTool.name === 'motion_control') {
             pushAllowedArg(
               'motionDirection',
               mergedModelParams.motionDirection || 'image_direction'
             );
+            if (mergedModelParams.motionId !== undefined && mergedModelParams.motionId !== '') {
+              pushAllowedArg('motionId', mergedModelParams.motionId);
+            }
           }
         } else if (kind === 'image') {
-          if (resolution) pushAllowedArg('img_resolution', String(resolution).toLowerCase());
-          if (aspectRatio) pushAllowedArg('aspect_ratio', aspectRatio);
+          const rawImgRes = String(resolution || '').trim().toLowerCase();
+          const normalizedImgRes =
+            rawImgRes === '1080p'
+              ? '2k'
+              : rawImgRes === '720p'
+                ? '1k'
+                : rawImgRes === '2160p'
+                  ? '4k'
+                  : rawImgRes || '2k';
+          pushAllowedArg('img_resolution', normalizedImgRes);
+          if (aspectRatio) {
+            const effImgAspect =
+              aspectRatio.toLowerCase() === 'auto' && klingInputs.length === 0
+                ? '16:9'
+                : aspectRatio;
+            pushAllowedArg('aspect_ratio', effImgAspect);
+          }
           if (quality) pushAllowedArg('quality', String(quality).toLowerCase());
           if (batchCount && batchCount > 1) {
             if (argSpecByName.has('image_count')) {
@@ -10185,8 +10500,44 @@ export class McpStdioBridgeServer {
           }
         }
 
+        // Optional Kling model-specific parameters
+        for (const optKey of [
+          'prefer_multi_shots',
+          'story_mode',
+          'enable_asmr',
+          'audio_prompt',
+          'music_prompt',
+        ]) {
+          const rawVal = mergedModelParams[optKey];
+          if (rawVal !== undefined && rawVal !== null && rawVal !== '') {
+            pushAllowedArg(
+              optKey,
+              typeof rawVal === 'boolean' ? (rawVal ? 'true' : 'false') : rawVal
+            );
+          }
+        }
+
         if (typeof mergedModelParams.elements === 'string' && mergedModelParams.elements.trim()) {
           pushAllowedArg('elements', mergedModelParams.elements.trim());
+        }
+
+        // Guarantee any required model arguments (`required: true`, e.g. `img_resolution` on `gemini-3-pro-image`)
+        for (const a of specArgs) {
+          const aName = typeof a.name === 'string' ? a.name : '';
+          if (!aName || a.required !== true) continue;
+          if (kvArgs.some((kv) => kv.name === aName)) continue;
+          const allowed = Array.isArray(a.allowedValues)
+            ? (a.allowedValues as unknown[]).map((v) => String(v))
+            : [];
+          const fallbackVal =
+            a.default !== undefined && a.default !== null && String(a.default).trim() !== ''
+              ? String(a.default)
+              : aName === 'img_resolution' && allowed.includes('2k')
+                ? '2k'
+                : allowed[0];
+          if (fallbackVal !== undefined) {
+            pushAllowedArg(aName, fallbackVal);
+          }
         }
 
         mcpToolArgs = {
@@ -10399,9 +10750,22 @@ export class McpStdioBridgeServer {
           ).toLowerCase();
 
           if (polledStatus === 'failed' || polledStatus === 'error' || polledStatus === 'cancelled') {
+            const downstreamDetail = String(
+              polledGen.message ||
+                polledGen.errorMessage ||
+                polledResultsArr[0]?.message ||
+                polledResultsArr[0]?.errorMessage ||
+                polledResultsArr[0]?.task_status_msg ||
+                polledObj.message ||
+                polledObj.errorMessage ||
+                polledObj.error ||
+                ''
+            ).trim();
             throw new BridgeHttpError(
               502,
-              `MCP tool "${chosenTool.name}" job ${jid} failed (${polledStatus}).`,
+              `MCP tool "${chosenTool.name}" job ${jid} failed (${polledStatus})${
+                downstreamDetail ? `: ${downstreamDetail}` : ''
+              }.`,
               platformId
             );
           }
