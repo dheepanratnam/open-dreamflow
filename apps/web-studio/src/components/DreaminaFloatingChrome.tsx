@@ -383,7 +383,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
       />
 
       {/* 1. Top Minimal Floating Header Strip (40px) */}
-      <header className="fixed top-[10px] left-[12px] right-[12px] h-[40px] z-30 pointer-events-none flex items-center justify-between select-none">
+      <header className="fixed top-[10px] left-[12px] right-[12px] h-[40px] z-40 pointer-events-none flex items-center justify-between select-none">
         {/* Top-Left Project Pill */}
         <div className="pointer-events-auto h-[36px] px-2.5 rounded-[10px] dreamina-levitation flex items-center gap-2 relative">
           {/* Clean 4-Point Monochrome Prism Logo */}
@@ -492,7 +492,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
           {cloudMenuOpen && (
             <div
               data-testid="cloud-sync-popover"
-              className="absolute left-0 top-[42px] w-[304px] p-3 rounded-[12px] dreamina-menu z-50 space-y-2.5"
+              className="absolute left-[56px] top-[42px] w-[304px] p-3 rounded-[12px] dreamina-menu z-50 space-y-2.5"
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
@@ -582,7 +582,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
           )}
 
           {projectMenuOpen && (
-            <div className="absolute left-0 top-[42px] w-[288px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
+            <div className="absolute left-[56px] top-[42px] w-[288px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
               <button
                 type="button"
                 onClick={() => {
