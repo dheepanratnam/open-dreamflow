@@ -745,7 +745,7 @@ export async function fetchPlatformCatalogViaBackend(forceRefresh = false): Prom
     const url = forceRefresh
       ? `${LOCAL_MCP_BASE}/api/platforms?forceRefresh=1`
       : `${LOCAL_MCP_BASE}/api/platforms`;
-    const res = await fetch(url, {
+    const res = await authFetch(url, {
       signal: ctrl.signal,
     });
     clearTimeout(timer);
