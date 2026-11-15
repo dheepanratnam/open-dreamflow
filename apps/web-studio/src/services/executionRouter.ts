@@ -738,6 +738,56 @@ export async function verifyProviderViaBackend(params: {
   }
 }
 
+export async function fetchElevenLabsVoicesViaBackend(forceRefresh = false): Promise<{
+  ok: boolean;
+  source?: 'account' | 'public';
+  voices: Array<{
+    id: string;
+    name: string;
+    shortName: string;
+    subtitle: string;
+    category: string;
+    accent: string;
+    gender: string;
+    age?: string;
+    useCase?: string;
+    description?: string;
+    previewUrl?: string;
+  }>;
+}> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const url = forceRefresh
+      ? `${LOCAL_MCP_BASE}/api/elevenlabs/voices?refresh=1`
+      : `${LOCAL_MCP_BASE}/api/elevenlabs/voices`;
+    const res = await authFetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return { ok: false, voices: [] };
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      source?: 'account' | 'public';
+      voices?: Array<{
+        id: string;
+        name: string;
+        shortName: string;
+        subtitle: string;
+        category: string;
+        accent: string;
+        gender: string;
+        age?: string;
+        useCase?: string;
+        description?: string;
+        previewUrl?: string;
+      }>;
+    };
+    if (!Array.isArray(json.voices)) return { ok: false, voices: [] };
+    return { ok: true, source: json.source, voices: json.voices };
+  } catch {
+    return { ok: false, voices: [] };
+  }
+}
+
 export async function fetchPlatformCatalogViaBackend(forceRefresh = false): Promise<{
   ok: boolean;
   platforms: PlatformDefinition[];
@@ -779,7 +829,7 @@ export interface GenerateNodeBackendParams {
     batchCount?: 1 | 2 | 3 | 4;
     durationSec?: number;
     audioEnabled?: boolean;
-    audioMode?: 'tts' | 'ambient' | 'voiceover' | 'sfx';
+    audioMode?: 'tts' | 'ambient' | 'voiceover' | 'sfx' | 'music';
     voiceId?: string;
     seed?: number;
     modelParams?: Record<string, string | number | boolean>;
@@ -3445,7 +3495,7 @@ export async function keyframeBridgeViaBackend(params: {
 
 export async function generateAudioViaBackend(params: {
   prompt: string;
-  mode?: 'tts' | 'voiceover' | 'ambient' | 'sfx';
+  mode?: 'tts' | 'voiceover' | 'ambient' | 'sfx' | 'music';
   voiceText?: string;
   durationSec?: number;
 }): Promise<{
@@ -3453,7 +3503,7 @@ export async function generateAudioViaBackend(params: {
   audioUrl?: string;
   fullUrl?: string;
   durationSec?: number;
-  mode?: 'tts' | 'voiceover' | 'ambient' | 'sfx';
+  mode?: 'tts' | 'voiceover' | 'ambient' | 'sfx' | 'music';
   waveform?: number[];
 }> {
   try {

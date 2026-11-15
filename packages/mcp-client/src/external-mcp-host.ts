@@ -390,9 +390,9 @@ export class ExternalMcpHost {
         t.name
       );
     const tier2Excluded =
-      /(batch|explore|list|get_|show_|status|quote|prepare|register|publish|picker|history|samples|presets|3d_|library_list|element_)/i;
+      /(batch|explore|list|get_|show_|status|quote|prepare|register|publish|picker|history|samples|presets|3d_|library_list|element_|agents_)/i;
     const readOnlyOrAdminRe =
-      /^(use_|get_|list_|show_|check_|query_|register_|publish_|prepare_|resolve_|search_|update_|delete_|archive_|unarchive_|move_|copy_|rename_|attach_|remove_|confirm_|cancel_|select_|track_|set_|sync_|deploy_|participate_|models_explore|job_status|jobs_wait|job_display|balance|transactions|assets_picker|visual_effects|tiktok_|who_am_i|file_upload|element_create|element_list|element_get|element_update|element_delete|motion_library_list|feedback|logout)/i;
+      /^(agents_|convai_|workspace_|phone_|knowledge_|pronunciation_|sip_|whatsapp_|twilio_|batch_calling_|conversations_|tools_|use_|get_|list_|show_|check_|query_|register_|publish_|prepare_|resolve_|search_|update_|delete_|archive_|unarchive_|move_|copy_|rename_|attach_|remove_|confirm_|cancel_|select_|track_|set_|sync_|deploy_|participate_|models_explore|job_status|jobs_wait|job_display|balance|transactions|assets_picker|visual_effects|tiktok_|who_am_i|file_upload|element_create|element_list|element_get|element_update|element_delete|motion_library_list|feedback|logout)/i;
     const pattern = keywordsByModality[modality];
 
     // Tier 2: ^(generate|create|render|synthesize)_ + modality keyword in t.name (excluding batch/explore/admin)
@@ -420,11 +420,37 @@ export class ExternalMcpHost {
         !readOnlyOrAdminRe.test(t.name) &&
         !isStatusOrInfoTool(t)
     );
-    return (
-      tier4 ||
-      runtime.tools.find((t) => !readOnlyOrAdminRe.test(t.name) && !isStatusOrInfoTool(t)) ||
-      runtime.tools[0]
-    );
+    return tier4 || null;
+  }
+
+  public hasOAuthToken(serverId: string): boolean {
+    const runtime = this.servers.get(serverId);
+    return Boolean(runtime?.config.oauth?.accessToken);
+  }
+
+  public async getValidOAuthAccessToken(
+    serverId: string,
+    opts?: { forceRefresh?: boolean }
+  ): Promise<string | null> {
+    const runtime = this.servers.get(serverId);
+    const oauth = runtime?.config.oauth;
+    if (!runtime || !oauth?.accessToken) return null;
+
+    if (opts?.forceRefresh) {
+      if (!oauth.refreshToken) return null;
+      const ok = await this.refreshOAuthToken(runtime);
+      return ok && runtime.config.oauth?.accessToken ? runtime.config.oauth.accessToken : null;
+    }
+
+    if (
+      oauth.expiresAt &&
+      oauth.refreshToken &&
+      Date.now() > oauth.expiresAt - 90_000
+    ) {
+      await this.refreshOAuthToken(runtime);
+    }
+
+    return runtime.config.oauth?.accessToken || null;
   }
 
   public async registerOrUpdateServer(input: Record<string, unknown>): Promise<PublicMcpServerSummary> {
@@ -560,8 +586,7 @@ export class ExternalMcpHost {
       return this.toPublicSummary(runtime);
     }
 
-    const toolsResp = await this.sendRpc(runtime, 'tools/list', {}, 20_000);
-    runtime.tools = this.parseToolsList(toolsResp);
+    runtime.tools = await this.fetchAllToolsList(runtime);
     runtime.status = 'connected';
     runtime.error = null;
 
@@ -1072,8 +1097,7 @@ export class ExternalMcpHost {
 
     await this.sendNotification(runtime, 'notifications/initialized', {});
 
-    const toolsResp = await this.sendRpc(runtime, 'tools/list', {}, 20_000);
-    runtime.tools = this.parseToolsList(toolsResp);
+    runtime.tools = await this.fetchAllToolsList(runtime);
     runtime.status = 'connected';
     runtime.error = null;
 
@@ -1445,6 +1469,39 @@ export class ExternalMcpHost {
       throw new Error(`MCP HTTP RPC error: ${String(errObj.message || JSON.stringify(errObj))}`);
     }
     return parsed;
+  }
+
+  private async fetchAllToolsList(runtime: LiveServerRuntime): Promise<ExternalMcpToolSchema[]> {
+    const collected: ExternalMcpToolSchema[] = [];
+    const seenNames = new Set<string>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+
+    for (let page = 0; page < 15; page++) {
+      const rpcResp = await this.sendRpc(
+        runtime,
+        'tools/list',
+        cursor ? { cursor } : {},
+        20_000
+      );
+      for (const tool of this.parseToolsList(rpcResp)) {
+        if (!seenNames.has(tool.name)) {
+          seenNames.add(tool.name);
+          collected.push(tool);
+        }
+      }
+      const resObj = (rpcResp.result || rpcResp) as Record<string, unknown>;
+      const nextCursor =
+        typeof resObj.nextCursor === 'string' && resObj.nextCursor.trim()
+          ? resObj.nextCursor.trim()
+          : undefined;
+      if (!nextCursor || seenCursors.has(nextCursor)) {
+        break;
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    return collected;
   }
 
   private parseToolsList(rpcResp: Record<string, unknown>): ExternalMcpToolSchema[] {

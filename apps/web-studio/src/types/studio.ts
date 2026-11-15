@@ -113,6 +113,7 @@ export interface PlatformModelDefinition {
   supportsAudioRef?: boolean;
   supportsMotionControl?: boolean;
   supportsNativeAudio?: boolean;
+  audioSubMode?: 'tts' | 'sfx' | 'music';
   audioToggleModes?: Array<'t2v' | 'start-end' | 'multi-ref'>;
   mediaRoles?: string[];
   aspectRatios?: string[];
@@ -342,7 +343,7 @@ export interface CanvasNode {
   startNodeId?: string;
   endNodeId?: string;
   motionCurve?: KeyframeBridgeCurve;
-  audioMode?: 'tts' | 'ambient' | 'voiceover' | 'sfx';
+  audioMode?: 'tts' | 'sfx' | 'music' | 'ambient' | 'voiceover';
   waveform?: number[];
   interactionId?: string;
   previousInteractionId?: string;

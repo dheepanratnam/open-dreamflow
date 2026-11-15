@@ -692,7 +692,7 @@ export interface StudioState {
     nodeId: string,
     opts?: {
       prompt?: string;
-      mode?: 'tts' | 'ambient' | 'voiceover' | 'sfx';
+      mode?: 'tts' | 'ambient' | 'voiceover' | 'sfx' | 'music';
       durationSec?: number;
     }
   ) => Promise<void>;
@@ -1703,14 +1703,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         externalMcpServers
       );
       const defaultAudModel = audModels[0];
-      const defaultAudioModelId = defaultAudModel?.id || 'eleven_multilingual_v2';
+      const defaultAudioModelId = defaultAudModel?.id || 'eleven_v4';
       const defaultAudioBadge =
         getPlatformBadgeLabel(
           lastAudioPlatformId,
           defaultAudioModelId,
           platformsCatalog,
           externalMcpServers
-        ) || 'ElevenLabs · Multilingual v2';
+        ) || 'ElevenLabs · Eleven v4';
 
       const initParamsFromModel = (m?: {
         id: string;
@@ -1820,6 +1820,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         case 'audio': {
           const n = countOfKind('audio');
           const seed = 600 + n * 29;
+          const initialAudioSubMode: 'tts' | 'sfx' | 'music' =
+            defaultAudModel?.audioSubMode ||
+            (defaultAudioModelId.startsWith('music_')
+              ? 'music'
+              : defaultAudioModelId.includes('sound')
+              ? 'sfx'
+              : 'tts');
           newNode = {
             id,
             kind: 'audio',
@@ -1835,10 +1842,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             connectionMode: 'auto',
             modelId: defaultAudioModelId,
             audioUrl: undefined,
-            audioMode: 'tts',
+            audioMode: initialAudioSubMode,
             voiceId: 'JBFqnCBsd6RMkjVDRZzb',
             waveform: createDefaultWaveform(seed, 64),
-            durationSec: defaultAudModel?.defaultDurationSec ?? 8,
+            durationSec:
+              initialAudioSubMode === 'tts'
+                ? undefined
+                : defaultAudModel?.defaultDurationSec ??
+                  (initialAudioSubMode === 'music' ? 15 : -1),
             seed,
             resolution: '1080p',
             ...(audInit.quality ? { quality: audInit.quality } : {}),
@@ -6323,8 +6334,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         matchedRes || chosenModel.defaultResolution || chosenModel.resolutions[0];
     }
 
+    const inferredAudioSubMode: 'tts' | 'sfx' | 'music' | undefined =
+      modality === 'audio'
+        ? chosenModel?.audioSubMode ||
+          (resolvedModelId.startsWith('music_')
+            ? 'music'
+            : resolvedModelId.includes('sound')
+            ? 'sfx'
+            : 'tts')
+        : undefined;
+
     let nextDurationSec = target.durationSec;
-    if (chosenModel?.durationsSec?.length) {
+    if (modality === 'audio' && inferredAudioSubMode === 'tts') {
+      nextDurationSec = undefined;
+    } else if (chosenModel?.durationsSec?.length) {
       if (
         typeof target.durationSec === 'number' &&
         chosenModel.durationsSec.includes(target.durationSec)
@@ -6480,16 +6503,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               quality: nextQuality,
               referenceFrameMode: nextReferenceFrameMode,
               audioEnabled: nextAudioEnabled,
-              ...(platformId === 'kling' || platformId === 'dreamina'
+              ...(platformId === 'kling' || platformId === 'dreamina' || modality === 'audio'
                 ? { cameraMotion: undefined }
                 : {}),
-              ...(platformId === 'kling' ? { negativePrompt: undefined } : {}),
+              ...(platformId === 'kling' || modality === 'audio'
+                ? { negativePrompt: undefined }
+                : {}),
               modelParams: Object.keys(nextModelParams).length > 0 ? nextModelParams : undefined,
               audioMode:
-                modality === 'audio' && resolvedModelId.includes('sound')
-                  ? 'sfx'
-                  : modality === 'audio' && n.audioMode === 'sfx' && !resolvedModelId.includes('sound')
-                  ? 'tts'
+                modality === 'audio' && inferredAudioSubMode
+                  ? inferredAudioSubMode
                   : n.audioMode,
               providerUsed: badge,
             }
@@ -7246,6 +7269,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           }
         : undefined;
 
+    const resolvedAudioSubMode: 'tts' | 'sfx' | 'music' =
+      node.audioMode === 'sfx' || node.audioMode === 'music'
+        ? node.audioMode
+        : modelId.startsWith('music_')
+        ? 'music'
+        : modelId.includes('sound')
+        ? 'sfx'
+        : 'tts';
+
     const res = await generateNodeViaBackend({
       nodeId: targetNodeId,
       kind: modality,
@@ -7253,17 +7285,37 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       connectionMode: node.connectionMode || 'auto',
       modelId,
       prompt: effectivePrompt,
-      negativePrompt: node.negativePrompt,
+      negativePrompt: modality === 'audio' ? undefined : node.negativePrompt,
       settings: {
         aspectRatio: node.aspectRatio,
         resolution: node.resolution,
         ...(effectiveQuality ? { quality: effectiveQuality } : {}),
         batchCount: node.batchCount || 1,
-        durationSec: node.durationSec || (modality === 'video' ? 5 : modality === 'audio' ? 8 : undefined),
+        durationSec:
+          modality === 'video'
+            ? node.durationSec || 5
+            : modality === 'audio'
+            ? resolvedAudioSubMode === 'sfx' || resolvedAudioSubMode === 'music'
+              ? typeof node.durationSec === 'number'
+                ? node.durationSec
+                : resolvedAudioSubMode === 'music'
+                ? 15
+                : -1
+              : undefined
+            : undefined,
         audioEnabled: node.audioEnabled ?? true,
-        audioMode: node.audioMode || (modality === 'audio' ? 'tts' : undefined),
-        voiceId: node.voiceId || (modality === 'audio' ? 'JBFqnCBsd6RMkjVDRZzb' : undefined),
-        seed: node.seed,
+        audioMode: modality === 'audio' ? resolvedAudioSubMode : node.audioMode,
+        voiceId:
+          modality === 'audio'
+            ? resolvedAudioSubMode === 'tts'
+              ? node.voiceId || 'JBFqnCBsd6RMkjVDRZzb'
+              : undefined
+            : node.voiceId,
+        seed:
+          modality === 'audio' &&
+          (resolvedAudioSubMode === 'sfx' || resolvedAudioSubMode === 'music')
+            ? undefined
+            : node.seed,
         ...(mergedModelParams ? { modelParams: mergedModelParams } : {}),
       },
       ...(mergedModelParams ? { modelParams: mergedModelParams } : {}),

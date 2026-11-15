@@ -6672,8 +6672,33 @@ export class McpStdioBridgeServer {
     }
 
     if (platformId === 'elevenlabs') {
-      const chars = Math.max(20, String(params.prompt || '').trim().length || 120);
-      return { credits: chars, unit: 'characters', source: 'rate_table', modelKey };
+      const mLower = modelId.toLowerCase();
+      if (mLower.startsWith('music_')) {
+        const effSec = durationSec > 0 ? durationSec : 15;
+        return {
+          credits: Math.max(50, Math.round(effSec * 16.67)),
+          unit: 'characters',
+          source: 'rate_table',
+          modelKey,
+        };
+      }
+      if (mLower.includes('sound')) {
+        const effSec = durationSec > 0 ? durationSec : 4;
+        return {
+          credits: Math.max(40, Math.round(effSec * 40)),
+          unit: 'characters',
+          source: 'rate_table',
+          modelKey,
+        };
+      }
+      const rawChars = Math.max(12, String(params.prompt || '').trim().length || 120);
+      const charMultiplier = mLower.includes('flash') || mLower.includes('turbo') ? 0.5 : 1;
+      return {
+        credits: Math.max(1, Math.ceil(rawChars * charMultiplier)),
+        unit: 'characters',
+        source: 'rate_table',
+        modelKey,
+      };
     }
 
     let base = 4;
@@ -6914,13 +6939,18 @@ export class McpStdioBridgeServer {
         : {};
     const resolution = String(settings.resolution ?? params.resolution ?? '').trim();
     const quality = String(settings.quality ?? params.quality ?? '').trim();
-    const durationSec = Number(settings.durationSec ?? params.durationSec ?? 5) || 5;
+    const rawDurParam = settings.durationSec ?? params.durationSec;
+    const durationSec =
+      typeof rawDurParam === 'number' && Number.isFinite(rawDurParam)
+        ? rawDurParam
+        : Number(rawDurParam ?? 5) || 5;
     const batchCount = Number(settings.batchCount ?? params.batchCount ?? 1) || 1;
     const aspectRatio = String(settings.aspectRatio ?? params.aspectRatio ?? '16:9').trim();
     const prompt = typeof params.prompt === 'string' ? params.prompt : undefined;
     const live = params.live === true;
+    const promptLenKey = platformId === 'elevenlabs' ? (prompt || '').trim().length : 0;
 
-    const quoteKey = `${user.id}|${platformId}|${modelId}|${modality}|${resolution}|${quality}|${durationSec}|${batchCount}|${aspectRatio}`;
+    const quoteKey = `${user.id}|${platformId}|${modelId}|${modality}|${resolution}|${quality}|${durationSec}|${batchCount}|${aspectRatio}|${promptLenKey}`;
     const now = Date.now();
     const cached = this.creditsQuoteCache.get(quoteKey);
     const cacheTtlMs = live ? 300_000 : 60_000;
@@ -7132,6 +7162,132 @@ export class McpStdioBridgeServer {
     };
   }
 
+  private elevenLabsVoicesCache = new Map<
+    string,
+    { fetchedAt: number; source: 'account' | 'public'; voices: Array<Record<string, unknown>> }
+  >();
+
+  private async resolveElevenLabsAuthForUser(
+    user: StoredUserRecord,
+    opts?: {
+      creditSource?: 'auto' | 'own' | 'shared' | 'owner';
+      explicitApiKey?: string;
+      explicitBaseUrl?: string;
+      explicitMcpServerId?: string;
+    }
+  ): Promise<{
+    apiKey: string;
+    oauthAccessToken: string | null;
+    oauthServerId: string | null;
+    baseUrl: string;
+    accountLabel: string | null;
+  }> {
+    const ownByok = this.authStore.getUserDecryptedByok(user.id);
+    const ownerByok =
+      user.role === 'owner' ? ownByok : this.authStore.getUserDecryptedByok('owner');
+    const ownElKeys = this.extractPlatformKeysFromByok(ownByok, 'elevenlabs');
+    const ownerElKeys = this.extractPlatformKeysFromByok(ownerByok, 'elevenlabs');
+    const envElKeys = this.getEnvKeysForPlatform('elevenlabs');
+    const ownElKey = ownElKeys.apiKey;
+    const ownerElKey = ownerElKeys.apiKey || envElKeys.apiKey;
+    const srcPref = opts?.creditSource || 'auto';
+    const resolvedByokKey =
+      opts?.explicitApiKey?.trim() ||
+      (user.role === 'owner'
+        ? ownElKey || ownerElKey
+        : srcPref === 'own'
+          ? ownElKey
+          : srcPref === 'shared'
+            ? this.hasActiveSharedGrantForPlatform(user, 'elevenlabs')
+              ? ownerElKey
+              : ''
+            : ownElKey ||
+              (this.hasActiveSharedGrantForPlatform(user, 'elevenlabs') ? ownerElKey : ''));
+
+    const baseUrl = (
+      opts?.explicitBaseUrl?.trim() ||
+      (ownElKey ? ownElKeys.baseUrl : ownerElKeys.baseUrl) ||
+      'https://api.elevenlabs.io'
+    ).replace(/\/+$/, '');
+
+    const mcpPref: 'auto' | 'own' | 'shared' =
+      srcPref === 'own' ? 'own' : srcPref === 'shared' ? 'shared' : 'auto';
+    const elMcpServer = this.findMcpServerForUser(
+      user,
+      'elevenlabs',
+      opts?.explicitMcpServerId || undefined,
+      mcpPref
+    );
+    const oauthServerId =
+      elMcpServer && this.externalMcpHost.hasOAuthToken(elMcpServer.id)
+        ? elMcpServer.id
+        : null;
+    const oauthAccessToken = oauthServerId
+      ? await this.externalMcpHost.getValidOAuthAccessToken(oauthServerId)
+      : null;
+    const accountLabel =
+      elMcpServer?.account?.email ||
+      elMcpServer?.account?.name ||
+      elMcpServer?.account?.username ||
+      elMcpServer?.account?.sub ||
+      null;
+
+    return {
+      apiKey: resolvedByokKey,
+      oauthAccessToken,
+      oauthServerId,
+      baseUrl,
+      accountLabel,
+    };
+  }
+
+  private async runElevenLabsWithOAuthRetry<T>(
+    auth: {
+      apiKey: string;
+      oauthAccessToken: string | null;
+      oauthServerId: string | null;
+      baseUrl: string;
+    },
+    operation: (
+      client: InstanceType<(typeof import('@open-dreamflow/provider-sdk'))['ElevenLabsClient']>,
+      usedOAuth: boolean
+    ) => Promise<T>
+  ): Promise<T> {
+    const sdk = await this.loadProviderSdk();
+    const preferOAuth = Boolean(auth.oauthAccessToken && !auth.apiKey);
+    const primaryClient = new sdk.ElevenLabsClient({
+      apiKey: auth.apiKey || undefined,
+      oauthAccessToken: preferOAuth ? auth.oauthAccessToken || undefined : undefined,
+      baseUrl: auth.baseUrl,
+    });
+    try {
+      return await operation(primaryClient, preferOAuth);
+    } catch (err) {
+      const status = (err as { statusCode?: number })?.statusCode;
+      if (status === 401 && preferOAuth && auth.oauthServerId) {
+        const refreshed = await this.externalMcpHost.getValidOAuthAccessToken(
+          auth.oauthServerId,
+          { forceRefresh: true }
+        );
+        if (refreshed) {
+          const retryClient = new sdk.ElevenLabsClient({
+            oauthAccessToken: refreshed,
+            baseUrl: auth.baseUrl,
+          });
+          return await operation(retryClient, true);
+        }
+      }
+      if ((status === 401 || status === 403) && !preferOAuth && auth.oauthAccessToken) {
+        const fallbackOAuthClient = new sdk.ElevenLabsClient({
+          oauthAccessToken: auth.oauthAccessToken,
+          baseUrl: auth.baseUrl,
+        });
+        return await operation(fallbackOAuthClient, true);
+      }
+      throw err;
+    }
+  }
+
   private async snapshotLivePlatformBalance(params: {
     user: StoredUserRecord;
     platformId: string;
@@ -7171,19 +7327,20 @@ export class McpStdioBridgeServer {
       }
     }
 
-    if (platformId === 'elevenlabs' && effectiveKeys.apiKey) {
+    if (platformId === 'elevenlabs') {
       try {
-        const elBase = (effectiveKeys.baseUrl || 'https://api.elevenlabs.io').replace(/\/+$/, '');
-        const elRes = await fetch(`${elBase}/v1/user/subscription`, {
-          headers: { 'xi-api-key': effectiveKeys.apiKey },
-          signal: AbortSignal.timeout(5_000),
+        const elAuth = await this.resolveElevenLabsAuthForUser(user, {
+          creditSource: effectiveCreditSource,
+          explicitApiKey: effectiveKeys.apiKey,
+          explicitBaseUrl: effectiveKeys.baseUrl,
+          explicitMcpServerId: effectiveMcpServer?.id,
         });
-        if (elRes.ok) {
-          const elJson = (await elRes.json()) as Record<string, unknown>;
-          const used = Number(elJson.character_count);
-          const limit = Number(elJson.character_limit);
-          if (Number.isFinite(used) && Number.isFinite(limit)) {
-            return { balance: Math.max(0, limit - used), unit: 'characters' };
+        if (elAuth.apiKey || elAuth.oauthAccessToken) {
+          const sub = await this.runElevenLabsWithOAuthRetry(elAuth, (client) =>
+            client.getSubscription(AbortSignal.timeout(5_000))
+          );
+          if (typeof sub.remainingCharacters === 'number' && Number.isFinite(sub.remainingCharacters)) {
+            return { balance: sub.remainingCharacters, unit: 'characters' };
           }
         }
       } catch {
@@ -7257,19 +7414,8 @@ export class McpStdioBridgeServer {
     const hfPlan = hfBal?.plan || '';
     const hfSupportsUnlimited = /ultimate|unlimited|pro/i.test(hfPlan);
 
-    // 3. ElevenLabs Quota (`/v1/user/subscription`)
-    const ownElKeys = this.extractPlatformKeysFromByok(ownByok, 'elevenlabs');
-    const ownerElKeys = this.extractPlatformKeysFromByok(ownerByok, 'elevenlabs');
-    const envElKeys = this.getEnvKeysForPlatform('elevenlabs');
-    const ownElKey = ownElKeys.apiKey;
-    const ownerElKey = ownerElKeys.apiKey || envElKeys.apiKey;
-    const elApiKey =
-      user.role === 'owner'
-        ? ownElKey || ownerElKey
-        : ownElKey || (this.hasActiveSharedGrantForPlatform(user, 'elevenlabs') ? ownerElKey : '');
-    const elBaseUrl = (
-      (ownElKey ? ownElKeys.baseUrl : ownerElKeys.baseUrl) || 'https://api.elevenlabs.io'
-    ).replace(/\/+$/, '');
+    // 3. ElevenLabs Quota (`/v1/user/subscription` via BYOK key OR 1-Click MCP OAuth Bearer)
+    const elAuth = await this.resolveElevenLabsAuthForUser(user, { creditSource: 'auto' });
     let elevenLabsQuota: {
       connected: boolean;
       characterCount?: number;
@@ -7277,34 +7423,29 @@ export class McpStdioBridgeServer {
       remainingCharacters?: number;
       tier?: string;
       nextResetUnix?: number;
+      account?: string | null;
     } = {
-      connected: Boolean(elApiKey) || visibleServers.some((s) => s.platformId === 'elevenlabs' && s.status === 'connected'),
+      connected:
+        Boolean(elAuth.apiKey || elAuth.oauthAccessToken) ||
+        visibleServers.some((s) => s.platformId === 'elevenlabs' && s.status === 'connected'),
+      account: elAuth.accountLabel,
     };
-    if (elApiKey) {
+    if (elAuth.apiKey || elAuth.oauthAccessToken) {
       try {
-        const elRes = await fetch(`${elBaseUrl}/v1/user/subscription`, {
-          headers: { 'xi-api-key': elApiKey },
-          signal: AbortSignal.timeout(5_000),
-        });
-        if (elRes.ok) {
-          const elJson = (await elRes.json()) as Record<string, unknown>;
-          const used = Number(elJson.character_count);
-          const limit = Number(elJson.character_limit);
-          elevenLabsQuota = {
-            connected: true,
-            characterCount: Number.isFinite(used) ? used : undefined,
-            characterLimit: Number.isFinite(limit) ? limit : undefined,
-            remainingCharacters:
-              Number.isFinite(used) && Number.isFinite(limit) ? Math.max(0, limit - used) : undefined,
-            tier: typeof elJson.tier === 'string' ? elJson.tier : undefined,
-            nextResetUnix:
-              typeof elJson.next_character_count_reset_unix === 'number'
-                ? elJson.next_character_count_reset_unix
-                : undefined,
-          };
-        }
+        const sub = await this.runElevenLabsWithOAuthRetry(elAuth, (client) =>
+          client.getSubscription(AbortSignal.timeout(5_000))
+        );
+        elevenLabsQuota = {
+          connected: true,
+          characterCount: sub.characterCount,
+          characterLimit: sub.characterLimit,
+          remainingCharacters: sub.remainingCharacters,
+          tier: sub.tier,
+          nextResetUnix: sub.nextResetUnix,
+          account: elAuth.accountLabel,
+        };
       } catch {
-        // Non-fatal fallback
+        // Non-fatal fallback if scope does not include user_read
       }
     }
 
@@ -7499,6 +7640,8 @@ export class McpStdioBridgeServer {
         platforms[pid] = {
           platformId: pid,
           ...elevenLabsQuota,
+          credits: elevenLabsQuota.remainingCharacters ?? meta.manualBudgetCredits ?? null,
+          plan: elevenLabsQuota.tier || null,
           unit: 'characters',
           expiresAt: expInfo.expiresAt,
           nextResetAt: expInfo.nextResetAt,
@@ -9292,7 +9435,10 @@ export class McpStdioBridgeServer {
       postSnap &&
       postSnap.balance === preSnap.balance &&
       !usedUnlimitedMode &&
-      (platformId === 'higgsfield' || platformId === 'dreamina' || platformId === 'kling')
+      (platformId === 'higgsfield' ||
+        platformId === 'dreamina' ||
+        platformId === 'kling' ||
+        platformId === 'elevenlabs')
     ) {
       await new Promise((r) => setTimeout(r, 1200));
       postSnap = await this.snapshotLivePlatformBalance({
@@ -9523,12 +9669,19 @@ export class McpStdioBridgeServer {
     const resolution = String(
       settings.resolution ?? params.resolution ?? (kind === 'video' ? '1080p' : '2K')
     ).trim();
+    const rawDurationRequested = Number(
+      settings.durationSec ?? params.durationSec ?? params.durationSeconds
+    );
     const durationSec = Math.max(
       2,
       Math.min(
         30,
         Math.round(
-          Number(settings.durationSec ?? params.durationSec ?? params.durationSeconds ?? (kind === 'audio' ? 8 : 5)) || 5
+          (Number.isFinite(rawDurationRequested) && rawDurationRequested > 0
+            ? rawDurationRequested
+            : kind === 'audio'
+              ? 8
+              : 5) || 5
         )
       )
     );
@@ -9785,7 +9938,16 @@ export class McpStdioBridgeServer {
               ))
         : null;
 
-    if (connectionMode === 'mcp' || platformId === 'custom-mcp' || candidateMcpServer) {
+    const bypassMcpForElevenLabsDirectRest =
+      platformId === 'elevenlabs' &&
+      !mcpToolName &&
+      (Boolean(apiKey) ||
+        Boolean(candidateMcpServer && this.externalMcpHost.hasOAuthToken(candidateMcpServer.id)));
+
+    if (
+      !bypassMcpForElevenLabsDirectRest &&
+      (connectionMode === 'mcp' || platformId === 'custom-mcp' || candidateMcpServer)
+    ) {
       if (!candidateMcpServer) {
         throw new BridgeHttpError(
           400,
@@ -11144,26 +11306,192 @@ export class McpStdioBridgeServer {
         }
 
         if (platformId === 'elevenlabs') {
-          if (!apiKey) {
+          const elAuth = await this.resolveElevenLabsAuthForUser(ctx.user, {
+            explicitApiKey: apiKey || undefined,
+            explicitBaseUrl: baseUrl || undefined,
+            explicitMcpServerId: mcpServerId || ctx.resolvedMcpServerId || undefined,
+          });
+          if (!elAuth.apiKey && !elAuth.oauthAccessToken) {
             throw new BridgeHttpError(
               400,
-              'ElevenLabs API key missing. Paste your xi-api-key in Connections · Credits or connect @elevenlabs/elevenlabs-mcp.',
+              'ElevenLabs credentials missing. Click 1-Click Connect on ElevenLabs in Connections · Credits or paste your xi-api-key.',
               platformId
             );
           }
-          const client = new sdk.ElevenLabsClient({ apiKey, baseUrl });
+
+          const elModelParams: Record<string, unknown> = {
+            ...(typeof settings.modelParams === 'object' && settings.modelParams !== null
+              ? (settings.modelParams as Record<string, unknown>)
+              : {}),
+            ...(typeof params.modelParams === 'object' && params.modelParams !== null
+              ? (params.modelParams as Record<string, unknown>)
+              : {}),
+          };
+
+          const effectiveModelId = (modelId || 'eleven_v4').trim();
+          const isMusic =
+            effectiveModelId.startsWith('music_') || audioMode === 'music';
           const isSfx =
-            modelId === 'eleven_text_to_sound_v2' || audioMode === 'sfx' || audioMode === 'sound';
-          const out = isSfx
-            ? await client.generateSoundEffect({
-                prompt,
-                durationSeconds: durationSec,
-              })
-            : await client.generateSpeech({
+            !isMusic &&
+            (effectiveModelId.startsWith('eleven_text_to_sound') ||
+              audioMode === 'sfx' ||
+              audioMode === 'sound');
+
+          const rawSeed = settings.seed ?? params.seed ?? elModelParams.seed;
+          const numericSeed =
+            rawSeed !== undefined && rawSeed !== null && rawSeed !== '' && Number.isFinite(Number(rawSeed))
+              ? Math.round(Number(rawSeed))
+              : undefined;
+
+          const requestedAudioDuration =
+            Number.isFinite(rawDurationRequested) && rawDurationRequested !== 0
+              ? rawDurationRequested < 0
+                ? undefined
+                : rawDurationRequested
+              : isMusic
+                ? 15
+                : undefined;
+
+          const { out, usedOAuth } = await this.runElevenLabsWithOAuthRetry(
+            elAuth,
+            async (client, isOAuth) => {
+              if (isMusic) {
+                const forceInstrumental =
+                  elModelParams.force_instrumental === true ||
+                  String(elModelParams.force_instrumental ?? '').toLowerCase() === 'true';
+                const musicOut = await client.generateMusic({
+                  prompt,
+                  modelId: effectiveModelId.startsWith('music_') ? effectiveModelId : 'music_v2_5',
+                  durationSeconds: requestedAudioDuration,
+                  forceInstrumental,
+                });
+                return { out: musicOut, usedOAuth: isOAuth };
+              }
+
+              if (isSfx) {
+                const loop =
+                  elModelParams.loop === true ||
+                  String(elModelParams.loop ?? '').toLowerCase() === 'true';
+                const promptInfluence =
+                  elModelParams.prompt_influence !== undefined &&
+                  Number.isFinite(Number(elModelParams.prompt_influence))
+                    ? Number(elModelParams.prompt_influence)
+                    : 0.35;
+                const sfxOut = await client.generateSoundEffect({
+                  prompt,
+                  modelId: effectiveModelId.startsWith('eleven_text_to_sound')
+                    ? effectiveModelId
+                    : 'eleven_text_to_sound_v3',
+                  durationSeconds: requestedAudioDuration,
+                  promptInfluence,
+                  loop,
+                });
+                return { out: sfxOut, usedOAuth: isOAuth };
+              }
+
+              const stability =
+                elModelParams.stability !== undefined && Number.isFinite(Number(elModelParams.stability))
+                  ? Number(elModelParams.stability)
+                  : undefined;
+              const similarityBoost =
+                elModelParams.similarity_boost !== undefined &&
+                Number.isFinite(Number(elModelParams.similarity_boost))
+                  ? Number(elModelParams.similarity_boost)
+                  : undefined;
+              const style =
+                elModelParams.style !== undefined && Number.isFinite(Number(elModelParams.style))
+                  ? Number(elModelParams.style)
+                  : undefined;
+              const speed =
+                elModelParams.speed !== undefined && Number.isFinite(Number(elModelParams.speed))
+                  ? Number(elModelParams.speed)
+                  : undefined;
+              const useSpeakerBoost =
+                typeof elModelParams.use_speaker_boost === 'boolean'
+                  ? elModelParams.use_speaker_boost
+                  : undefined;
+              const languageCode =
+                typeof elModelParams.language_code === 'string' && elModelParams.language_code.trim()
+                  ? elModelParams.language_code.trim()
+                  : undefined;
+              const applyTextNormalization =
+                elModelParams.apply_text_normalization === 'on' ||
+                elModelParams.apply_text_normalization === 'off' ||
+                elModelParams.apply_text_normalization === 'auto'
+                  ? elModelParams.apply_text_normalization
+                  : undefined;
+
+              // Optional multi-speaker `[VoiceName]: ...` turn parsing for Eleven v4 Dialogue
+              let dialogueInputs: Array<{ text: string; voiceId: string }> | undefined;
+              if (effectiveModelId === 'eleven_v4' || effectiveModelId === 'eleven_v4_turbo') {
+                const knownVoicesByShortName: Record<string, string> = {
+                  roger: 'CwhRBWXzGAHq8TQ4Fs17',
+                  sarah: 'EXAVITQu4vr4xnSDxMaL',
+                  laura: 'FGY2WhTYpPnrIDTdsKH5',
+                  charlie: 'IKne3meq5aSn9XLyUdCD',
+                  george: 'JBFqnCBsd6RMkjVDRZzb',
+                  callum: 'N2lVS1w4EtoT3dr4eOWO',
+                  river: 'SAz9YHcvj6GT2YYXdXww',
+                  harry: 'SOYHLrjzK2X1ezoPC6cr',
+                  liam: 'TX3LPaxmHKxFdv7VOQHJ',
+                  alice: 'Xb7hH8MSUJpSbSDYk0k2',
+                  matilda: 'XrExE9yKIg1WjnnlVkGX',
+                  will: 'bIHbv24MWmeRgasZH58o',
+                  jessica: 'cgSgspJ2msm6clMCkdW9',
+                  eric: 'cjVigY5qzO86Huf0OWal',
+                  bella: 'hpp4J3VqNfWAUOO0d1Us',
+                  chris: 'iP95p4xoKVk53GoZ742B',
+                  brian: 'nPczCjzI2devNBz1zQrb',
+                  daniel: 'onwK4e9ZLuTAKqWW03F9',
+                  lily: 'pFZP5JQG7iQjIQuC4Bku',
+                  adam: 'pNInz6obpgDQGcFmaJgB',
+                  bill: 'pqHfZKP75CvOlQylNhV4',
+                };
+                const rawLines = prompt
+                  .split(/\r?\n/)
+                  .map((l) => l.trim())
+                  .filter(Boolean);
+                if (rawLines.length >= 2) {
+                  const parsedTurns: Array<{ text: string; voiceId: string }> = [];
+                  for (const line of rawLines) {
+                    const m = /^\[?([A-Za-z]+)\]?\s*:\s*(.+)$/.exec(line);
+                    const matchedId = m ? knownVoicesByShortName[m[1].toLowerCase()] : undefined;
+                    if (!m || !matchedId || !m[2].trim()) {
+                      parsedTurns.length = 0;
+                      break;
+                    }
+                    parsedTurns.push({ text: m[2].trim(), voiceId: matchedId });
+                  }
+                  if (parsedTurns.length >= 2) {
+                    dialogueInputs = parsedTurns;
+                  }
+                }
+              }
+
+              const ttsModel =
+                effectiveModelId.startsWith('music_') ||
+                effectiveModelId.startsWith('eleven_text_to_sound')
+                  ? 'eleven_v4'
+                  : effectiveModelId;
+
+              const ttsOut = await client.generateSpeech({
                 text: prompt,
-                modelId: modelId || 'eleven_multilingual_v2',
+                dialogueInputs,
+                modelId: ttsModel,
                 voiceId,
+                stability,
+                similarityBoost,
+                style,
+                speed,
+                useSpeakerBoost,
+                languageCode,
+                applyTextNormalization,
+                seed: numericSeed,
               });
+              return { out: ttsOut, usedOAuth: isOAuth };
+            }
+          );
+
           const saved = await this.writeRawLiveBytesToMedia(
             out.audioBytes,
             'elevenlabs_live',
@@ -11176,8 +11504,8 @@ export class McpStdioBridgeServer {
             kind: 'audio',
             platformId,
             modelId: out.modelId,
-            transportUsed: 'api-key',
-            providerUsed: 'elevenlabs-api',
+            transportUsed: usedOAuth ? 'mcp' : 'api-key',
+            providerUsed: usedOAuth ? 'elevenlabs-mcp-oauth' : 'elevenlabs-api',
             mediaUrl: saved.mediaUrl,
             fullUrl: saved.fullUrl,
             audioUrl: saved.mediaUrl,
@@ -16042,6 +16370,98 @@ export class McpStdioBridgeServer {
     }
 
     // 4b. Stage 7 Multi-Platform Catalog & External Multi-Server MCP Host Routes
+    if (pathname === '/api/elevenlabs/voices' && req.method === 'GET') {
+      try {
+        const refreshParam = String(reqUrl.searchParams.get('refresh') || '').trim().toLowerCase();
+        const forceRefresh = refreshParam === '1' || refreshParam === 'true';
+        const now = Date.now();
+        const cached = this.elevenLabsVoicesCache.get(user.id);
+        if (!forceRefresh && cached && now - cached.fetchedAt < 60_000) {
+          this.sendJson(res, 200, {
+            ok: true,
+            source: cached.source,
+            cached: true,
+            voices: cached.voices,
+          });
+          return;
+        }
+
+        const elAuth = await this.resolveElevenLabsAuthForUser(user, { creditSource: 'auto' });
+        let source: 'account' | 'public' = 'public';
+        let voicesList: Array<Record<string, unknown>> = [];
+
+        if (elAuth.apiKey || elAuth.oauthAccessToken) {
+          try {
+            const list = await this.runElevenLabsWithOAuthRetry(elAuth, (client) =>
+              client.listVoices(AbortSignal.timeout(8_000))
+            );
+            voicesList = list.map((v) => ({ ...v }));
+            source = 'account';
+          } catch {
+            // Fall through to public premade voices endpoint
+          }
+        }
+
+        if (voicesList.length === 0) {
+          const pubRes = await fetch(`${elAuth.baseUrl}/v1/voices`, {
+            headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(8_000),
+          });
+          if (pubRes.ok) {
+            const pubJson = (await pubRes.json()) as {
+              voices?: Array<{
+                voice_id?: string;
+                name?: string;
+                category?: string;
+                description?: string;
+                preview_url?: string;
+                labels?: Record<string, string>;
+              }>;
+            };
+            voicesList = (pubJson.voices || [])
+              .filter((v) => typeof v.voice_id === 'string' && v.voice_id.trim())
+              .map((v) => {
+                const fullName = String(v.name || 'Voice').trim();
+                const dashIdx = fullName.indexOf(' - ');
+                const shortName = dashIdx > 0 ? fullName.slice(0, dashIdx).trim() : fullName;
+                const subtitle = dashIdx > 0 ? fullName.slice(dashIdx + 3).trim() : '';
+                const labels = v.labels || {};
+                return {
+                  id: String(v.voice_id).trim(),
+                  name: fullName,
+                  shortName,
+                  subtitle,
+                  category: String(v.category || 'premade'),
+                  accent: String(labels.accent || ''),
+                  gender: String(labels.gender || ''),
+                  age: String(labels.age || ''),
+                  useCase: String(labels.use_case || ''),
+                  description: String(v.description || subtitle || ''),
+                  previewUrl: String(v.preview_url || ''),
+                };
+              });
+          }
+        }
+
+        this.elevenLabsVoicesCache.set(user.id, {
+          fetchedAt: now,
+          source,
+          voices: voicesList,
+        });
+        this.sendJson(res, 200, {
+          ok: true,
+          source,
+          voices: voicesList,
+        });
+      } catch (err) {
+        this.sendJson(res, 500, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
     if (pathname === '/api/platforms' && req.method === 'GET') {
       try {
         const forceRefreshParam = String(reqUrl.searchParams.get('forceRefresh') || '').trim().toLowerCase();

@@ -35,7 +35,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { CanvasNode, DreaminaToolId } from '../types/studio';
-import { getPlatformBadgeLabel } from '../presets/platformCatalog';
+import { ELEVENLABS_VOICES, getPlatformBadgeLabel } from '../presets/platformCatalog';
 import { useStudioStore } from '../store/useStudioStore';
 import { createDefaultWaveform } from '../utils/proceduralMedia';
 import {
@@ -2566,6 +2566,7 @@ const InpaintMaskOverlay: React.FC<{
 };
 
 const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
+  const downloadNodeMedia = useStudioStore((s) => s.downloadNodeMedia);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [liveDuration, setLiveDuration] = useState<number | null>(null);
@@ -2679,24 +2680,53 @@ const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
     }
   };
 
-  const modeLabel =
-    node.audioMode === 'tts' || node.audioMode === 'voiceover'
-      ? 'Voice TTS'
-      : node.audioMode === 'sfx'
-      ? 'Sound Effects (SFX)'
-      : 'Ambient Audio';
+  const effectiveSubMode: 'tts' | 'sfx' | 'music' =
+    node.audioMode === 'music' || (node.modelId || '').startsWith('music_')
+      ? 'music'
+      : node.audioMode === 'sfx' || (node.modelId || '').includes('sound')
+      ? 'sfx'
+      : 'tts';
 
-  const displaySec = liveDuration || node.durationSec || 8;
+  const matchedVoice = useMemo(
+    () =>
+      ELEVENLABS_VOICES.find(
+        (v) => v.id === (node.voiceId || 'JBFqnCBsd6RMkjVDRZzb')
+      ),
+    [node.voiceId]
+  );
+
+  const modeLabel =
+    effectiveSubMode === 'music'
+      ? node.modelParams?.force_instrumental
+        ? 'Music · Instrumental'
+        : 'Eleven Music'
+      : effectiveSubMode === 'sfx'
+      ? node.modelParams?.loop
+        ? 'SFX · Loop'
+        : 'Sound Effects'
+      : `Voice · ${matchedVoice?.shortName || 'Speech'}`;
+
+  const rawRequestedSec =
+    typeof node.durationSec === 'number' && node.durationSec > 0
+      ? node.durationSec
+      : undefined;
+  const displaySec = liveDuration || rawRequestedSec || 8;
+  const idleRightBadge =
+    effectiveSubMode === 'tts'
+      ? 'Script'
+      : node.durationSec === -1 || rawRequestedSec === undefined
+      ? 'Auto'
+      : formatDurationPill(rawRequestedSec);
 
   if (!playableSrc) {
     return (
       <div className="w-full h-full px-4 py-3 bg-[#191919] flex flex-col justify-between">
         <div className="flex items-center justify-between gap-2">
-          <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] border border-white/[0.06] text-[10.5px] font-medium text-white/80">
+          <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] border border-white/[0.06] text-[10.5px] font-medium text-white/80 truncate">
             {modeLabel}
           </span>
-          <span className="tabular-nums text-[10.5px] text-white/40">
-            {formatDurationPill(displaySec)}
+          <span className="tabular-nums text-[10.5px] text-white/45 shrink-0">
+            {idleRightBadge}
           </span>
         </div>
         <div className="flex items-center gap-2.5 text-white/55">
@@ -2706,7 +2736,11 @@ const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
           <div className="text-[11.5px] text-white/50 line-clamp-2 leading-snug">
             {node.prompt.trim()
               ? node.prompt
-              : 'Select voice or SFX & enter script below to generate'}
+              : effectiveSubMode === 'music'
+              ? 'Describe genre, instruments, mood & vocals below to compose'
+              : effectiveSubMode === 'sfx'
+              ? 'Describe foley, ambience or sound sting below to generate'
+              : 'Choose a voice & enter narration or [Voice]: dialogue script'}
           </div>
         </div>
       </div>
@@ -2736,14 +2770,28 @@ const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
         />
       )}
 
-      {/* Top Row: Mode Tag + Duration Readout */}
+      {/* Top Row: Mode Tag + Duration Readout + Download */}
       <div className="flex items-center justify-between gap-2">
-        <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] border border-white/[0.06] text-[10.5px] font-medium text-white/80">
+        <span className="px-2 py-0.5 rounded-[5px] bg-[#252525] border border-white/[0.06] text-[10.5px] font-medium text-white/80 truncate">
           {modeLabel}
         </span>
-        <span className="tabular-nums text-[11px] tabular-nums text-white/55">
-          {formatDurationPill(displaySec)}
-        </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="tabular-nums text-[11px] text-white/60">
+            {liveDuration ? formatDurationPill(liveDuration) : rawRequestedSec ? formatDurationPill(rawRequestedSec) : 'MP3'}
+          </span>
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              void downloadNodeMedia(node.id);
+            }}
+            title="Download MP3"
+            className="w-5 h-5 rounded-[5px] hover:bg-white/[0.1] text-white/50 hover:text-white flex items-center justify-center transition-colors"
+          >
+            <Download className="w-3 h-3" strokeWidth={1.75} />
+          </button>
+        </div>
       </div>
 
       {/* Middle Row: Play/Pause + 64-Bar Interactive Waveform */}

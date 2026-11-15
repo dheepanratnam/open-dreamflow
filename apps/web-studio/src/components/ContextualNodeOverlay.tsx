@@ -23,9 +23,12 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
+  Music,
   Paintbrush,
+  Pause,
   Play,
   Plus,
+  Repeat,
   RotateCcw,
   Scissors,
   Search,
@@ -52,9 +55,11 @@ import type {
 import {
   collectDownloadableMediaItemsFromNodes,
   fetchCreditQuoteViaBackend,
+  fetchElevenLabsVoicesViaBackend,
 } from '../services/executionRouter';
 import {
   ELEVENLABS_VOICES,
+  type ElevenLabsVoiceCatalogEntry,
   getModelsForPlatformAndModality,
   getPlatformConnectionStatus,
   getPlatformsForModality,
@@ -265,6 +270,7 @@ export const ContextualNodeOverlay: React.FC = () => {
     | 'duration'
     | 'camera'
     | 'voice'
+    | 'speed'
     | 'advanced'
     | 'plus-upload'
     | 'plus-assets'
@@ -272,6 +278,10 @@ export const ContextualNodeOverlay: React.FC = () => {
   >(null);
   const [modelSearch, setModelSearch] = useState('');
   const [modelFamilyFilter, setModelFamilyFilter] = useState<string>('All');
+  const [voiceSearch, setVoiceSearch] = useState('');
+  const [liveVoices, setLiveVoices] = useState<ElevenLabsVoiceCatalogEntry[]>([]);
+  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
+  const voicePreviewAudioRef = useRef<HTMLAudioElement | null>(null);
   const [atAutocompleteOpen, setAtAutocompleteOpen] = useState(false);
   const [atQuery, setAtQuery] = useState('');
   const [atTokenRange, setAtTokenRange] = useState<{ start: number; end: number } | null>(null);
@@ -313,13 +323,55 @@ export const ContextualNodeOverlay: React.FC = () => {
     setOpenMenu(null);
     setModelSearch('');
     setModelFamilyFilter('All');
+    setVoiceSearch('');
     setAtAutocompleteOpen(false);
     setAtQuery('');
     setAtTokenRange(null);
     setAtCategory(null);
     setAssetPickerSearch('');
     setIsComposerDragOver(false);
+    if (voicePreviewAudioRef.current) {
+      voicePreviewAudioRef.current.pause();
+      voicePreviewAudioRef.current = null;
+      setPreviewingVoiceId(null);
+    }
   }, [selectedNode?.id, resolvedEffectivePlatformId, selectedModality]);
+
+  useEffect(() => {
+    if (selectedModality !== 'audio' || resolvedEffectivePlatformId !== 'elevenlabs') {
+      return;
+    }
+    let cancelled = false;
+    void fetchElevenLabsVoicesViaBackend(false).then((res) => {
+      if (cancelled || !res.ok || !Array.isArray(res.voices) || res.voices.length === 0) {
+        return;
+      }
+      const mapped: ElevenLabsVoiceCatalogEntry[] = res.voices.map((v) => {
+        const staticMatch = ELEVENLABS_VOICES.find((sv) => sv.id === v.id);
+        const accentRaw = v.accent
+          ? v.accent.charAt(0).toUpperCase() + v.accent.slice(1)
+          : staticMatch?.accent || 'Workspace';
+        const descRaw =
+          v.description ||
+          v.useCase ||
+          staticMatch?.subtitle ||
+          (v.category === 'premade' ? 'Official Studio Voice' : 'Custom Workspace Voice');
+        return {
+          id: v.id,
+          shortName: v.name,
+          name: staticMatch?.name || `${v.name} (${descRaw})`,
+          subtitle: staticMatch?.subtitle || `${accentRaw} · ${descRaw}`,
+          accent: accentRaw,
+          gender: v.gender || staticMatch?.gender || 'custom',
+          previewUrl: v.previewUrl || staticMatch?.previewUrl || '',
+        };
+      });
+      setLiveVoices(mapped);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedModality, resolvedEffectivePlatformId]);
 
   useEffect(() => {
     if (!selectedNode || !selectedModality) {
@@ -450,7 +502,7 @@ export const ContextualNodeOverlay: React.FC = () => {
     availablePlatforms.find((p) => p.id === effectivePlatformId) ||
     availablePlatforms[0];
 
-  const availableModels = modality
+  const allPlatformModels = modality
     ? getModelsForPlatformAndModality(
         activePlatformDef?.id || effectivePlatformId,
         modality,
@@ -460,6 +512,34 @@ export const ContextualNodeOverlay: React.FC = () => {
     : [];
 
   const canonicalSelectedModelId = resolveCanonicalModelId(selectedNode.modelId);
+  const rawMatchedAudioModel =
+    modality === 'audio'
+      ? allPlatformModels.find(
+          (m) => m.id === selectedNode.modelId || m.id === canonicalSelectedModelId
+        )
+      : undefined;
+
+  const effectiveAudioSubMode: 'tts' | 'sfx' | 'music' =
+    selectedNode.audioMode === 'music' ||
+    rawMatchedAudioModel?.audioSubMode === 'music' ||
+    (selectedNode.modelId || '').startsWith('music_')
+      ? 'music'
+      : selectedNode.audioMode === 'sfx' ||
+        rawMatchedAudioModel?.audioSubMode === 'sfx' ||
+        (selectedNode.modelId || '').includes('sound')
+      ? 'sfx'
+      : 'tts';
+
+  const availableModels =
+    modality === 'audio' && (activePlatformDef?.id || effectivePlatformId) === 'elevenlabs'
+      ? allPlatformModels.filter((m) => {
+          const mSub =
+            m.audioSubMode ||
+            (m.id.startsWith('music_') ? 'music' : m.id.includes('sound') ? 'sfx' : 'tts');
+          return mSub === effectiveAudioSubMode;
+        })
+      : allPlatformModels;
+
   const activeModelDef =
     availableModels.find(
       (m) => m.id === selectedNode.modelId || m.id === canonicalSelectedModelId
@@ -607,11 +687,28 @@ export const ContextualNodeOverlay: React.FC = () => {
     (!activeModelDef?.audioToggleModes?.length ||
       activeModelDef.audioToggleModes.includes(activeVideoInputMethod)) &&
     !isKlingV26AudioRestricted;
+  const audioSpeedSpec =
+    modality === 'audio' && effectiveAudioSubMode === 'tts'
+      ? activeModelDef?.parameters?.find((p) => p.name === 'speed')
+      : undefined;
+  const showAudioSpeedPill = Boolean(audioSpeedSpec);
+  const showAudioLoopPill =
+    modality === 'audio' &&
+    effectiveAudioSubMode === 'sfx' &&
+    Boolean(activeModelDef?.parameters?.some((p) => p.name === 'loop'));
+  const showAudioInstrumentalPill =
+    modality === 'audio' &&
+    effectiveAudioSubMode === 'music' &&
+    Boolean(activeModelDef?.parameters?.some((p) => p.name === 'force_instrumental'));
+
   const remainingParamSpecs = (activeModelDef?.parameters || []).filter(
     (p) =>
       p.name !== 'quality' &&
       p !== modeSpec &&
       !(showVideoAudioPill && p.name === 'generate_audio') &&
+      !(showAudioSpeedPill && p.name === 'speed') &&
+      !(showAudioLoopPill && p.name === 'loop') &&
+      !(showAudioInstrumentalPill && p.name === 'force_instrumental') &&
       !FIRST_CLASS_DUP_PARAMS.has(p.name.toLowerCase())
   );
   const customParamCount = remainingParamSpecs.filter((spec) => {
@@ -730,9 +827,93 @@ export const ContextualNodeOverlay: React.FC = () => {
     (effectivePlatformId === 'dreamina' && chromeBridge.dreaminaTabConnected) ||
     (effectivePlatformId === 'google-flow' && chromeBridge.flowTabConnected);
 
+  const mergedVoiceCatalog: ElevenLabsVoiceCatalogEntry[] = (() => {
+    if (liveVoices.length === 0) return ELEVENLABS_VOICES;
+    const seen = new Set<string>();
+    const combined: ElevenLabsVoiceCatalogEntry[] = [];
+    // Put custom/cloned workspace voices first, then official premade voices
+    const customFirst = [
+      ...liveVoices.filter((lv) => !ELEVENLABS_VOICES.some((sv) => sv.id === lv.id)),
+      ...ELEVENLABS_VOICES.map((sv) => {
+        const liveMatch = liveVoices.find((lv) => lv.id === sv.id);
+        return liveMatch ? { ...sv, previewUrl: liveMatch.previewUrl || sv.previewUrl } : sv;
+      }),
+    ];
+    for (const v of customFirst) {
+      if (seen.has(v.id)) continue;
+      seen.add(v.id);
+      combined.push(v);
+    }
+    return combined;
+  })();
+
   const activeVoice =
-    ELEVENLABS_VOICES.find((v) => v.id === (selectedNode.voiceId || 'JBFqnCBsd6RMkjVDRZzb')) ||
-    ELEVENLABS_VOICES[0];
+    mergedVoiceCatalog.find(
+      (v) => v.id === (selectedNode.voiceId || 'JBFqnCBsd6RMkjVDRZzb')
+    ) || mergedVoiceCatalog[0] || ELEVENLABS_VOICES[0];
+
+  const filteredVoiceCatalog = (() => {
+    const q = voiceSearch.trim().toLowerCase();
+    if (!q) return mergedVoiceCatalog;
+    return mergedVoiceCatalog.filter(
+      (v) =>
+        v.shortName.toLowerCase().includes(q) ||
+        v.name.toLowerCase().includes(q) ||
+        v.subtitle.toLowerCase().includes(q) ||
+        v.accent.toLowerCase().includes(q) ||
+        (v.gender || '').toLowerCase().includes(q)
+    );
+  })();
+
+  const toggleVoiceSamplePreview = (e: React.MouseEvent, voice: ElevenLabsVoiceCatalogEntry) => {
+    e.stopPropagation();
+    if (!voice.previewUrl) return;
+    if (previewingVoiceId === voice.id && voicePreviewAudioRef.current) {
+      voicePreviewAudioRef.current.pause();
+      voicePreviewAudioRef.current = null;
+      setPreviewingVoiceId(null);
+      return;
+    }
+    if (voicePreviewAudioRef.current) {
+      voicePreviewAudioRef.current.pause();
+      voicePreviewAudioRef.current = null;
+    }
+    const audio = new Audio(voice.previewUrl);
+    voicePreviewAudioRef.current = audio;
+    setPreviewingVoiceId(voice.id);
+    audio.onended = () => {
+      setPreviewingVoiceId((cur) => (cur === voice.id ? null : cur));
+    };
+    audio.onerror = () => {
+      setPreviewingVoiceId((cur) => (cur === voice.id ? null : cur));
+    };
+    void audio.play().catch(() => {
+      setPreviewingVoiceId(null);
+    });
+  };
+
+  const switchAudioSubMode = (nextMode: 'tts' | 'sfx' | 'music') => {
+    setOpenMenu(null);
+    if (effectivePlatformId === 'elevenlabs') {
+      const targetModelId =
+        nextMode === 'music'
+          ? 'music_v2_5'
+          : nextMode === 'sfx'
+          ? 'eleven_text_to_sound_v3'
+          : 'eleven_v4';
+      setNodePlatformAndModel(selectedNode.id, 'elevenlabs', targetModelId);
+      updateNodeFields(selectedNode.id, {
+        audioMode: nextMode,
+        durationSec:
+          nextMode === 'tts' ? undefined : nextMode === 'music' ? 15 : -1,
+      });
+      return;
+    }
+    updateNodeFields(selectedNode.id, {
+      audioMode: nextMode,
+      durationSec: nextMode === 'tts' ? undefined : nextMode === 'music' ? 15 : 8,
+    });
+  };
 
   const isGenerating = selectedNode.status === 'generating';
 
@@ -1414,10 +1595,64 @@ export const ContextualNodeOverlay: React.FC = () => {
                       : modality === 'video'
                       ? 'Create Video'
                       : modality === 'audio'
-                      ? 'Create Voice / SFX'
+                      ? effectiveAudioSubMode === 'music'
+                        ? 'Eleven Music'
+                        : effectiveAudioSubMode === 'sfx'
+                        ? 'Sound Effects'
+                        : 'Speech & Dialogue'
                       : 'Create Image'}
                   </span>
                 </span>
+              )}
+
+              {/* Audio Mode Segmented Selector: Speech (TTS) vs Sound Effects vs Music */}
+              {modality === 'audio' && (
+                <div
+                  data-testid="audio-mode-segmented"
+                  className="h-6 p-0.5 rounded-[7px] bg-[#1a1a1a] border border-white/[0.1] inline-flex items-center gap-0.5 text-[10.5px]"
+                >
+                  <button
+                    type="button"
+                    data-testid="audio-mode-tts"
+                    onClick={() => switchAudioSubMode('tts')}
+                    className={`h-5 px-2 rounded-[5px] font-medium transition-colors ${
+                      effectiveAudioSubMode === 'tts'
+                        ? 'bg-white text-[#0e0e0e]'
+                        : 'text-white/60 hover:text-white'
+                    }`}
+                    title="Speech & Multi-Speaker Dialogue (Eleven v4, v3, Multilingual v2, Flash v2.5, Turbo v2.5)"
+                  >
+                    Speech (TTS)
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="audio-mode-sfx"
+                    onClick={() => switchAudioSubMode('sfx')}
+                    className={`h-5 px-2 rounded-[5px] font-medium transition-colors ${
+                      effectiveAudioSubMode === 'sfx'
+                        ? 'bg-[#20D5EC]/20 border border-[#20D5EC]/45 text-[#7ceeff]'
+                        : 'text-white/60 hover:text-white'
+                    }`}
+                    title="Foley, Ambiences & Seamless Loops (Eleven Sound Effects v3 & v2)"
+                  >
+                    Sound Effects
+                  </button>
+                  {effectivePlatformId === 'elevenlabs' && (
+                    <button
+                      type="button"
+                      data-testid="audio-mode-music"
+                      onClick={() => switchAudioSubMode('music')}
+                      className={`h-5 px-2 rounded-[5px] font-medium transition-colors ${
+                        effectiveAudioSubMode === 'music'
+                          ? 'bg-amber-400/20 border border-amber-300/40 text-amber-200'
+                          : 'text-white/60 hover:text-white'
+                      }`}
+                      title="Studio Songs & Instrumental Film Scores (Eleven Music v2.5 & v2)"
+                    >
+                      Music
+                    </button>
+                  )}
+                </div>
               )}
 
               {/* Video Input Method Selector: Text-to-Video vs 1st/Last Frame vs @Ref R2V */}
@@ -1483,10 +1718,12 @@ export const ContextualNodeOverlay: React.FC = () => {
                   (s) => s.platformId === effectivePlatformId && s.status === 'connected'
                 );
                 const mcpCredits = matchingMcpSrv?.balance?.credits;
+                const mcpUnitLabel =
+                  effectivePlatformId === 'elevenlabs' ? 'chars' : 'cr';
                 const badgeText = activeConnStatus.connected
                   ? activeConnStatus.hasMcp
                     ? mcpCredits !== undefined
-                      ? `✓ MCP · ${mcpCredits.toLocaleString(undefined, { maximumFractionDigits: 1 })} cr`
+                      ? `✓ MCP · ${mcpCredits.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${mcpUnitLabel}`
                       : '✓ MCP Connected'
                     : `✓ ${activeConnStatus.summary}`
                   : 'Connect Credits';
@@ -2141,9 +2378,13 @@ export const ContextualNodeOverlay: React.FC = () => {
                 }}
                 placeholder={
                   modality === 'audio'
-                    ? selectedNode.audioMode === 'sfx'
-                      ? 'Describe the foley or ambient sound effect to generate…'
-                      : 'Write the voiceover script or character dialogue…'
+                    ? effectiveAudioSubMode === 'music'
+                      ? 'Describe genre, tempo, instruments, mood & vocals (e.g. Warm indie synthwave, 108 BPM)…'
+                      : effectiveAudioSubMode === 'sfx'
+                      ? 'Describe foley, ambience, or sound design (e.g. Rain on neon pavement, distant thunder)…'
+                      : activeModelDef?.id === 'eleven_v4'
+                      ? 'Write narration with [sighs] / [laughs] tags, or dialogue lines (Sarah: ... / George: ...)…'
+                      : 'Write the voiceover narration or character monologue…'
                     : ''
                 }
                 className={`w-full bg-transparent px-1 py-1 text-[13.5px] leading-relaxed text-white placeholder:text-white/35 resize-none outline-none select-text ${
@@ -3332,110 +3573,296 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </>
               )}
 
-              {/* Audio Mode + Voice + Duration */}
+              {/* ElevenLabs / Audio Strictly Isolated Per-Mode Controls (TTS vs SFX vs Music) */}
               {modality === 'audio' && (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextMode = selectedNode.audioMode === 'sfx' ? 'tts' : 'sfx';
-                      const nextModel =
-                        nextMode === 'sfx'
-                          ? 'eleven_text_to_sound_v2'
-                          : 'eleven_multilingual_v2';
-                      updateNodeFields(selectedNode.id, {
-                        audioMode: nextMode,
-                        modelId:
-                          effectivePlatformId === 'elevenlabs'
-                            ? nextModel
-                            : selectedNode.modelId,
-                      });
-                    }}
-                    className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] text-[11.5px] text-white/90"
-                    title="Switch between Voice TTS and Sound Effects"
-                  >
-                    {selectedNode.audioMode === 'sfx' ? 'Mode: SFX' : 'Mode: Voice TTS'}
-                  </button>
+                  {/* TTS Mode: Voice Picker (21+ Premade & Workspace Voices + ▶ Preview) + Speaking Speed */}
+                  {effectiveAudioSubMode === 'tts' && (
+                    <>
+                      <div className="relative">
+                        <button
+                          type="button"
+                          data-testid="audio-voice-pill"
+                          onClick={() => {
+                            setVoiceSearch('');
+                            setOpenMenu(openMenu === 'voice' ? null : 'voice');
+                          }}
+                          className={`h-8 px-2.5 rounded-[8px] border text-[11.5px] flex items-center gap-1.5 transition-colors ${
+                            openMenu === 'voice'
+                              ? 'bg-[#303030] border-white/[0.22] text-white'
+                              : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/92'
+                          }`}
+                          title={`Selected Voice: ${activeVoice.shortName} (${activeVoice.subtitle})`}
+                        >
+                          <Volume2 className="w-3.5 h-3.5 text-[#20D5EC] shrink-0" strokeWidth={1.7} />
+                          <span className="truncate max-w-[136px]">
+                            Voice: {activeVoice.shortName}
+                          </span>
+                          <ChevronDown className="w-3 h-3 text-white/40 shrink-0" strokeWidth={1.6} />
+                        </button>
 
-                  {selectedNode.audioMode !== 'sfx' && (
+                        {openMenu === 'voice' && (
+                          <div
+                            data-testid="audio-voice-menu"
+                            className="absolute bottom-full left-0 mb-1.5 w-[308px] p-2 rounded-[13px] dreamina-menu z-50 space-y-1.5"
+                          >
+                            <div className="relative">
+                              <Search className="w-3.5 h-3.5 text-white/35 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                              <input
+                                type="text"
+                                data-testid="audio-voice-search"
+                                value={voiceSearch}
+                                onChange={(e) => setVoiceSearch(e.target.value)}
+                                placeholder={`Search ${mergedVoiceCatalog.length} voices, accents, styles…`}
+                                className="w-full h-7 pl-7 pr-2.5 rounded-[8px] bg-[#141414] border border-white/[0.08] text-[11.5px] text-white placeholder:text-white/35 outline-none select-text"
+                              />
+                            </div>
+                            <div className="max-h-[252px] overflow-y-auto space-y-0.5 pr-0.5">
+                              {filteredVoiceCatalog.map((v) => {
+                                const isVoiceSelected =
+                                  (selectedNode.voiceId || 'JBFqnCBsd6RMkjVDRZzb') === v.id;
+                                const isPreviewPlaying = previewingVoiceId === v.id;
+                                return (
+                                  <div
+                                    key={v.id}
+                                    data-testid={`audio-voice-opt-${v.id}`}
+                                    onClick={() => {
+                                      updateNodeFields(selectedNode.id, { voiceId: v.id });
+                                      if (voicePreviewAudioRef.current) {
+                                        voicePreviewAudioRef.current.pause();
+                                        voicePreviewAudioRef.current = null;
+                                        setPreviewingVoiceId(null);
+                                      }
+                                      setOpenMenu(null);
+                                    }}
+                                    className={`w-full px-2 py-1.5 rounded-[8px] cursor-pointer flex items-center justify-between gap-2 transition-colors ${
+                                      isVoiceSelected
+                                        ? 'bg-white/[0.11] text-white'
+                                        : 'hover:bg-white/[0.06] text-white/85'
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      {v.previewUrl && (
+                                        <button
+                                          type="button"
+                                          data-testid={`voice-preview-btn-${v.id}`}
+                                          onClick={(e) => toggleVoiceSamplePreview(e, v)}
+                                          title={
+                                            isPreviewPlaying
+                                              ? `Stop ${v.shortName} sample`
+                                              : `Preview ${v.shortName} voice sample`
+                                          }
+                                          className={`w-6 h-6 rounded-full border flex items-center justify-center shrink-0 transition-colors ${
+                                            isPreviewPlaying
+                                              ? 'bg-[#20D5EC] border-[#20D5EC] text-[#0e0e0e]'
+                                              : 'bg-[#1a1a1a] hover:bg-white/[0.14] border-white/[0.1] text-white/75'
+                                          }`}
+                                        >
+                                          {isPreviewPlaying ? (
+                                            <Pause className="w-2.5 h-2.5" strokeWidth={2.2} />
+                                          ) : (
+                                            <Play className="w-2.5 h-2.5 ml-0.5" strokeWidth={2.2} />
+                                          )}
+                                        </button>
+                                      )}
+                                      <div className="min-w-0">
+                                        <div className="text-[12px] font-medium truncate">
+                                          {v.shortName}
+                                        </div>
+                                        <div className="text-[10px] text-white/45 truncate">
+                                          {v.subtitle}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    {isVoiceSelected && (
+                                      <Check
+                                        className="w-3.5 h-3.5 text-[#20D5EC] shrink-0"
+                                        strokeWidth={2}
+                                      />
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {filteredVoiceCatalog.length === 0 && (
+                                <div className="py-3 text-center text-[11px] text-white/40">
+                                  No matching voices
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {showAudioSpeedPill && (
+                        <div className="relative">
+                          <button
+                            type="button"
+                            data-testid="audio-speed-pill"
+                            onClick={() =>
+                              setOpenMenu(openMenu === 'speed' ? null : 'speed')
+                            }
+                            className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
+                            title="Speaking Speed (0.7x – 1.2x)"
+                          >
+                            <span>
+                              {Number(
+                                selectedNode.modelParams?.speed ??
+                                  audioSpeedSpec?.default ??
+                                  1.0
+                              ).toFixed(2).replace(/\.00$/, '.0').replace(/(\.\d)0$/, '$1')}
+                              x
+                            </span>
+                            <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
+                          </button>
+                          {openMenu === 'speed' && (
+                            <div
+                              data-testid="audio-speed-menu"
+                              className="absolute bottom-full left-0 mb-1.5 w-[108px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5"
+                            >
+                              {[0.7, 0.85, 1.0, 1.1, 1.2].map((spd) => {
+                                const curSpd = Number(
+                                  selectedNode.modelParams?.speed ??
+                                    audioSpeedSpec?.default ??
+                                    1.0
+                                );
+                                const isSpdActive = Math.abs(curSpd - spd) < 0.02;
+                                return (
+                                  <button
+                                    key={spd}
+                                    type="button"
+                                    onClick={() => {
+                                      updateModelParam('speed', spd);
+                                      setOpenMenu(null);
+                                    }}
+                                    className={`w-full h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] tabular-nums text-[11.5px] flex items-center justify-between ${
+                                      isSpdActive ? 'bg-white/[0.1] text-white' : 'text-white/85'
+                                    }`}
+                                  >
+                                    <span>{spd === 1 ? '1.0x' : `${spd}x`}</span>
+                                    {isSpdActive && (
+                                      <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {/* SFX & Music Modes: Duration Pill (supports Auto = -1) */}
+                  {(effectiveAudioSubMode === 'sfx' || effectiveAudioSubMode === 'music') && (
                     <div className="relative">
                       <button
                         type="button"
+                        data-testid="audio-duration-pill"
                         onClick={() =>
-                          setOpenMenu(openMenu === 'voice' ? null : 'voice')
+                          setOpenMenu(openMenu === 'duration' ? null : 'duration')
                         }
-                        className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] text-[11.5px] text-white/90 flex items-center gap-1"
+                        className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/90 flex items-center gap-1"
+                        title={
+                          effectiveAudioSubMode === 'music'
+                            ? 'Song / Score Length'
+                            : 'Sound Effect Length (Auto lets model fit the prompt)'
+                        }
                       >
-                        <span>Voice: {activeVoice.name}</span>
+                        <span>
+                          {(selectedNode.durationSec ??
+                            activeModelDef?.defaultDurationSec ??
+                            (effectiveAudioSubMode === 'music' ? 15 : -1)) === -1
+                            ? 'Auto'
+                            : `${
+                                selectedNode.durationSec ??
+                                activeModelDef?.defaultDurationSec ??
+                                (effectiveAudioSubMode === 'music' ? 15 : 6)
+                              }s`}
+                        </span>
                         <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
                       </button>
-                      {openMenu === 'voice' && (
-                        <div className="absolute bottom-full left-0 mb-1.5 w-[220px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
-                          {ELEVENLABS_VOICES.map((v) => (
-                            <button
-                              key={v.id}
-                              type="button"
-                              onClick={() => {
-                                updateNodeFields(selectedNode.id, { voiceId: v.id });
-                                setOpenMenu(null);
-                              }}
-                              className={`w-full px-2.5 py-1.5 rounded-[7px] text-left flex items-center justify-between ${
-                                (selectedNode.voiceId || ELEVENLABS_VOICES[0].id) === v.id
-                                  ? 'bg-white/[0.1] text-white'
-                                  : 'hover:bg-white/[0.06] text-white/85'
-                              }`}
-                            >
-                              <div>
-                                <div className="text-[12px] font-medium">{v.name}</div>
-                                <div className="text-[10.5px] text-white/40">{v.accent}</div>
-                              </div>
-                              {(selectedNode.voiceId || ELEVENLABS_VOICES[0].id) ===
-                                v.id && (
-                                <Check className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={2} />
-                              )}
-                            </button>
-                          ))}
+                      {openMenu === 'duration' && (
+                        <div
+                          data-testid="audio-duration-menu"
+                          className="absolute bottom-full left-0 mb-1.5 w-[112px] max-h-[248px] overflow-y-auto p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5"
+                        >
+                          {durationOptions.map((sec) => {
+                            const curDur =
+                              selectedNode.durationSec ??
+                              activeModelDef?.defaultDurationSec ??
+                              (effectiveAudioSubMode === 'music' ? 15 : -1);
+                            const isDurActive = curDur === sec;
+                            return (
+                              <button
+                                key={sec}
+                                type="button"
+                                data-testid={`audio-duration-opt-${sec}`}
+                                onClick={() => {
+                                  updateNodeFields(selectedNode.id, { durationSec: sec });
+                                  setOpenMenu(null);
+                                }}
+                                className={`w-full h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] tabular-nums text-[11.5px] flex items-center justify-between ${
+                                  isDurActive ? 'bg-white/[0.1] text-white' : 'text-white/85'
+                                }`}
+                              >
+                                <span>{sec === -1 ? 'Auto' : `${sec}s`}</span>
+                                {isDurActive && (
+                                  <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
+                                )}
+                              </button>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
                   )}
 
-                  <div className="relative">
+                  {/* SFX Mode Only: Seamless Loop Toggle Pill */}
+                  {showAudioLoopPill && (
                     <button
                       type="button"
+                      data-testid="audio-loop-pill"
                       onClick={() =>
-                        setOpenMenu(openMenu === 'duration' ? null : 'duration')
+                        updateModelParam('loop', !Boolean(selectedNode.modelParams?.loop))
                       }
-                      className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
+                      className={`h-8 px-2.5 rounded-[8px] border text-[11.5px] flex items-center gap-1.5 transition-colors ${
+                        selectedNode.modelParams?.loop
+                          ? 'bg-[#20D5EC]/18 border-[#20D5EC]/45 text-[#7ceeff] font-medium'
+                          : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/75'
+                      }`}
+                      title="Generate seamless end-to-start looping audio"
                     >
-                      <span>{selectedNode.durationSec || 8}s</span>
-                      <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
+                      <Repeat className="w-3.5 h-3.5 shrink-0" strokeWidth={1.7} />
+                      <span>{selectedNode.modelParams?.loop ? 'Loop: On' : 'Loop'}</span>
                     </button>
-                    {openMenu === 'duration' && (
-                      <div className="absolute bottom-full left-0 mb-1.5 w-[100px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
-                        {durationOptions.map((sec) => (
-                          <button
-                            key={sec}
-                            type="button"
-                            onClick={() => {
-                              updateNodeFields(selectedNode.id, { durationSec: sec });
-                              setOpenMenu(null);
-                            }}
-                            className={`w-full h-7 px-2.5 rounded-[7px] hover:bg-white/[0.08] tabular-nums text-[11.5px] flex items-center justify-between ${
-                              (selectedNode.durationSec || 8) === sec
-                                ? 'bg-white/[0.1] text-white'
-                                : 'text-white/85'
-                            }`}
-                          >
-                            <span>{sec}s</span>
-                            {(selectedNode.durationSec || 8) === sec && (
-                              <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  )}
+
+                  {/* Music Mode Only: Instrumental Toggle Pill */}
+                  {showAudioInstrumentalPill && (
+                    <button
+                      type="button"
+                      data-testid="audio-instrumental-pill"
+                      onClick={() =>
+                        updateModelParam(
+                          'force_instrumental',
+                          !Boolean(selectedNode.modelParams?.force_instrumental)
+                        )
+                      }
+                      className={`h-8 px-2.5 rounded-[8px] border text-[11.5px] flex items-center gap-1.5 transition-colors ${
+                        selectedNode.modelParams?.force_instrumental
+                          ? 'bg-amber-400/20 border-amber-300/45 text-amber-200 font-medium'
+                          : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/80'
+                      }`}
+                      title="Toggle purely instrumental composition (zero vocals)"
+                    >
+                      <Music className="w-3.5 h-3.5 shrink-0" strokeWidth={1.7} />
+                      <span>
+                        {selectedNode.modelParams?.force_instrumental
+                          ? 'Instrumental: On'
+                          : 'Instrumental'}
+                      </span>
+                    </button>
+                  )}
                 </>
               )}
 
@@ -3686,7 +4113,11 @@ export const ContextualNodeOverlay: React.FC = () => {
                         </div>
                       )}
 
-                    {effectivePlatformId !== 'kling' && (
+                    {effectivePlatformId !== 'kling' &&
+                      !(
+                        modality === 'audio' &&
+                        (effectiveAudioSubMode === 'sfx' || effectiveAudioSubMode === 'music')
+                      ) && (
                       <div className="flex items-center justify-between gap-2">
                         <label className="text-[10.5px] font-medium text-white/45 uppercase tracking-wider">
                           Seed
