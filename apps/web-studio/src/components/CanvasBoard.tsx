@@ -21,6 +21,7 @@ import {
   Play,
   Plus,
   Redo2,
+  RotateCcw,
   Sparkles,
   StickyNote,
   Trash2,
@@ -207,6 +208,10 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
   const openLightbox = useStudioStore((s) => s.openLightbox);
   const downloadNodeMedia = useStudioStore((s) => s.downloadNodeMedia);
   const downloadSelectedNodesMedia = useStudioStore((s) => s.downloadSelectedNodesMedia);
+  const canvasRefPickerSourceNodeId = useStudioStore((s) => s.canvasRefPickerSourceNodeId);
+  const setCanvasRefPickerSourceNodeId = useStudioStore(
+    (s) => s.setCanvasRefPickerSourceNodeId
+  );
 
   const boardRef = useRef<HTMLDivElement | null>(null);
   const fileUploadRef = useRef<HTMLInputElement | null>(null);
@@ -353,6 +358,10 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (useStudioStore.getState().canvasRefPickerSourceNodeId) {
+          useStudioStore.getState().setCanvasRefPickerSourceNodeId(null);
+          return;
+        }
         setContextMenu(null);
         setWireDraft(null);
         setRenamingNodeId(null);
@@ -476,6 +485,12 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
       return;
     }
 
+    // If user was in "Add from canvas" reference picker mode and clicked empty canvas, cancel picker while keeping composer open
+    if (useStudioStore.getState().canvasRefPickerSourceNodeId) {
+      useStudioStore.getState().setCanvasRefPickerSourceNodeId(null);
+      return;
+    }
+
     // Left click on empty canvas: clear selection (unless additive modifier held) & start marquee drag
     const additiveMarquee = e.shiftKey || e.metaKey || e.ctrlKey;
     const initialSelectedIds = additiveMarquee
@@ -544,6 +559,17 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
     }
 
     const state = useStudioStore.getState();
+    if (state.canvasRefPickerSourceNodeId) {
+      const targetComposerNodeId = state.canvasRefPickerSourceNodeId;
+      state.setCanvasRefPickerSourceNodeId(null);
+      if (node.id !== targetComposerNodeId) {
+        connectNodes(node.id, targetComposerNodeId, 'lineage');
+        selectNodes([targetComposerNodeId], false);
+        showToast(`Added "${node.title}" from canvas`);
+      }
+      return;
+    }
+
     const alreadySelected = state.selectedNodeIds.includes(node.id);
     let movingIds = state.selectedNodeIds;
 
@@ -812,13 +838,32 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
         backgroundPosition: `${panX}px ${panY}px`,
       }}
       className={`relative w-full h-full overflow-hidden select-none ${
-        isPanning
+        canvasRefPickerSourceNodeId
+          ? 'cursor-crosshair'
+          : isPanning
           ? 'cursor-grabbing'
           : spacePressed || canvasToolMode === 'hand'
           ? 'cursor-grab'
           : 'cursor-default'
       }`}
     >
+      {canvasRefPickerSourceNodeId && (
+        <div
+          data-testid="canvas-ref-picker-banner"
+          onPointerDown={(ev) => ev.stopPropagation()}
+          className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-3.5 py-2 rounded-full bg-[#1e1e1e]/95 border border-[#20D5EC]/45 shadow-[0_12px_32px_rgba(0,0,0,0.65)] backdrop-blur-md flex items-center gap-2.5 text-[12px] text-white/95"
+        >
+          <Sparkles className="w-3.5 h-3.5 text-[#20D5EC] shrink-0" strokeWidth={1.75} />
+          <span>Click any canvas node to add as reference</span>
+          <button
+            type="button"
+            onClick={() => setCanvasRefPickerSourceNodeId(null)}
+            className="ml-1 px-2 py-0.5 rounded-full bg-white/[0.08] hover:bg-white/[0.16] text-[11px] text-white/80 hover:text-white transition-colors"
+          >
+            Cancel (Esc)
+          </button>
+        </div>
+      )}
       {/* Hidden File Input for Context Menu Upload */}
       <input
         ref={fileUploadRef}
@@ -1807,15 +1852,34 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                 )}
 
                 {node.status !== 'generating' && node.editBadge && (
-                  <div className="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-[7px] bg-[#191919]/95 border border-white/[0.15] backdrop-blur-md flex items-center gap-1.5 z-20 pointer-events-none">
-                    <Loader2
-                      className="w-3 h-3 text-[#20D5EC] animate-spin"
-                      strokeWidth={2}
-                    />
-                    <span className="tabular-nums text-[11px] text-white/90">
-                      {node.editBadge}
-                    </span>
-                  </div>
+                  /^failed/i.test(node.editBadge) ? (
+                    <button
+                      type="button"
+                      data-testid={`retry-badge-${node.id}`}
+                      title={node.lastError || 'Generation failed — click to retry'}
+                      onPointerDown={(ev) => ev.stopPropagation()}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        void generateSingleNode(node.id);
+                      }}
+                      className="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-[7px] bg-[#2a1418]/95 hover:bg-[#3b1a20] border border-rose-400/40 backdrop-blur-md flex items-center gap-1.5 z-20 pointer-events-auto transition-colors cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3 text-rose-300" strokeWidth={2} />
+                      <span className="tabular-nums text-[11px] text-rose-100 font-medium">
+                        {node.editBadge}
+                      </span>
+                    </button>
+                  ) : (
+                    <div className="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-[7px] bg-[#191919]/95 border border-white/[0.15] backdrop-blur-md flex items-center gap-1.5 z-20 pointer-events-none">
+                      <Loader2
+                        className="w-3 h-3 text-[#20D5EC] animate-spin"
+                        strokeWidth={2}
+                      />
+                      <span className="tabular-nums text-[11px] text-white/90">
+                        {node.editBadge}
+                      </span>
+                    </div>
+                  )
                 )}
               </div>
             </div>

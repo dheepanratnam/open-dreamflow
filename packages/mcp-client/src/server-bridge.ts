@@ -5869,9 +5869,37 @@ export class McpStdioBridgeServer {
         }
       }
 
+      const FIRST_CLASS_DUP_PARAMS = new Set([
+        'resolution',
+        'aspect_ratio',
+        'ratio',
+        'duration',
+        'duration_sec',
+        'batch_count',
+        'count',
+      ]);
+      const normalizedModels = models.map((m) => {
+        if (!Array.isArray(m.parameters)) return m;
+        const hasFirstClassRes = Array.isArray(m.resolutions) && m.resolutions.length > 0;
+        const hasFirstClassRatio = Array.isArray(m.aspectRatios) && m.aspectRatios.length > 0;
+        const hasFirstClassDur =
+          (Array.isArray(m.durationsSec) && m.durationsSec.length > 0) ||
+          (Array.isArray(m.durations) && m.durations.length > 0);
+        const filteredParams = (m.parameters as Array<Record<string, unknown>>).filter((param) => {
+          const pname = String(param.name || '').toLowerCase();
+          if (pname === 'resolution' && hasFirstClassRes) return false;
+          if ((pname === 'aspect_ratio' || pname === 'ratio') && hasFirstClassRatio) return false;
+          if ((pname === 'duration' || pname === 'duration_sec') && hasFirstClassDur) return false;
+          if (pname === 'batch_count' || pname === 'count') return false;
+          if (id === 'dreamina' && FIRST_CLASS_DUP_PARAMS.has(pname)) return false;
+          return true;
+        });
+        return { ...m, parameters: filteredParams };
+      });
+
       return {
         ...p,
-        models,
+        models: normalizedModels,
         status: {
           connected: matchingMcp.length > 0 || bridgeActive || envConfigured,
           mcpConnected: matchingMcp.length > 0,
@@ -9531,6 +9559,22 @@ export class McpStdioBridgeServer {
       )
       .filter(Boolean);
 
+    const rawAudioRefs: string[] = [];
+    for (const srcList of [params.audioReferences, settings.audioReferences]) {
+      if (Array.isArray(srcList)) {
+        for (const a of srcList) {
+          if (typeof a === 'string' && a.trim() && !rawAudioRefs.includes(a.trim())) {
+            rawAudioRefs.push(a.trim());
+          }
+        }
+      }
+    }
+    const resolvedAudioReferences = rawAudioRefs
+      .map((ref) =>
+        resolveReferenceToPublicOrDataUrl(ref, this.mediaDir, { allowAbsFileForVideo: true })
+      )
+      .filter(Boolean);
+
     const rawFrameMode = String(settings.referenceFrameMode ?? params.referenceFrameMode ?? '')
       .trim()
       .toLowerCase();
@@ -10199,6 +10243,9 @@ export class McpStdioBridgeServer {
         const dreaminaExtraArgs: Record<string, unknown> = isDreaminaMcpTool
           ? {
               reference_frame_mode: referenceFrameMode,
+              ...(resolvedAudioReferences.length > 0
+                ? { audio_references: resolvedAudioReferences }
+                : {}),
               ...(resolvedReferenceHandles.length > 0
                 ? { reference_handles: resolvedReferenceHandles }
                 : {}),
@@ -10221,7 +10268,7 @@ export class McpStdioBridgeServer {
       const targetOutputCount = kind === 'image' ? batchCount : 1;
       const effectiveMcpTimeoutMs =
         candidateMcpServer.platformId === 'dreamina'
-          ? Math.max(Number(params.timeoutMs) || 0, kind === 'video' ? 720_000 : 240_000)
+          ? Math.max(Number(params.timeoutMs) || 0, kind === 'video' ? 720_000 : 320_000)
           : Number(params.timeoutMs) || undefined;
 
       const readStructuredObj = (out: Record<string, unknown>): Record<string, unknown> =>

@@ -6,11 +6,15 @@ import {
   Camera,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clapperboard,
+  Compass,
   Copy,
   Download,
   Eraser,
   Film,
+  FolderOpen,
   GitBranch,
   Grid2X2,
   Grid3X3,
@@ -18,6 +22,7 @@ import {
   Link2,
   Loader2,
   Maximize2,
+  Minimize2,
   Paintbrush,
   Play,
   Plus,
@@ -67,7 +72,17 @@ const IMAGE_RESOLUTIONS: ResolutionTier[] = ['1K', '2K', '4K'];
 const VIDEO_RESOLUTIONS: ResolutionTier[] = ['720p', '1080p', '4K'];
 const VIDEO_DURATIONS = [5, 8, 10, 15];
 const AUDIO_DURATIONS = [5, 8, 10, 15];
-const BATCH_COUNTS: Array<1 | 2 | 4> = [1, 2, 4];
+const BATCH_COUNTS: Array<1 | 2 | 3 | 4> = [1, 2, 3, 4];
+
+const FIRST_CLASS_DUP_PARAMS = new Set([
+  'resolution',
+  'aspect_ratio',
+  'ratio',
+  'duration',
+  'duration_sec',
+  'batch_count',
+  'count',
+]);
 
 const DOP_CAMERA_MOTIONS = [
   'Static Tripod',
@@ -198,7 +213,14 @@ export const ContextualNodeOverlay: React.FC = () => {
   const setNodeAspectRatio = useStudioStore((s) => s.setNodeAspectRatio);
   const uploadReferenceToNode = useStudioStore((s) => s.uploadReferenceToNode);
   const attachReferenceToNode = useStudioStore((s) => s.attachReferenceToNode);
+  const attachAssetUrlToNode = useStudioStore((s) => s.attachAssetUrlToNode);
   const removeReferenceUrlFromNode = useStudioStore((s) => s.removeReferenceUrlFromNode);
+  const removeVideoReferenceUrlFromNode = useStudioStore(
+    (s) => s.removeVideoReferenceUrlFromNode
+  );
+  const removeAudioReferenceUrlFromNode = useStudioStore(
+    (s) => s.removeAudioReferenceUrlFromNode
+  );
   const saveNodeAsElementReference = useStudioStore((s) => s.saveNodeAsElementReference);
   const generateSingleNode = useStudioStore((s) => s.generateSingleNode);
   const runWorkflowPipeline = useStudioStore((s) => s.runWorkflowPipeline);
@@ -210,6 +232,13 @@ export const ContextualNodeOverlay: React.FC = () => {
     (s) => s.splitBatchNodeToIndividualNodes
   );
   const connectNodes = useStudioStore((s) => s.connectNodes);
+  const disconnectNodes = useStudioStore((s) => s.disconnectNodes);
+  const setCanvasRefPickerSourceNodeId = useStudioStore(
+    (s) => s.setCanvasRefPickerSourceNodeId
+  );
+  const assetsCatalog = useStudioStore((s) => s.assetsCatalog);
+  const assetsLoading = useStudioStore((s) => s.assetsLoading);
+  const refreshAssetsCatalog = useStudioStore((s) => s.refreshAssetsCatalog);
   const duplicateNodes = useStudioStore((s) => s.duplicateNodes);
   const deleteSelectedNodes = useStudioStore((s) => s.deleteSelectedNodes);
   const openInlineEditor = useStudioStore((s) => s.openInlineEditor);
@@ -230,24 +259,39 @@ export const ContextualNodeOverlay: React.FC = () => {
     | null
     | 'platform'
     | 'model'
-    | 'aspect'
-    | 'resolution'
+    | 'format'
     | 'quality'
     | 'mode'
     | 'duration'
-    | 'batch'
     | 'camera'
     | 'voice'
     | 'advanced'
-    | 'add-ref'
+    | 'plus-upload'
+    | 'plus-assets'
   >(null);
   const [modelSearch, setModelSearch] = useState('');
   const [modelFamilyFilter, setModelFamilyFilter] = useState<string>('All');
   const [atAutocompleteOpen, setAtAutocompleteOpen] = useState(false);
+  const [atQuery, setAtQuery] = useState('');
+  const [atTokenRange, setAtTokenRange] = useState<{ start: number; end: number } | null>(null);
+  const [atActiveIndex, setAtActiveIndex] = useState(0);
+  const [atCategory, setAtCategory] = useState<
+    null | 'element' | 'image' | 'video' | 'audio' | 'motion'
+  >(null);
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const [composerFilterTab, setComposerFilterTab] = useState<'all' | 'images' | 'text'>('all');
+  const [isComposerDragOver, setIsComposerDragOver] = useState(false);
+  const [assetPickerSearch, setAssetPickerSearch] = useState('');
+  const [pendingUploadSlot, setPendingUploadSlot] = useState<{
+    accept: string;
+    motionMode?: boolean;
+    insertAtPrompt?: boolean;
+  }>({ accept: 'image/*,video/*,audio/*' });
   const [creditQuote, setCreditQuote] = useState<CreditQuoteResponse | null>(null);
 
   const refUploadInputRef = useRef<HTMLInputElement | null>(null);
   const directCardUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const selectedNode = useMemo(() => {
     if (selectedNodeIds.length !== 1) return null;
@@ -269,6 +313,11 @@ export const ContextualNodeOverlay: React.FC = () => {
     setModelSearch('');
     setModelFamilyFilter('All');
     setAtAutocompleteOpen(false);
+    setAtQuery('');
+    setAtTokenRange(null);
+    setAtCategory(null);
+    setAssetPickerSearch('');
+    setIsComposerDragOver(false);
   }, [selectedNode?.id, resolvedEffectivePlatformId, selectedModality]);
 
   useEffect(() => {
@@ -340,14 +389,14 @@ export const ContextualNodeOverlay: React.FC = () => {
   );
   const quickBarTop = Math.max(58, nodeTopScreen - 56);
 
-  const popoverWidth = Math.min(688, window.innerWidth - 96);
+  const popoverWidth = Math.min(composerExpanded ? 760 : 696, window.innerWidth - 72);
   const popoverLeft = Math.max(
-    72,
+    64,
     Math.min(window.innerWidth - popoverWidth - 20, centerScreenX - popoverWidth / 2)
   );
   const popoverTop = Math.min(
-    window.innerHeight - 318,
-    Math.max(76, nodeBottomScreen + 18)
+    window.innerHeight - (composerExpanded ? 410 : 332),
+    Math.max(68, nodeBottomScreen + 18)
   );
 
   // Wired upstream & downstream inspection
@@ -359,14 +408,31 @@ export const ContextualNodeOverlay: React.FC = () => {
   const upstreamRefNodes = upstreamNodes.filter(
     (n) => n.kind === 'image' || n.kind === 'element' || n.kind === 'contact-sheet'
   );
+  const upstreamVideoNodes = upstreamNodes.filter((n) => n.kind === 'video');
+  const upstreamAudioNodes = upstreamNodes.filter((n) => n.kind === 'audio');
+  const upstreamTextNodes = upstreamNodes.filter(
+    (n) => n.kind === 'text' || n.kind === 'sticky'
+  );
 
   const hasDownstreamEdges = edges.some((e) => e.sourceId === selectedNode.id);
 
-  // Linkable canvas image/element nodes not yet wired into selectedNode
+  // Linkable canvas nodes by kind not yet wired into selectedNode
   const linkableCanvasImageNodes = nodes.filter(
     (n) =>
       n.id !== selectedNode.id &&
       (n.kind === 'image' || n.kind === 'element' || n.kind === 'contact-sheet') &&
+      !edges.some((e) => e.sourceId === n.id && e.targetId === selectedNode.id)
+  );
+  const linkableCanvasVideoNodes = nodes.filter(
+    (n) =>
+      n.id !== selectedNode.id &&
+      n.kind === 'video' &&
+      !edges.some((e) => e.sourceId === n.id && e.targetId === selectedNode.id)
+  );
+  const linkableCanvasAudioNodes = nodes.filter(
+    (n) =>
+      n.id !== selectedNode.id &&
+      n.kind === 'audio' &&
       !edges.some((e) => e.sourceId === n.id && e.targetId === selectedNode.id)
   );
 
@@ -409,15 +475,36 @@ export const ContextualNodeOverlay: React.FC = () => {
     : modality === 'video'
     ? VIDEO_RESOLUTIONS
     : IMAGE_RESOLUTIONS;
-  const qualitySpec = activeModelDef?.parameters?.find((p) => p.name === 'quality');
+  const activeDisplayResolution =
+    resolutionOptions.find(
+      (r) => r.toLowerCase() === String(selectedNode.resolution || '').toLowerCase()
+    ) ||
+    activeModelDef?.defaultResolution ||
+    resolutionOptions[0] ||
+    selectedNode.resolution;
+  const activeBatchCount = selectedNode.batchCount || 1;
+
+  const setNodeUnifiedResolution = (res: ResolutionTier) => {
+    const nextParams = { ...(selectedNode.modelParams || {}) };
+    delete nextParams.resolution;
+    updateNodeFields(selectedNode.id, {
+      resolution: res,
+      modelParams: Object.keys(nextParams).length > 0 ? nextParams : undefined,
+    });
+  };
+
+  const qualitySpec = activeModelDef?.parameters?.find(
+    (p) => p.name === 'quality' && !FIRST_CLASS_DUP_PARAMS.has(p.name.toLowerCase())
+  );
   const activeQualityVal = qualitySpec
     ? resolveModelParamValue(selectedNode.modelParams, selectedNode.quality, qualitySpec)
     : undefined;
   const modeSpec = activeModelDef?.parameters?.find(
     (p) =>
-      p.name === 'mode' ||
-      p.name === 'variant' ||
-      (p.inlinePill && p.name !== 'quality')
+      !FIRST_CLASS_DUP_PARAMS.has(p.name.toLowerCase()) &&
+      (p.name === 'mode' ||
+        p.name === 'variant' ||
+        (p.inlinePill && p.name !== 'quality'))
   );
   const activeModeVal = modeSpec
     ? resolveModelParamValue(selectedNode.modelParams, selectedNode.quality, modeSpec)
@@ -429,7 +516,10 @@ export const ContextualNodeOverlay: React.FC = () => {
     : VIDEO_DURATIONS;
   const showVideoAudioPill = modality === 'video' && activeModelDef?.supportsAudio !== false;
   const remainingParamSpecs = (activeModelDef?.parameters || []).filter(
-    (p) => p.name !== 'quality' && p !== modeSpec
+    (p) =>
+      p.name !== 'quality' &&
+      p !== modeSpec &&
+      !FIRST_CLASS_DUP_PARAMS.has(p.name.toLowerCase())
   );
   const customParamCount = remainingParamSpecs.filter((spec) => {
     const val = selectedNode.modelParams?.[spec.name];
@@ -466,7 +556,9 @@ export const ContextualNodeOverlay: React.FC = () => {
   const resetModelParamDefaults = () => {
     const defaults: Record<string, string | number | boolean> = {};
     for (const p of activeModelDef?.parameters || []) {
-      if (p.default !== undefined) defaults[p.name] = p.default;
+      if (p.default !== undefined && !FIRST_CLASS_DUP_PARAMS.has(p.name.toLowerCase())) {
+        defaults[p.name] = p.default;
+      }
     }
     updateNodeFields(selectedNode.id, {
       quality:
@@ -562,34 +654,108 @@ export const ContextualNodeOverlay: React.FC = () => {
     return slug ? `@${slug}` : `@Ref${idx}`;
   };
 
+  const resolveBindingHandleForUrl = (
+    url: string,
+    fallbackPrefix: string,
+    idx: number
+  ): string => {
+    const matched = (selectedNode.referenceHandles || []).find((b) => b.url === url);
+    return matched?.handle || `@${fallbackPrefix}${idx}`;
+  };
+
   const availableAtHandleItems = (() => {
-    const items: Array<{ handle: string; label: string; imageUrl?: string; nodeId?: string }> = [];
+    const items: Array<{
+      handle: string;
+      displayName: string;
+      label: string;
+      imageUrl?: string;
+      kind: 'element' | 'image' | 'video' | 'audio';
+      nodeId?: string;
+    }> = [];
     const seen = new Set<string>();
-    const pushItem = (handle: string, label: string, imageUrl?: string, nodeId?: string) => {
+    const pushItem = (
+      handle: string,
+      displayName: string,
+      label: string,
+      imageUrl?: string,
+      kind: 'element' | 'image' | 'video' | 'audio' = 'element',
+      nodeId?: string
+    ) => {
       const clean = handle.startsWith('@') ? handle : `@${handle}`;
       const k = clean.toLowerCase();
       if (seen.has(k)) return;
       seen.add(k);
-      items.push({ handle: clean, label, imageUrl, nodeId });
+      items.push({ handle: clean, displayName, label, imageUrl, kind, nodeId });
     };
     upstreamRefNodes.forEach((up, idx) => {
-      pushItem(deriveUiHandleForNode(up, idx + 1), up.title, up.imageUrl, up.id);
+      const h = deriveUiHandleForNode(up, idx + 1);
+      pushItem(
+        h,
+        up.kind === 'element' ? h.replace(/^@/, '') : h,
+        up.title,
+        up.imageUrl,
+        up.kind === 'element' ? 'element' : 'image',
+        up.id
+      );
+    });
+    upstreamVideoNodes.forEach((up, idx) => {
+      const h = deriveUiHandleForNode(up, idx + 1);
+      pushItem(h, h, up.title, up.imageUrl, 'video', up.id);
+    });
+    upstreamAudioNodes.forEach((up, idx) => {
+      const h = deriveUiHandleForNode(up, idx + 1);
+      pushItem(h, h, up.title, undefined, 'audio', up.id);
     });
     for (const b of selectedNode.referenceHandles || []) {
-      if (b.handle) pushItem(b.handle, b.label || b.handle, b.url);
+      if (b.handle) {
+        pushItem(
+          b.handle,
+          b.handle,
+          b.label || b.handle,
+          b.kind === 'image' ? b.url : undefined,
+          b.kind || 'image'
+        );
+      }
     }
     (selectedNode.referenceUrls || []).forEach((url, idx) => {
-      pushItem(`@Image${idx + 1}`, `Attached Ref ${idx + 1}`, url);
+      const h = resolveBindingHandleForUrl(url, 'Image', idx + 1);
+      pushItem(h, h, `Attached Image ${idx + 1}`, url, 'image');
+    });
+    (selectedNode.videoReferenceUrls || []).forEach((url, idx) => {
+      const h = resolveBindingHandleForUrl(url, 'Video', idx + 1);
+      pushItem(h, h, `Attached Video ${idx + 1}`, undefined, 'video');
+    });
+    (selectedNode.audioReferenceUrls || []).forEach((url, idx) => {
+      const h = resolveBindingHandleForUrl(url, 'Audio', idx + 1);
+      pushItem(h, h, `Attached Audio ${idx + 1}`, undefined, 'audio');
     });
     for (const cn of nodes) {
       if (cn.id !== selectedNode.id && cn.kind === 'element' && cn.imageUrl) {
-        pushItem(deriveUiHandleForNode(cn, 1), cn.title, cn.imageUrl, cn.id);
+        const h = deriveUiHandleForNode(cn, 1);
+        pushItem(h, h.replace(/^@/, ''), cn.title, cn.imageUrl, 'element', cn.id);
       }
     }
     for (const el of elements) {
-      pushItem(el.handle, el.name, el.references?.[0]?.dataUrl);
+      pushItem(
+        el.handle,
+        el.name || el.handle.replace(/^@/, ''),
+        el.name,
+        el.references?.[0]?.dataUrl,
+        'element'
+      );
     }
     return items;
+  })();
+
+  const filteredAtMentionItems = (() => {
+    const q = atQuery.trim().toLowerCase();
+    if (!q) return availableAtHandleItems;
+    return availableAtHandleItems.filter(
+      (it) =>
+        it.handle.toLowerCase().includes(q) ||
+        it.displayName.toLowerCase().includes(q) ||
+        it.label.toLowerCase().includes(q)
+    );
   })();
 
   const modeOptionsStrings = (modeSpec?.options || []).map((o) => String(o).toLowerCase());
@@ -616,11 +782,16 @@ export const ContextualNodeOverlay: React.FC = () => {
       return 'start-end';
     }
     const hasAnyRefs =
-      upstreamRefNodes.length > 0 || (selectedNode.referenceUrls?.length || 0) > 0;
+      upstreamRefNodes.length > 0 ||
+      upstreamVideoNodes.length > 0 ||
+      (selectedNode.referenceUrls?.length || 0) > 0 ||
+      (selectedNode.videoReferenceUrls?.length || 0) > 0;
     if (!hasAnyRefs) return 't2v';
     if (
       /@[A-Za-z0-9_]+/.test(selectedNode.prompt) ||
       upstreamRefNodes.some((u) => u.kind === 'element') ||
+      upstreamVideoNodes.length > 0 ||
+      (selectedNode.videoReferenceUrls?.length || 0) > 0 ||
       upstreamRefNodes.length >= 2
     ) {
       return 'multi-ref';
@@ -662,12 +833,30 @@ export const ContextualNodeOverlay: React.FC = () => {
     ) {
       connectNodes(autoWireNodeId, selectedNode.id, 'lineage');
     }
-    const trimmed = selectedNode.prompt;
-    const nextPrompt = trimmed.endsWith('@')
-      ? trimmed.replace(/@$/, `${handle} `)
-      : trimmed.includes(handle)
-      ? trimmed
-      : `${trimmed}${trimmed && !trimmed.endsWith(' ') ? ' ' : ''}${handle} `;
+    const cleanHandle = handle.startsWith('@') ? handle : `@${handle}`;
+    const curPrompt = useStudioStore.getState().nodes.find((n) => n.id === selectedNode.id)?.prompt ?? selectedNode.prompt;
+    let nextPrompt = curPrompt;
+    let nextCaretPos: number | null = null;
+
+    if (
+      atTokenRange &&
+      atTokenRange.start >= 0 &&
+      atTokenRange.end <= curPrompt.length &&
+      curPrompt.slice(atTokenRange.start, atTokenRange.start + 1) === '@'
+    ) {
+      const before = curPrompt.slice(0, atTokenRange.start);
+      const after = curPrompt.slice(atTokenRange.end);
+      const inserted = `${cleanHandle}${after.startsWith(' ') ? '' : ' '}`;
+      nextPrompt = `${before}${inserted}${after}`;
+      nextCaretPos = before.length + inserted.length;
+    } else if (curPrompt.endsWith('@')) {
+      nextPrompt = `${curPrompt.slice(0, -1)}${cleanHandle} `;
+      nextCaretPos = nextPrompt.length;
+    } else if (!curPrompt.toLowerCase().includes(cleanHandle.toLowerCase())) {
+      nextPrompt = `${curPrompt}${curPrompt && !curPrompt.endsWith(' ') ? ' ' : ''}${cleanHandle} `;
+      nextCaretPos = nextPrompt.length;
+    }
+
     const nextParams: Record<string, string | number | boolean> = {
       ...(selectedNode.modelParams || {}),
     };
@@ -676,19 +865,121 @@ export const ContextualNodeOverlay: React.FC = () => {
     }
     updateNodeFields(selectedNode.id, {
       prompt: nextPrompt,
-      elementHandles: Array.from(new Set([...(selectedNode.elementHandles || []), handle])),
+      elementHandles: Array.from(new Set([...(selectedNode.elementHandles || []), cleanHandle])),
       ...(modality === 'video' ? { referenceFrameMode: 'multi-ref' as const } : {}),
       modelParams: Object.keys(nextParams).length > 0 ? nextParams : undefined,
     });
     setAtAutocompleteOpen(false);
+    setAtQuery('');
+    setAtTokenRange(null);
+    setAtCategory(null);
+    if (nextCaretPos !== null) {
+      requestAnimationFrame(() => {
+        const el = promptTextareaRef.current;
+        if (el) {
+          el.focus();
+          el.setSelectionRange(nextCaretPos, nextCaretPos);
+        }
+      });
+    }
   };
 
-  const handlePromptChange = (val: string) => {
-    updateNodeFields(selectedNode.id, { prompt: val });
-    if (val.endsWith('@') && availableAtHandleItems.length > 0) {
+  const detectAtMentionAtCaret = (text: string, caret: number) => {
+    const before = text.slice(0, caret);
+    const match = /(?:^|[\s(\[{])@([A-Za-z0-9_]*)$/.exec(before);
+    if (match) {
+      const query = match[1] || '';
+      const atStart = caret - query.length - 1;
+      setAtQuery(query);
+      setAtTokenRange({ start: atStart, end: caret });
+      setAtActiveIndex(0);
+      setAtCategory(null);
       setAtAutocompleteOpen(true);
-    } else if (!val.includes('@') || val.endsWith(' ')) {
+      setOpenMenu(null);
+    } else {
       setAtAutocompleteOpen(false);
+      setAtQuery('');
+      setAtTokenRange(null);
+      setAtCategory(null);
+    }
+  };
+
+  const handlePromptChange = (val: string, caretPos?: number) => {
+    updateNodeFields(selectedNode.id, { prompt: val });
+    const effectiveCaret = typeof caretPos === 'number' ? caretPos : val.length;
+    detectAtMentionAtCaret(val, effectiveCaret);
+  };
+
+  const openAtMenuFromToolbarButton = () => {
+    if (atAutocompleteOpen) {
+      setAtAutocompleteOpen(false);
+      setAtCategory(null);
+      return;
+    }
+    setOpenMenu(null);
+    const cur = selectedNode.prompt;
+    const needsSpace = cur.length > 0 && !/\s$/.test(cur);
+    const nextPrompt = cur.endsWith('@') ? cur : `${cur}${needsSpace ? ' ' : ''}@`;
+    if (nextPrompt !== cur) {
+      updateNodeFields(selectedNode.id, { prompt: nextPrompt });
+    }
+    const atPos = nextPrompt.length - 1;
+    setAtQuery('');
+    setAtTokenRange({ start: atPos, end: nextPrompt.length });
+    setAtActiveIndex(0);
+    setAtCategory(null);
+    setAtAutocompleteOpen(true);
+    void refreshAssetsCatalog('all', false);
+    requestAnimationFrame(() => {
+      const el = promptTextareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(nextPrompt.length, nextPrompt.length);
+      }
+    });
+  };
+
+  const triggerDeviceUpload = (opts?: {
+    accept?: string;
+    motionMode?: boolean;
+    insertAtPrompt?: boolean;
+  }) => {
+    const slot = {
+      accept: opts?.accept || 'image/*,video/*,audio/*',
+      motionMode: opts?.motionMode,
+      insertAtPrompt: opts?.insertAtPrompt,
+    };
+    setPendingUploadSlot(slot);
+    setOpenMenu(null);
+    requestAnimationFrame(() => {
+      if (refUploadInputRef.current) {
+        refUploadInputRef.current.accept = slot.accept;
+        refUploadInputRef.current.click();
+      }
+    });
+  };
+
+  const handleAttachFilesBatch = async (
+    fileList: FileList | File[],
+    opts?: { motionMode?: boolean; insertAtPrompt?: boolean }
+  ) => {
+    const files = Array.from(fileList).filter((f) =>
+      /^(image|video|audio)\//i.test(f.type) ||
+      /\.(png|jpe?g|webp|gif|mp4|mov|webm|mp3|wav|m4a|ogg)$/i.test(f.name)
+    );
+    if (files.length === 0) return;
+    let firstHandle: string | null = null;
+    for (const f of files) {
+      const h = await attachReferenceToNode(selectedNode.id, f, {
+        motionMode: opts?.motionMode,
+      });
+      if (!firstHandle && h) firstHandle = h;
+    }
+    if (opts?.insertAtPrompt && firstHandle) {
+      insertHandleIntoPrompt(firstHandle);
+    } else {
+      setAtAutocompleteOpen(false);
+      setAtCategory(null);
     }
   };
 
@@ -698,12 +989,17 @@ export const ContextualNodeOverlay: React.FC = () => {
       <input
         ref={refUploadInputRef}
         type="file"
-        accept="image/*"
+        multiple
+        accept={pendingUploadSlot.accept}
         className="hidden"
         onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) {
-            void attachReferenceToNode(selectedNode.id, f);
+          const files = e.target.files;
+          if (files && files.length > 0) {
+            const slotSnap = pendingUploadSlot;
+            void handleAttachFilesBatch(Array.from(files), {
+              motionMode: slotSnap.motionMode,
+              insertAtPrompt: slotSnap.insertAtPrompt,
+            });
             e.target.value = '';
           }
           setOpenMenu(null);
@@ -983,31 +1279,62 @@ export const ContextualNodeOverlay: React.FC = () => {
             width: `${popoverWidth}px`,
           }}
           onPointerDown={(e) => e.stopPropagation()}
-          className="fixed z-40 rounded-[16px] dreamina-levitation p-3 space-y-2.5 select-none"
+          className="fixed z-40 rounded-[18px] dreamina-levitation p-3 space-y-2.5 select-none"
         >
-          {/* Top Strip: Modality Header + Live Wired / Uploaded References */}
+          {/* Top Strip: Modality / Expanded Filter Tabs + Video Input Method + Connection Badge */}
           <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="px-2 py-0.5 rounded-[6px] bg-[#252525] border border-white/[0.07] text-[11px] font-medium text-white/85 flex items-center gap-1.5">
-                {modality === 'video' ? (
-                  <Clapperboard className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
-                ) : modality === 'audio' ? (
-                  <AudioLines className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
-                ) : selectedNode.kind === 'element' ? (
-                  <UserSquare2 className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
-                ) : (
-                  <ImageIcon className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
-                )}
-                <span>
-                  {selectedNode.kind === 'element'
-                    ? `Create Reference (${selectedNode.elementHandles[0] || '@Ref_1'})`
-                    : modality === 'video'
-                    ? 'Create Video'
-                    : modality === 'audio'
-                    ? 'Create Voice / SFX'
-                    : 'Create Image'}
+            <div className="flex items-center gap-2 flex-wrap">
+              {composerExpanded && modality !== 'audio' ? (
+                <div
+                  data-testid="composer-filter-tabs"
+                  className="flex items-center gap-4 px-1"
+                >
+                  {(
+                    [
+                      { id: 'all', label: 'All' },
+                      { id: 'images', label: 'Images' },
+                      { id: 'text', label: 'Text' },
+                    ] as const
+                  ).map((tab) => {
+                    const activeTab = composerFilterTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setComposerFilterTab(tab.id)}
+                        className={`relative pb-1 text-[12.5px] font-medium transition-colors ${
+                          activeTab
+                            ? 'text-white after:content-[""] after:absolute after:left-0 after:right-0 after:bottom-0 after:h-[2px] after:rounded-full after:bg-white'
+                            : 'text-white/45 hover:text-white/80'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <span className="px-2 py-0.5 rounded-[6px] bg-[#252525] border border-white/[0.07] text-[11px] font-medium text-white/85 flex items-center gap-1.5">
+                  {modality === 'video' ? (
+                    <Clapperboard className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
+                  ) : modality === 'audio' ? (
+                    <AudioLines className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
+                  ) : selectedNode.kind === 'element' ? (
+                    <UserSquare2 className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
+                  ) : (
+                    <ImageIcon className="w-3 h-3 text-[#20D5EC]" strokeWidth={1.75} />
+                  )}
+                  <span>
+                    {selectedNode.kind === 'element'
+                      ? `Create Reference (${selectedNode.elementHandles[0] || '@Ref_1'})`
+                      : modality === 'video'
+                      ? 'Create Video'
+                      : modality === 'audio'
+                      ? 'Create Voice / SFX'
+                      : 'Create Image'}
+                  </span>
                 </span>
-              </span>
+              )}
 
               {/* Video Input Method Selector: Text-to-Video vs 1st/Last Frame vs @Ref R2V */}
               {modality === 'video' && activeModelDef?.supportsReferences && (
@@ -1055,298 +1382,1066 @@ export const ContextualNodeOverlay: React.FC = () => {
                   </button>
                 </div>
               )}
+            </div>
 
-              {/* Wired Upstream Reference Chips (Click to insert @Handle tag into prompt!) */}
-              {modality !== 'audio' &&
-                upstreamRefNodes.map((up, upIdx) => {
-                  const chipHandle = deriveUiHandleForNode(up, upIdx + 1);
-                  const cleanChipSubtitle = up.title
-                    .replace(
-                      new RegExp(
-                        `^${chipHandle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[·•:\\-]?\\s*`,
-                        'i'
-                      ),
-                      ''
-                    )
-                    .trim();
-                  const isTagged = selectedNode.prompt
-                    .toLowerCase()
-                    .includes(chipHandle.toLowerCase());
-                  return (
-                    <button
-                      key={up.id}
-                      type="button"
-                      onClick={() => insertHandleIntoPrompt(chipHandle)}
-                      className={`h-6 pl-1 pr-2 rounded-[6px] border flex items-center gap-1.5 text-[11px] transition-colors cursor-pointer ${
-                        isTagged
-                          ? 'bg-[#13262b] border-[#20D5EC]/60 text-[#8cf0ff]'
-                          : 'bg-[#252525] hover:bg-white/[0.08] border-[#20D5EC]/35 text-white/90'
-                      }`}
-                      title={`Click to insert ${chipHandle} into prompt (${up.title})`}
-                    >
-                      {up.imageUrl ? (
-                        <SmartMediaImage
-                          src={up.imageUrl}
-                          alt={up.title}
-                          className="w-4 h-4 rounded-[3px] object-cover"
-                        />
-                      ) : (
-                        <span className="w-2 h-2 rounded-full bg-[#20D5EC]/70 ml-1" />
-                      )}
-                      <span className="tabular-nums text-[10.5px] font-semibold text-[#20D5EC]">
-                        {chipHandle}
-                      </span>
-                      {cleanChipSubtitle && (
-                        <span className="truncate max-w-[96px] text-white/75">
-                          {cleanChipSubtitle}
-                        </span>
-                      )}
-                      {!up.imageUrl && (
-                        <span className="text-[10px] text-[#20D5EC]">Pending</span>
-                      )}
-                    </button>
-                  );
-                })}
-
-              {/* Attached Custom Reference Image Chips */}
-              {modality !== 'audio' &&
-                (selectedNode.referenceUrls || []).map((refUrl, idx) => (
-                  <div
-                    key={`${refUrl}_${idx}`}
-                    className="h-6 pl-1 pr-1.5 rounded-[6px] bg-[#252525] border border-white/[0.12] flex items-center gap-1 text-[11px] text-white/85"
-                  >
-                    <SmartMediaImage
-                      src={refUrl}
-                      alt={`Ref ${idx + 1}`}
-                      className="w-4 h-4 rounded-[3px] object-cover"
-                    />
-                    <span>Ref {idx + 1}</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        removeReferenceUrlFromNode(selectedNode.id, refUrl)
-                      }
-                      className="text-white/45 hover:text-white ml-0.5"
-                    >
-                      <X className="w-3 h-3" strokeWidth={1.75} />
-                    </button>
-                  </div>
-                ))}
-
-              {/* + Add Reference Dropdown Button */}
-              {modality !== 'audio' && (
-                <div className="relative">
+            <div className="flex items-center gap-1.5">
+              {/* Active Connection Badge */}
+              {(() => {
+                const matchingMcpSrv = externalMcpServers.find(
+                  (s) => s.platformId === effectivePlatformId && s.status === 'connected'
+                );
+                const mcpCredits = matchingMcpSrv?.balance?.credits;
+                const badgeText = activeConnStatus.connected
+                  ? activeConnStatus.hasMcp
+                    ? mcpCredits !== undefined
+                      ? `✓ MCP · ${mcpCredits.toLocaleString(undefined, { maximumFractionDigits: 1 })} cr`
+                      : '✓ MCP Connected'
+                    : `✓ ${activeConnStatus.summary}`
+                  : 'Connect Credits';
+                return (
                   <button
                     type="button"
                     onClick={() =>
-                      setOpenMenu(openMenu === 'add-ref' ? null : 'add-ref')
+                      openProviderModal(
+                        activeConnStatus.transports.includes('mcp')
+                          ? 'mcp'
+                          : activeConnStatus.transports.includes('browser-bridge')
+                          ? 'bridge'
+                          : 'byok',
+                        effectivePlatformId
+                      )
                     }
-                    className="h-6 px-2 rounded-[6px] bg-[#252525] hover:bg-white/[0.1] border border-dashed border-white/[0.18] text-[11px] text-white/75 hover:text-white flex items-center gap-1 transition-colors"
+                    className={`h-6 px-2.5 rounded-[6px] border text-[10.5px] font-medium flex items-center gap-1.5 transition-colors ${
+                      activeConnStatus.connected
+                        ? 'bg-[#10b981]/12 hover:bg-[#10b981]/20 border-[#10b981]/30 text-[#6ee7b7]'
+                        : 'bg-[#252525] hover:bg-white/[0.1] border-white/[0.07] text-white/70 hover:text-white'
+                    }`}
+                    title="Configure MCP, Browser Session Credits, or Zero-Markup API Keys"
                   >
-                    <Plus className="w-3 h-3" strokeWidth={1.75} />
-                    <span>Reference</span>
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        activeConnStatus.connected ? 'bg-[#10b981]' : 'bg-amber-400/80'
+                      }`}
+                    />
+                    <span>{badgeText}</span>
                   </button>
+                );
+              })()}
+            </div>
+          </div>
 
-                  {openMenu === 'add-ref' && (
-                    <div className="absolute bottom-full left-0 mb-1.5 w-[248px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5 text-[12px]">
+          {/* Dreamina Unified Prompt & Reference Composer Box ([ + ] Drag-Drop Tile + @ Mention Menu) */}
+          <div
+            data-testid="dreamina-prompt-composer"
+            onDragEnter={(e) => {
+              if (e.dataTransfer?.types?.includes('Files')) {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsComposerDragOver(true);
+              }
+            }}
+            onDragOver={(e) => {
+              if (e.dataTransfer?.types?.includes('Files')) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = 'copy';
+                if (!isComposerDragOver) setIsComposerDragOver(true);
+              }
+            }}
+            onDragLeave={(e) => {
+              if (e.currentTarget === e.target) {
+                setIsComposerDragOver(false);
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsComposerDragOver(false);
+              if (e.dataTransfer?.files?.length) {
+                void handleAttachFilesBatch(e.dataTransfer.files, { insertAtPrompt: false });
+              }
+            }}
+            className={`relative rounded-[14px] bg-[#141414] border transition-colors p-2.5 space-y-2 ${
+              isComposerDragOver
+                ? 'border-[#20D5EC] border-dashed bg-[#122229]'
+                : 'border-white/[0.08] focus-within:border-white/[0.2]'
+            }`}
+          >
+            {isComposerDragOver && (
+              <div className="pointer-events-none absolute inset-0 rounded-[14px] bg-[#10242c]/90 z-30 flex items-center justify-center gap-2 text-[12.5px] font-medium text-[#7ceeff]">
+                <Upload className="w-4 h-4 text-[#20D5EC]" strokeWidth={1.8} />
+                <span>Drop image, video, or audio files to attach as @references</span>
+              </div>
+            )}
+
+            {/* Top Reference Tile Row inside Composer ([ + ] 40x40 + Attached Thumbnails + Expand Toggle) */}
+            {modality !== 'audio' && (
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                  {/* Dreamina [ + ] 40x40 Reference Upload / Drop Tile */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      data-testid="composer-plus-upload-btn"
+                      onClick={() => {
+                        setAtAutocompleteOpen(false);
+                        setAtCategory(null);
+                        setOpenMenu(
+                          openMenu === 'plus-upload' || openMenu === 'plus-assets'
+                            ? null
+                            : 'plus-upload'
+                        );
+                      }}
+                      onDragOver={(e) => {
+                        if (e.dataTransfer?.types?.includes('Files')) {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = 'copy';
+                          if (!isComposerDragOver) setIsComposerDragOver(true);
+                        }
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setIsComposerDragOver(false);
+                        if (e.dataTransfer?.files?.length) {
+                          void handleAttachFilesBatch(e.dataTransfer.files, {
+                            insertAtPrompt: false,
+                          });
+                        }
+                      }}
+                      className={`w-10 h-10 rounded-[10px] border flex items-center justify-center transition-colors ${
+                        openMenu === 'plus-upload' || openMenu === 'plus-assets'
+                          ? 'bg-[#2f2f2f] border-white/[0.22] text-white'
+                          : 'bg-[#242424] hover:bg-[#2d2d2d] border-white/[0.07] text-white/75 hover:text-white'
+                      }`}
+                      title="Upload from device, Select from Assets, Add from canvas, or drag & drop files here"
+                    >
+                      <Plus className="w-4 h-4" strokeWidth={1.8} />
+                    </button>
+
+                    {/* Dreamina 3-Item [ + ] Menu */}
+                    {openMenu === 'plus-upload' && (
+                      <div
+                        data-testid="composer-plus-menu"
+                        className="absolute bottom-full left-0 mb-2 w-[216px] p-1.5 rounded-[14px] bg-[#202020] border border-white/[0.09] shadow-[0_20px_50px_rgba(0,0,0,0.78)] z-50 space-y-0.5 text-[13px]"
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            triggerDeviceUpload({
+                              accept:
+                                modality === 'video'
+                                  ? 'image/*,video/*,audio/*'
+                                  : 'image/*',
+                              insertAtPrompt: false,
+                            })
+                          }
+                          className="w-full h-9 px-3 rounded-[9px] hover:bg-white/[0.08] text-white/92 flex items-center gap-2.5 text-left transition-colors"
+                        >
+                          <Upload className="w-4 h-4 text-white/75 shrink-0" strokeWidth={1.65} />
+                          <span>Upload from device</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAssetPickerSearch('');
+                            setOpenMenu('plus-assets');
+                            void refreshAssetsCatalog('all', false);
+                          }}
+                          className="w-full h-9 px-3 rounded-[9px] hover:bg-white/[0.08] text-white/92 flex items-center gap-2.5 text-left transition-colors"
+                        >
+                          <FolderOpen
+                            className="w-4 h-4 text-white/75 shrink-0"
+                            strokeWidth={1.65}
+                          />
+                          <span>Select from Assets</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCanvasRefPickerSourceNodeId(selectedNode.id);
+                            setOpenMenu(null);
+                          }}
+                          className="w-full h-9 px-3 rounded-[9px] hover:bg-white/[0.08] text-white/92 flex items-center gap-2.5 text-left transition-colors"
+                        >
+                          <Sparkles className="w-4 h-4 text-white/75 shrink-0" strokeWidth={1.65} />
+                          <span>Add from canvas</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Select from Assets Picker Subview */}
+                    {openMenu === 'plus-assets' && (
+                      <div
+                        data-testid="composer-assets-menu"
+                        className="absolute bottom-full left-0 mb-2 w-[304px] max-h-[308px] p-2 rounded-[14px] bg-[#202020] border border-white/[0.09] shadow-[0_20px_50px_rgba(0,0,0,0.82)] z-50 flex flex-col gap-2 text-[12px]"
+                      >
+                        <div className="flex items-center justify-between gap-2 px-1">
+                          <button
+                            type="button"
+                            onClick={() => setOpenMenu('plus-upload')}
+                            className="inline-flex items-center gap-1 text-white/70 hover:text-white text-[12px] font-medium"
+                          >
+                            <ChevronLeft className="w-3.5 h-3.5" strokeWidth={1.8} />
+                            <span>Select from Assets</span>
+                          </button>
+                          {assetsLoading && (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-white/45" />
+                          )}
+                        </div>
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 text-white/35 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            value={assetPickerSearch}
+                            onChange={(e) => setAssetPickerSearch(e.target.value)}
+                            placeholder="Search @Elements & cloud assets…"
+                            className="w-full h-7 pl-7 pr-2.5 rounded-[8px] bg-[#141414] border border-white/[0.08] text-[11.5px] text-white placeholder:text-white/35 outline-none select-text"
+                          />
+                        </div>
+                        <div className="overflow-y-auto max-h-[212px] space-y-1 pr-0.5">
+                          {elements
+                            .filter((el) => {
+                              const q = assetPickerSearch.trim().toLowerCase();
+                              return (
+                                !q ||
+                                el.handle.toLowerCase().includes(q) ||
+                                el.name.toLowerCase().includes(q)
+                              );
+                            })
+                            .map((el) => (
+                              <button
+                                key={`vault_${el.id}`}
+                                type="button"
+                                onClick={() => {
+                                  const refImg = el.references?.[0]?.dataUrl;
+                                  if (refImg) {
+                                    attachAssetUrlToNode(selectedNode.id, {
+                                      url: refImg,
+                                      title: el.name,
+                                      kind: 'image',
+                                      handle: el.handle,
+                                    });
+                                  }
+                                  insertHandleIntoPrompt(el.handle);
+                                  setOpenMenu(null);
+                                }}
+                                className="w-full h-9 px-2 rounded-[8px] hover:bg-white/[0.08] flex items-center justify-between gap-2 text-left"
+                              >
+                                <span className="flex items-center gap-2 min-w-0">
+                                  {el.references?.[0]?.dataUrl ? (
+                                    <SmartMediaImage
+                                      src={el.references[0].dataUrl}
+                                      alt={el.name}
+                                      className="w-6 h-6 rounded-[5px] object-cover shrink-0"
+                                    />
+                                  ) : (
+                                    <UserSquare2 className="w-4 h-4 text-[#20D5EC] shrink-0" />
+                                  )}
+                                  <span className="truncate text-white/90 font-medium">
+                                    {el.handle}
+                                  </span>
+                                </span>
+                                <span className="text-[10.5px] text-white/40 shrink-0">
+                                  Element
+                                </span>
+                              </button>
+                            ))}
+
+                          {assetsCatalog
+                            .filter((asset) => {
+                              if (modality === 'image' && asset.kind !== 'image') return false;
+                              const q = assetPickerSearch.trim().toLowerCase();
+                              return (
+                                !q ||
+                                asset.title.toLowerCase().includes(q) ||
+                                (asset.prompt || '').toLowerCase().includes(q)
+                              );
+                            })
+                            .slice(0, 24)
+                            .map((asset) => (
+                              <button
+                                key={asset.id}
+                                type="button"
+                                onClick={() => {
+                                  attachAssetUrlToNode(selectedNode.id, {
+                                    url: asset.url,
+                                    title: asset.title,
+                                    kind: asset.kind,
+                                  });
+                                  setOpenMenu(null);
+                                }}
+                                className="w-full h-9 px-2 rounded-[8px] hover:bg-white/[0.08] flex items-center justify-between gap-2 text-left"
+                              >
+                                <span className="flex items-center gap-2 min-w-0">
+                                  {asset.kind === 'image' || asset.thumbnailUrl ? (
+                                    <SmartMediaImage
+                                      src={asset.thumbnailUrl || asset.url}
+                                      alt={asset.title}
+                                      className="w-6 h-6 rounded-[5px] object-cover shrink-0"
+                                    />
+                                  ) : asset.kind === 'video' ? (
+                                    <Film className="w-4 h-4 text-[#20D5EC] shrink-0" />
+                                  ) : (
+                                    <AudioLines className="w-4 h-4 text-[#20D5EC] shrink-0" />
+                                  )}
+                                  <span className="truncate text-white/90">{asset.title}</span>
+                                </span>
+                                <span className="text-[10px] text-white/40 uppercase shrink-0">
+                                  {asset.kind}
+                                </span>
+                              </button>
+                            ))}
+
+                          {!assetsLoading &&
+                            elements.length === 0 &&
+                            assetsCatalog.length === 0 && (
+                              <div className="px-2 py-4 text-center text-[11.5px] text-white/40">
+                                No cloud assets yet. Upload a file or pick from canvas.
+                              </div>
+                            )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Wired Upstream Image / Element Reference Thumbnails */}
+                  {(!composerExpanded || composerFilterTab !== 'text') &&
+                    upstreamRefNodes.map((up, upIdx) => {
+                      const chipHandle = deriveUiHandleForNode(up, upIdx + 1);
+                      const isTagged = selectedNode.prompt
+                        .toLowerCase()
+                        .includes(chipHandle.toLowerCase());
+                      return (
+                        <div
+                          key={up.id}
+                          data-testid={`composer-ref-tile-${up.id}`}
+                          className={`group relative w-10 h-10 rounded-[10px] border overflow-hidden shrink-0 transition-colors ${
+                            isTagged
+                              ? 'border-[#20D5EC]/75 bg-[#162930]'
+                              : 'border-white/[0.14] bg-[#222222]'
+                          }`}
+                          title={`${chipHandle} · ${up.title} (click to mention in prompt)`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => insertHandleIntoPrompt(chipHandle)}
+                            className="w-full h-full flex items-center justify-center"
+                          >
+                            {up.imageUrl ? (
+                              <SmartMediaImage
+                                src={up.imageUrl}
+                                alt={up.title}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <ImageIcon className="w-4 h-4 text-[#20D5EC]/80" />
+                            )}
+                            <span className="absolute inset-x-0 bottom-0 px-1 py-0.5 bg-black/75 text-[8.5px] font-semibold text-[#8cf0ff] truncate text-center leading-none">
+                              {chipHandle}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              disconnectNodes(up.id, selectedNode.id);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/80 text-white/80 hover:text-white flex items-center justify-center transition-opacity"
+                            title="Disconnect reference"
+                          >
+                            <X className="w-2.5 h-2.5" strokeWidth={2.2} />
+                          </button>
+                        </div>
+                      );
+                    })}
+
+                  {/* Wired Upstream Video & Audio Reference Thumbnails */}
+                  {(!composerExpanded || composerFilterTab === 'all') &&
+                    [...upstreamVideoNodes, ...upstreamAudioNodes].map((up, idx) => {
+                      const chipHandle = deriveUiHandleForNode(up, idx + 1);
+                      return (
+                        <div
+                          key={up.id}
+                          className="group relative w-10 h-10 rounded-[10px] border border-white/[0.14] bg-[#222222] overflow-hidden shrink-0"
+                          title={`${chipHandle} · ${up.title} (click to mention)`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => insertHandleIntoPrompt(chipHandle)}
+                            className="w-full h-full flex items-center justify-center"
+                          >
+                            {up.imageUrl ? (
+                              <SmartMediaImage
+                                src={up.imageUrl}
+                                alt={up.title}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : up.kind === 'video' ? (
+                              <Film className="w-4 h-4 text-[#20D5EC]" />
+                            ) : (
+                              <AudioLines className="w-4 h-4 text-[#20D5EC]" />
+                            )}
+                            <span className="absolute inset-x-0 bottom-0 px-1 py-0.5 bg-black/75 text-[8.5px] font-semibold text-[#8cf0ff] truncate text-center leading-none">
+                              {chipHandle}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              disconnectNodes(up.id, selectedNode.id);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/80 text-white/80 hover:text-white flex items-center justify-center transition-opacity"
+                            title="Disconnect reference"
+                          >
+                            <X className="w-2.5 h-2.5" strokeWidth={2.2} />
+                          </button>
+                        </div>
+                      );
+                    })}
+
+                  {/* Wired Upstream Text Reference Chips (shown in All / Text tab) */}
+                  {(!composerExpanded || composerFilterTab !== 'images') &&
+                    upstreamTextNodes.map((up, idx) => {
+                      const chipHandle = `@Text${idx + 1}`;
+                      return (
+                        <div
+                          key={up.id}
+                          className="group relative h-10 px-2.5 rounded-[10px] border border-white/[0.12] bg-[#222222] flex items-center gap-1.5 text-[11px] text-white/85 shrink-0"
+                          title={up.prompt || up.title}
+                        >
+                          <Type className="w-3.5 h-3.5 text-[#20D5EC]" />
+                          <span className="max-w-[90px] truncate">{up.title}</span>
+                          <button
+                            type="button"
+                            onClick={() => disconnectNodes(up.id, selectedNode.id)}
+                            className="text-white/40 hover:text-white"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
+
+                  {/* Attached Direct Image Reference Thumbnails */}
+                  {(!composerExpanded || composerFilterTab !== 'text') &&
+                    (selectedNode.referenceUrls || []).map((refUrl, idx) => {
+                      const handle = resolveBindingHandleForUrl(refUrl, 'Image', idx + 1);
+                      return (
+                        <div
+                          key={`img_${refUrl}_${idx}`}
+                          data-testid={`attached-image-ref-${idx}`}
+                          className="group relative w-10 h-10 rounded-[10px] border border-white/[0.14] bg-[#222222] overflow-hidden shrink-0"
+                          title={`${handle} (click to mention in prompt)`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => insertHandleIntoPrompt(handle)}
+                            className="w-full h-full flex items-center justify-center"
+                          >
+                            <SmartMediaImage
+                              src={refUrl}
+                              alt={handle}
+                              className="w-full h-full object-cover"
+                            />
+                            <span className="absolute inset-x-0 bottom-0 px-1 py-0.5 bg-black/75 text-[8.5px] font-semibold text-white/90 truncate text-center leading-none">
+                              {handle}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeReferenceUrlFromNode(selectedNode.id, refUrl);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/80 text-white/80 hover:text-white flex items-center justify-center transition-opacity"
+                            title="Remove reference"
+                          >
+                            <X className="w-2.5 h-2.5" strokeWidth={2.2} />
+                          </button>
+                        </div>
+                      );
+                    })}
+
+                  {/* Attached Direct Video Reference Thumbnails */}
+                  {(!composerExpanded || composerFilterTab === 'all') &&
+                    (selectedNode.videoReferenceUrls || []).map((vidUrl, idx) => {
+                      const handle = resolveBindingHandleForUrl(vidUrl, 'Video', idx + 1);
+                      return (
+                        <div
+                          key={`vid_${vidUrl}_${idx}`}
+                          data-testid={`attached-video-ref-${idx}`}
+                          className="group relative w-10 h-10 rounded-[10px] border border-white/[0.14] bg-[#222222] overflow-hidden shrink-0"
+                          title={`${handle} (click to mention in prompt)`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => insertHandleIntoPrompt(handle)}
+                            className="w-full h-full flex flex-col items-center justify-center"
+                          >
+                            <Film className="w-4 h-4 text-[#20D5EC] mb-2" strokeWidth={1.7} />
+                            <span className="absolute inset-x-0 bottom-0 px-1 py-0.5 bg-black/75 text-[8.5px] font-semibold text-[#8cf0ff] truncate text-center leading-none">
+                              {handle}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeVideoReferenceUrlFromNode(selectedNode.id, vidUrl);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/80 text-white/80 hover:text-white flex items-center justify-center transition-opacity"
+                            title="Remove video reference"
+                          >
+                            <X className="w-2.5 h-2.5" strokeWidth={2.2} />
+                          </button>
+                        </div>
+                      );
+                    })}
+
+                  {/* Attached Direct Audio Reference Thumbnails */}
+                  {(!composerExpanded || composerFilterTab === 'all') &&
+                    (selectedNode.audioReferenceUrls || []).map((audUrl, idx) => {
+                      const handle = resolveBindingHandleForUrl(audUrl, 'Audio', idx + 1);
+                      return (
+                        <div
+                          key={`aud_${audUrl}_${idx}`}
+                          data-testid={`attached-audio-ref-${idx}`}
+                          className="group relative w-10 h-10 rounded-[10px] border border-white/[0.14] bg-[#222222] overflow-hidden shrink-0"
+                          title={`${handle} (click to mention in prompt)`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => insertHandleIntoPrompt(handle)}
+                            className="w-full h-full flex flex-col items-center justify-center"
+                          >
+                            <AudioLines
+                              className="w-4 h-4 text-[#20D5EC] mb-2"
+                              strokeWidth={1.7}
+                            />
+                            <span className="absolute inset-x-0 bottom-0 px-1 py-0.5 bg-black/75 text-[8.5px] font-semibold text-[#8cf0ff] truncate text-center leading-none">
+                              {handle}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeAudioReferenceUrlFromNode(selectedNode.id, audUrl);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/80 text-white/80 hover:text-white flex items-center justify-center transition-opacity"
+                            title="Remove audio reference"
+                          >
+                            <X className="w-2.5 h-2.5" strokeWidth={2.2} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                </div>
+
+                {/* Top-Right Expand / Collapse Toggle */}
+                <button
+                  type="button"
+                  data-testid="composer-expand-btn"
+                  onClick={() => setComposerExpanded((prev) => !prev)}
+                  className="w-6 h-6 rounded-[6px] hover:bg-white/[0.08] text-white/50 hover:text-white flex items-center justify-center shrink-0 transition-colors"
+                  title={composerExpanded ? 'Collapse prompt composer' : 'Expand prompt composer'}
+                >
+                  {composerExpanded ? (
+                    <Minimize2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+                  ) : (
+                    <Maximize2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+                  )}
+                </button>
+              </div>
+            )}
+
+            {/* Prompt Textarea + Dreamina [@] Keycap Placeholder */}
+            <div className="relative">
+              {!selectedNode.prompt && modality !== 'audio' && (
+                <div className="pointer-events-none absolute inset-x-1 top-1 text-[13.5px] leading-relaxed text-white/35 flex items-center gap-1 select-none">
+                  <span>
+                    {modality === 'video'
+                      ? 'Describe your video or use'
+                      : 'Describe your image or use'}
+                  </span>
+                  <span className="inline-flex items-center justify-center w-5 h-5 rounded-[5px] bg-white/[0.07] border border-white/[0.08] text-white/60 text-[12px] font-medium">
+                    @
+                  </span>
+                  <span>
+                    {modality === 'video'
+                      ? 'to mention elements, images, and videos'
+                      : 'to mention elements'}
+                  </span>
+                </div>
+              )}
+              {selectedNode.prompt === '@' && atAutocompleteOpen && (
+                <div className="pointer-events-none absolute left-[18px] top-1 text-[13.5px] leading-relaxed text-white/32 select-none">
+                  Search elements, images, and videos
+                </div>
+              )}
+              <textarea
+                ref={promptTextareaRef}
+                data-testid="composer-prompt-textarea"
+                rows={composerExpanded ? 6 : 2}
+                value={selectedNode.prompt}
+                onChange={(e) =>
+                  handlePromptChange(e.target.value, e.target.selectionStart ?? undefined)
+                }
+                onClick={(e) => {
+                  const target = e.currentTarget;
+                  if (target.value.includes('@')) {
+                    detectAtMentionAtCaret(
+                      target.value,
+                      target.selectionStart ?? target.value.length
+                    );
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (atAutocompleteOpen && atCategory === null) {
+                    if (e.key === 'ArrowDown' && filteredAtMentionItems.length > 0) {
+                      e.preventDefault();
+                      setAtActiveIndex(
+                        (prev) => (prev + 1) % filteredAtMentionItems.length
+                      );
+                      return;
+                    }
+                    if (e.key === 'ArrowUp' && filteredAtMentionItems.length > 0) {
+                      e.preventDefault();
+                      setAtActiveIndex(
+                        (prev) =>
+                          (prev - 1 + filteredAtMentionItems.length) %
+                          filteredAtMentionItems.length
+                      );
+                      return;
+                    }
+                    if (
+                      (e.key === 'Enter' || e.key === 'Tab') &&
+                      !e.metaKey &&
+                      !e.ctrlKey &&
+                      filteredAtMentionItems.length > 0
+                    ) {
+                      e.preventDefault();
+                      const chosen =
+                        filteredAtMentionItems[
+                          Math.min(atActiveIndex, filteredAtMentionItems.length - 1)
+                        ];
+                      if (chosen) {
+                        insertHandleIntoPrompt(chosen.handle, chosen.nodeId);
+                      }
+                      return;
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setAtAutocompleteOpen(false);
+                      setAtCategory(null);
+                      return;
+                    }
+                  } else if (atAutocompleteOpen && e.key === 'Escape') {
+                    e.preventDefault();
+                    setAtCategory(null);
+                    setAtAutocompleteOpen(false);
+                    return;
+                  }
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    void generateSingleNode(selectedNode.id);
+                  }
+                }}
+                placeholder={
+                  modality === 'audio'
+                    ? selectedNode.audioMode === 'sfx'
+                      ? 'Describe the foley or ambient sound effect to generate…'
+                      : 'Write the voiceover script or character dialogue…'
+                    : ''
+                }
+                className={`w-full bg-transparent px-1 py-1 text-[13.5px] leading-relaxed text-white placeholder:text-white/35 resize-none outline-none select-text ${
+                  composerExpanded ? 'min-h-[148px]' : 'min-h-[48px]'
+                }`}
+              />
+            </div>
+
+            {/* Dreamina Two-Section Floating @ Mention & "Add reference" Menu */}
+            {atAutocompleteOpen && modality !== 'audio' && (
+              <div
+                data-testid="dreamina-at-menu"
+                className="absolute bottom-full left-0 mb-2 w-[268px] p-2 rounded-[16px] bg-[#1e1e1e] border border-white/[0.09] shadow-[0_22px_54px_rgba(0,0,0,0.82)] z-50 text-[13px]"
+              >
+                {atCategory === null ? (
+                  <>
+                    <div className="px-2 py-1 text-[11.5px] text-white/42 font-normal">
+                      Use &quot;@&quot; to mention
+                    </div>
+                    <div className="max-h-[156px] overflow-y-auto space-y-0.5">
+                      {filteredAtMentionItems.length > 0 ? (
+                        filteredAtMentionItems.map((item, idx) => {
+                          const isHighlighted = idx === atActiveIndex;
+                          return (
+                            <button
+                              key={item.handle}
+                              type="button"
+                              onMouseEnter={() => setAtActiveIndex(idx)}
+                              onClick={() =>
+                                insertHandleIntoPrompt(item.handle, item.nodeId)
+                              }
+                              className={`w-full h-10 px-2 rounded-[10px] flex items-center gap-2.5 text-left transition-colors ${
+                                isHighlighted
+                                  ? 'bg-white/[0.09] text-white'
+                                  : 'hover:bg-white/[0.06] text-white/92'
+                              }`}
+                            >
+                              {item.imageUrl ? (
+                                <SmartMediaImage
+                                  src={item.imageUrl}
+                                  alt={item.label}
+                                  className="w-7 h-7 rounded-[7px] object-cover shrink-0"
+                                />
+                              ) : item.kind === 'video' ? (
+                                <span className="w-7 h-7 rounded-[7px] bg-white/[0.07] flex items-center justify-center shrink-0">
+                                  <Film className="w-3.5 h-3.5 text-[#20D5EC]" />
+                                </span>
+                              ) : item.kind === 'audio' ? (
+                                <span className="w-7 h-7 rounded-[7px] bg-white/[0.07] flex items-center justify-center shrink-0">
+                                  <AudioLines className="w-3.5 h-3.5 text-[#20D5EC]" />
+                                </span>
+                              ) : (
+                                <span className="w-7 h-7 rounded-[7px] bg-white/[0.07] flex items-center justify-center shrink-0">
+                                  <AtSign className="w-3.5 h-3.5 text-[#20D5EC]" />
+                                </span>
+                              )}
+                              <span className="truncate font-medium text-[13px]">
+                                {item.displayName}
+                              </span>
+                            </button>
+                          );
+                        })
+                      ) : (
+                        <div className="px-2 py-1.5 text-[11.5px] text-white/38">
+                          No matching @elements yet — add below
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="my-1.5 h-px bg-white/[0.08]" />
+
+                    <div className="px-2 py-1 text-[11.5px] text-white/42 font-normal">
+                      Add reference
+                    </div>
+                    <div className="space-y-0.5">
+                      {(
+                        [
+                          {
+                            id: 'element' as const,
+                            label: 'Element',
+                            icon: UserSquare2,
+                            isNew: false,
+                          },
+                          {
+                            id: 'image' as const,
+                            label: 'Image',
+                            icon: ImageIcon,
+                            isNew: false,
+                          },
+                          {
+                            id: 'video' as const,
+                            label: 'Video',
+                            icon: Film,
+                            isNew: false,
+                          },
+                          {
+                            id: 'audio' as const,
+                            label: 'Audio',
+                            icon: AudioLines,
+                            isNew: false,
+                          },
+                          {
+                            id: 'motion' as const,
+                            label: 'Motion',
+                            icon: Compass,
+                            isNew: true,
+                          },
+                        ] as const
+                      ).map((cat) => {
+                        const IconComp = cat.icon;
+                        return (
+                          <button
+                            key={cat.id}
+                            type="button"
+                            data-testid={`at-add-ref-${cat.id}`}
+                            onClick={() => {
+                              setAtCategory(cat.id);
+                              void refreshAssetsCatalog('all', false);
+                            }}
+                            className="w-full h-9 px-2 rounded-[9px] hover:bg-white/[0.07] text-white/92 flex items-center justify-between gap-2 transition-colors"
+                          >
+                            <span className="flex items-center gap-2.5">
+                              <IconComp
+                                className="w-4 h-4 text-white/80 shrink-0"
+                                strokeWidth={1.65}
+                              />
+                              <span>{cat.label}</span>
+                              {cat.isNew && (
+                                <span className="px-1.5 py-0.5 rounded-[4px] bg-[#133240] text-[#20D5EC] text-[10px] font-semibold leading-none">
+                                  New
+                                </span>
+                              )}
+                            </span>
+                            <ChevronRight
+                              className="w-3.5 h-3.5 text-white/45"
+                              strokeWidth={1.8}
+                            />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between px-1 py-0.5">
                       <button
                         type="button"
-                        onClick={() => refUploadInputRef.current?.click()}
-                        className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2 text-left"
+                        onClick={() => setAtCategory(null)}
+                        className="inline-flex items-center gap-1 text-[12px] font-medium text-white/80 hover:text-white"
                       >
-                        <Upload className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
-                        <span>Upload reference image…</span>
+                        <ChevronLeft className="w-3.5 h-3.5" strokeWidth={1.8} />
+                        <span className="capitalize">Add {atCategory}</span>
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAtCategory(null);
+                          setAtAutocompleteOpen(false);
+                        }}
+                        className="text-white/40 hover:text-white"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
 
-                      {linkableCanvasImageNodes.length > 0 && (
-                        <>
-                          <div className="my-1 h-px bg-white/[0.07]" />
-                          <div className="px-2.5 py-0.5 text-[10.5px] text-white/40 uppercase tracking-wider">
-                            Link Canvas Node
-                          </div>
-                          {linkableCanvasImageNodes.slice(0, 6).map((cn) => (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        triggerDeviceUpload({
+                          accept:
+                            atCategory === 'video' || atCategory === 'motion'
+                              ? 'video/*'
+                              : atCategory === 'audio'
+                              ? 'audio/*'
+                              : 'image/*',
+                          motionMode: atCategory === 'motion',
+                          insertAtPrompt: true,
+                        })
+                      }
+                      className="w-full h-8 px-2.5 rounded-[8px] bg-white/[0.06] hover:bg-white/[0.11] text-white/92 text-[12px] flex items-center gap-2"
+                    >
+                      <Upload className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.7} />
+                      <span>Upload {atCategory} from device…</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCanvasRefPickerSourceNodeId(selectedNode.id);
+                        setAtCategory(null);
+                        setAtAutocompleteOpen(false);
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.07] text-white/85 text-[12px] flex items-center gap-2"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.7} />
+                      <span>Pick from canvas…</span>
+                    </button>
+
+                    <div className="my-1 h-px bg-white/[0.07]" />
+
+                    <div className="max-h-[172px] overflow-y-auto space-y-0.5">
+                      {atCategory === 'element' &&
+                        elements.map((el) => (
+                          <button
+                            key={el.id}
+                            type="button"
+                            onClick={() => {
+                              const refImg = el.references?.[0]?.dataUrl;
+                              if (refImg) {
+                                attachAssetUrlToNode(selectedNode.id, {
+                                  url: refImg,
+                                  title: el.name,
+                                  kind: 'image',
+                                  handle: el.handle,
+                                });
+                              }
+                              insertHandleIntoPrompt(el.handle);
+                            }}
+                            className="w-full h-9 px-2 rounded-[8px] hover:bg-white/[0.07] flex items-center gap-2 text-left text-[12px] text-white/90"
+                          >
+                            {el.references?.[0]?.dataUrl ? (
+                              <SmartMediaImage
+                                src={el.references[0].dataUrl}
+                                alt={el.name}
+                                className="w-6 h-6 rounded-[5px] object-cover shrink-0"
+                              />
+                            ) : (
+                              <UserSquare2 className="w-4 h-4 text-[#20D5EC] shrink-0" />
+                            )}
+                            <span className="truncate font-medium">{el.handle}</span>
+                          </button>
+                        ))}
+
+                      {(atCategory === 'image' || atCategory === 'element') &&
+                        linkableCanvasImageNodes.slice(0, 10).map((cn, idx) => {
+                          const h = deriveUiHandleForNode(cn, idx + 1);
+                          return (
+                            <button
+                              key={cn.id}
+                              type="button"
+                              onClick={() => insertHandleIntoPrompt(h, cn.id)}
+                              className="w-full h-9 px-2 rounded-[8px] hover:bg-white/[0.07] flex items-center justify-between gap-2 text-left text-[12px] text-white/90"
+                            >
+                              <span className="flex items-center gap-2 min-w-0">
+                                {cn.imageUrl ? (
+                                  <SmartMediaImage
+                                    src={cn.imageUrl}
+                                    alt={cn.title}
+                                    className="w-6 h-6 rounded-[5px] object-cover shrink-0"
+                                  />
+                                ) : (
+                                  <ImageIcon className="w-4 h-4 text-white/55 shrink-0" />
+                                )}
+                                <span className="truncate">{cn.title}</span>
+                              </span>
+                              <span className="text-[10.5px] text-[#20D5EC] shrink-0">
+                                {h}
+                              </span>
+                            </button>
+                          );
+                        })}
+
+                      {(atCategory === 'video' || atCategory === 'motion') &&
+                        linkableCanvasVideoNodes.slice(0, 10).map((cn, idx) => {
+                          const h = deriveUiHandleForNode(cn, idx + 1);
+                          return (
                             <button
                               key={cn.id}
                               type="button"
                               onClick={() => {
-                                connectNodes(cn.id, selectedNode.id, 'lineage');
-                                setOpenMenu(null);
+                                if (atCategory === 'motion') {
+                                  updateModelParam('mode', 'motion_control');
+                                }
+                                insertHandleIntoPrompt(h, cn.id);
                               }}
-                              className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center justify-between gap-2 text-left"
+                              className="w-full h-9 px-2 rounded-[8px] hover:bg-white/[0.07] flex items-center justify-between gap-2 text-left text-[12px] text-white/90"
                             >
                               <span className="flex items-center gap-2 min-w-0">
-                                <Link2
-                                  className="w-3.5 h-3.5 text-[#20D5EC] shrink-0"
-                                  strokeWidth={1.5}
-                                />
+                                <Film className="w-4 h-4 text-[#20D5EC] shrink-0" />
                                 <span className="truncate">{cn.title}</span>
                               </span>
-                              <span className="text-[10px] text-white/40 shrink-0">
-                                {cn.imageUrl ? 'Ready' : 'Idle'}
+                              <span className="text-[10.5px] text-[#20D5EC] shrink-0">
+                                {h}
                               </span>
                             </button>
-                          ))}
-                        </>
-                      )}
+                          );
+                        })}
 
-                      {elements.length > 0 && (
-                        <>
-                          <div className="my-1 h-px bg-white/[0.07]" />
-                          <div className="px-2.5 py-0.5 text-[10.5px] text-white/40 uppercase tracking-wider">
-                            Project @Elements
-                          </div>
-                          {elements.map((el) => (
+                      {atCategory === 'audio' &&
+                        linkableCanvasAudioNodes.slice(0, 10).map((cn, idx) => {
+                          const h = deriveUiHandleForNode(cn, idx + 1);
+                          return (
                             <button
-                              key={el.id}
+                              key={cn.id}
                               type="button"
-                              onClick={() => {
-                                const nextPrompt = selectedNode.prompt.includes(el.handle)
-                                  ? selectedNode.prompt
-                                  : `${selectedNode.prompt}${
-                                      selectedNode.prompt &&
-                                      !selectedNode.prompt.endsWith(' ')
-                                        ? ' '
-                                        : ''
-                                    }${el.handle} `;
-                                updateNodeFields(selectedNode.id, {
-                                  prompt: nextPrompt,
-                                  elementHandles: Array.from(
-                                    new Set([...selectedNode.elementHandles, el.handle])
-                                  ),
-                                });
-                                setOpenMenu(null);
-                              }}
-                              className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center justify-between gap-2 text-left"
+                              onClick={() => insertHandleIntoPrompt(h, cn.id)}
+                              className="w-full h-9 px-2 rounded-[8px] hover:bg-white/[0.07] flex items-center justify-between gap-2 text-left text-[12px] text-white/90"
                             >
                               <span className="flex items-center gap-2 min-w-0">
-                                <AtSign
-                                  className="w-3.5 h-3.5 text-[#20D5EC] shrink-0"
-                                  strokeWidth={1.5}
-                                />
-                                <span className="tabular-nums text-[11.5px] truncate">
-                                  {el.handle}
-                                </span>
+                                <AudioLines className="w-4 h-4 text-[#20D5EC] shrink-0" />
+                                <span className="truncate">{cn.title}</span>
                               </span>
-                              <span className="text-[10px] text-white/45 shrink-0">
-                                {el.references.length} ref
+                              <span className="text-[10.5px] text-[#20D5EC] shrink-0">
+                                {h}
                               </span>
                             </button>
-                          ))}
-                        </>
-                      )}
+                          );
+                        })}
+
+                      {assetsCatalog
+                        .filter((a) =>
+                          atCategory === 'video' || atCategory === 'motion'
+                            ? a.kind === 'video'
+                            : atCategory === 'audio'
+                            ? a.kind === 'audio'
+                            : a.kind === 'image'
+                        )
+                        .slice(0, 12)
+                        .map((asset) => (
+                          <button
+                            key={asset.id}
+                            type="button"
+                            onClick={() => {
+                              const assignedHandle = attachAssetUrlToNode(selectedNode.id, {
+                                url: asset.url,
+                                title: asset.title,
+                                kind: asset.kind,
+                                motionMode: atCategory === 'motion',
+                              });
+                              insertHandleIntoPrompt(assignedHandle);
+                            }}
+                            className="w-full h-9 px-2 rounded-[8px] hover:bg-white/[0.07] flex items-center gap-2 text-left text-[12px] text-white/85"
+                          >
+                            {asset.kind === 'image' || asset.thumbnailUrl ? (
+                              <SmartMediaImage
+                                src={asset.thumbnailUrl || asset.url}
+                                alt={asset.title}
+                                className="w-6 h-6 rounded-[5px] object-cover shrink-0"
+                              />
+                            ) : asset.kind === 'video' ? (
+                              <Film className="w-4 h-4 text-[#20D5EC] shrink-0" />
+                            ) : (
+                              <AudioLines className="w-4 h-4 text-[#20D5EC] shrink-0" />
+                            )}
+                            <span className="truncate">{asset.title}</span>
+                          </button>
+                        ))}
                     </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Active Connection Badge */}
-            {(() => {
-              const matchingMcpSrv = externalMcpServers.find(
-                (s) => s.platformId === effectivePlatformId && s.status === 'connected'
-              );
-              const mcpCredits = matchingMcpSrv?.balance?.credits;
-              const badgeText = activeConnStatus.connected
-                ? activeConnStatus.hasMcp
-                  ? mcpCredits !== undefined
-                    ? `✓ MCP · ${mcpCredits.toLocaleString(undefined, { maximumFractionDigits: 1 })} cr`
-                    : '✓ MCP Connected'
-                  : `✓ ${activeConnStatus.summary}`
-                : 'Connect Credits';
-              return (
-                <button
-                  type="button"
-                  onClick={() =>
-                    openProviderModal(
-                      activeConnStatus.transports.includes('mcp')
-                        ? 'mcp'
-                        : activeConnStatus.transports.includes('browser-bridge')
-                        ? 'bridge'
-                        : 'byok',
-                      effectivePlatformId
-                    )
-                  }
-                  className={`h-6 px-2.5 rounded-[6px] border text-[10.5px] font-medium flex items-center gap-1.5 transition-colors ${
-                    activeConnStatus.connected
-                      ? 'bg-[#10b981]/12 hover:bg-[#10b981]/20 border-[#10b981]/30 text-[#6ee7b7]'
-                      : 'bg-[#252525] hover:bg-white/[0.1] border-white/[0.07] text-white/70 hover:text-white'
-                  }`}
-                  title="Configure MCP, Browser Session Credits, or Zero-Markup API Keys"
-                >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      activeConnStatus.connected ? 'bg-[#10b981]' : 'bg-amber-400/80'
-                    }`}
-                  />
-                  <span>{badgeText}</span>
-                </button>
-              );
-            })()}
-          </div>
-
-          {/* Prompt Input Area */}
-          <div className="relative">
-            <textarea
-              rows={2}
-              value={selectedNode.prompt}
-              onChange={(e) => handlePromptChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  void generateSingleNode(selectedNode.id);
-                }
-              }}
-              placeholder={
-                selectedNode.kind === 'element'
-                  ? 'Describe the character, product, or visual reference to create…'
-                  : modality === 'video'
-                  ? upstreamRefNodes.length > 0
-                    ? `Describe how ${upstreamRefNodes[0].title} moves, camera motion & scene action…`
-                    : 'Describe camera motion, subject action & scene dynamics…'
-                  : modality === 'audio'
-                  ? selectedNode.audioMode === 'sfx'
-                    ? 'Describe the foley or ambient sound effect to generate…'
-                    : 'Write the voiceover script or character dialogue…'
-                  : 'Describe the image you want to create…'
-              }
-              className="w-full bg-[#141414] border border-white/[0.07] focus:border-white/[0.22] rounded-[10px] px-3 py-2 text-[13px] leading-relaxed text-white placeholder:text-white/32 resize-none outline-none select-text"
-            />
-
-            {/* Inline @Handle Autocomplete (Wired Nodes, Canvas @Elements & Vault) */}
-            {atAutocompleteOpen && availableAtHandleItems.length > 0 && (
-              <div className="absolute bottom-full left-2 mb-1.5 w-[272px] max-h-[220px] overflow-y-auto p-1.5 rounded-[11px] dreamina-menu z-50 space-y-0.5">
-                <div className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/40">
-                  Tag @Character / @Element Reference
-                </div>
-                {availableAtHandleItems.map((item) => (
-                  <button
-                    key={item.handle}
-                    type="button"
-                    onClick={() => insertHandleIntoPrompt(item.handle, item.nodeId)}
-                    className="w-full h-8 px-2 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/90 flex items-center justify-between gap-2"
-                  >
-                    <span className="flex items-center gap-2 min-w-0">
-                      {item.imageUrl ? (
-                        <SmartMediaImage
-                          src={item.imageUrl}
-                          alt={item.label}
-                          className="w-5 h-5 rounded-[4px] object-cover shrink-0"
-                        />
-                      ) : (
-                        <AtSign className="w-3.5 h-3.5 text-[#20D5EC] shrink-0" strokeWidth={1.6} />
-                      )}
-                      <span className="tabular-nums font-medium text-[#20D5EC] shrink-0">
-                        {item.handle}
-                      </span>
-                    </span>
-                    <span className="text-[11px] text-white/45 truncate">
-                      {item.label}
-                    </span>
-                  </button>
-                ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
+
+          {/* Inline Generation Error & 1-Click Retry Banner */}
+          {selectedNode.lastError && !isGenerating && (
+            <div
+              data-testid="composer-error-banner"
+              className="px-3 py-2 rounded-[10px] bg-rose-500/[0.1] border border-rose-400/30 flex items-center justify-between gap-2 text-[11.5px]"
+            >
+              <span className="text-rose-200/95 truncate" title={selectedNode.lastError}>
+                {selectedNode.lastError}
+              </span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => void generateSingleNode(selectedNode.id)}
+                  className="h-6 px-2.5 rounded-[6px] bg-rose-500/25 hover:bg-rose-500/40 border border-rose-300/35 text-rose-100 font-semibold inline-flex items-center gap-1"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Retry</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateNodeFields(selectedNode.id, {
+                      lastError: undefined,
+                      editBadge: undefined,
+                    })
+                  }
+                  className="text-rose-200/60 hover:text-white p-0.5"
+                  title="Dismiss error"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Actionable Banner ONLY when platform is genuinely disconnected after clicking Generate */}
           {lastFailedPlatformId === effectivePlatformId &&
@@ -1641,92 +2736,146 @@ export const ContextualNodeOverlay: React.FC = () => {
                 )}
               </div>
 
-              {/* 3. DYNAMIC MODEL-AWARE PARAMETER PILLS */}
-              {modality !== 'audio' && aspectOptions.length > 0 && (
+              {/* 3. DREAMINA UNIFIED FORMAT & RESOLUTION PILL (Aspect · Resolution · Count) */}
+              {modality !== 'audio' && (aspectOptions.length > 0 || showResolutionPill) && (
                 <div className="relative">
                   <button
                     type="button"
-                    onClick={() =>
-                      setOpenMenu(openMenu === 'aspect' ? null : 'aspect')
-                    }
-                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
-                    title="Aspect Ratio"
+                    data-testid="unified-format-resolution-pill"
+                    onClick={() => {
+                      setAtAutocompleteOpen(false);
+                      setAtCategory(null);
+                      setOpenMenu(openMenu === 'format' ? null : 'format');
+                    }}
+                    className={`h-8 px-2.5 rounded-[8px] border tabular-nums text-[12px] flex items-center gap-1.5 transition-colors ${
+                      openMenu === 'format'
+                        ? 'bg-[#303030] border-white/[0.22] text-white'
+                        : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.08] text-white/92'
+                    }`}
+                    title="Aspect Ratio, Output Resolution & Count"
                   >
                     <span>{selectedNode.aspectRatio}</span>
-                    <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
+                    {showResolutionPill && (
+                      <>
+                        <span className="text-white/35">·</span>
+                        <span>{activeDisplayResolution}</span>
+                      </>
+                    )}
+                    <span className="text-white/35">·</span>
+                    <span>
+                      {modality === 'video'
+                        ? '1 video'
+                        : `${activeBatchCount} ${activeBatchCount === 1 ? 'image' : 'images'}`}
+                    </span>
+                    {effectivePlatformId === 'dreamina' && (
+                      <Sparkles
+                        className="w-3 h-3 text-[#20D5EC] shrink-0"
+                        strokeWidth={1.9}
+                      />
+                    )}
+                    <ChevronDown className="w-3 h-3 text-white/45 shrink-0" strokeWidth={1.6} />
                   </button>
-                  {openMenu === 'aspect' && (
-                    <div className="absolute bottom-full left-0 mb-1.5 w-[132px] max-h-[260px] overflow-y-auto p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
-                      {aspectOptions.map((ar) => (
-                        <button
-                          key={ar}
-                          type="button"
-                          onClick={() => {
-                            setNodeAspectRatio(selectedNode.id, ar);
-                            setOpenMenu(null);
-                          }}
-                          className={`w-full h-7 px-2.5 rounded-[7px] tabular-nums text-[11.5px] flex items-center justify-between ${
-                            String(selectedNode.aspectRatio).toLowerCase() === ar.toLowerCase()
-                              ? 'bg-white/[0.1] text-white'
-                              : 'hover:bg-white/[0.06] text-white/80'
-                          }`}
-                        >
-                          <span>{ar}</span>
-                          {String(selectedNode.aspectRatio).toLowerCase() === ar.toLowerCase() && (
-                            <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
-                          )}
-                        </button>
-                      ))}
+
+                  {openMenu === 'format' && (
+                    <div
+                      data-testid="unified-format-popover"
+                      className="absolute bottom-full left-0 mb-2 w-[280px] p-3 rounded-[14px] dreamina-menu z-50 space-y-3 text-[11.5px]"
+                    >
+                      {aspectOptions.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="text-[10.5px] font-medium text-white/45 uppercase tracking-wider">
+                            Aspect Ratio
+                          </div>
+                          <div className="grid grid-cols-4 gap-1 max-h-[144px] overflow-y-auto pr-0.5">
+                            {aspectOptions.map((ar) => {
+                              const isActiveAr =
+                                String(selectedNode.aspectRatio).toLowerCase() ===
+                                ar.toLowerCase();
+                              return (
+                                <button
+                                  key={ar}
+                                  type="button"
+                                  data-testid={`format-aspect-${ar}`}
+                                  onClick={() => setNodeAspectRatio(selectedNode.id, ar)}
+                                  className={`h-7 px-1.5 rounded-[7px] tabular-nums text-[11px] border transition-colors ${
+                                    isActiveAr
+                                      ? 'bg-white text-[#0e0e0e] border-white font-semibold'
+                                      : 'bg-[#171717] hover:bg-white/[0.08] border-white/[0.08] text-white/80'
+                                  }`}
+                                >
+                                  {ar}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {showResolutionPill && (
+                        <div className="space-y-1.5">
+                          <div className="text-[10.5px] font-medium text-white/45 uppercase tracking-wider">
+                            Resolution
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {resolutionOptions.map((res) => {
+                              const isActiveRes =
+                                String(activeDisplayResolution).toLowerCase() ===
+                                res.toLowerCase();
+                              return (
+                                <button
+                                  key={res}
+                                  type="button"
+                                  data-testid={`format-res-${res}`}
+                                  onClick={() => setNodeUnifiedResolution(res)}
+                                  className={`h-7 px-3 rounded-[7px] tabular-nums text-[11.5px] border transition-colors ${
+                                    isActiveRes
+                                      ? 'bg-white text-[#0e0e0e] border-white font-semibold'
+                                      : 'bg-[#171717] hover:bg-white/[0.08] border-white/[0.08] text-white/80'
+                                  }`}
+                                >
+                                  {res}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {modality === 'image' && (
+                        <div className="space-y-1.5">
+                          <div className="text-[10.5px] font-medium text-white/45 uppercase tracking-wider">
+                            Images per Generation
+                          </div>
+                          <div className="grid grid-cols-4 gap-1">
+                            {BATCH_COUNTS.map((cnt) => {
+                              const isActiveCnt = activeBatchCount === cnt;
+                              return (
+                                <button
+                                  key={cnt}
+                                  type="button"
+                                  data-testid={`format-count-${cnt}`}
+                                  onClick={() =>
+                                    updateNodeFields(selectedNode.id, { batchCount: cnt })
+                                  }
+                                  className={`h-7 rounded-[7px] tabular-nums text-[11.5px] border transition-colors ${
+                                    isActiveCnt
+                                      ? 'bg-white text-[#0e0e0e] border-white font-semibold'
+                                      : 'bg-[#171717] hover:bg-white/[0.08] border-white/[0.08] text-white/80'
+                                  }`}
+                                >
+                                  {cnt}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
               )}
 
-              {showResolutionPill && (
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setOpenMenu(openMenu === 'resolution' ? null : 'resolution')
-                    }
-                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
-                    title="Output Resolution"
-                  >
-                    <span>{selectedNode.resolution}</span>
-                    <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
-                  </button>
-                  {openMenu === 'resolution' && (
-                    <div className="absolute bottom-full left-0 mb-1.5 w-[118px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
-                      {resolutionOptions.map((res) => {
-                        const isActiveRes =
-                          String(selectedNode.resolution).toLowerCase() === res.toLowerCase();
-                        return (
-                          <button
-                            key={res}
-                            type="button"
-                            onClick={() => {
-                              updateNodeFields(selectedNode.id, { resolution: res });
-                              setOpenMenu(null);
-                            }}
-                            className={`w-full h-7 px-2.5 rounded-[7px] tabular-nums text-[11.5px] flex items-center justify-between ${
-                              isActiveRes
-                                ? 'bg-white/[0.1] text-white'
-                                : 'hover:bg-white/[0.06] text-white/80'
-                            }`}
-                          >
-                            <span>{res}</span>
-                            {isActiveRes && (
-                              <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* First-Class Quality Pill */}
+              {/* First-Class Quality Pill (non-duplicate provider quality tiers only) */}
               {qualitySpec && (qualitySpec.options?.length || 0) > 0 && (
                 <div className="relative">
                   <button
@@ -1789,9 +2938,6 @@ export const ContextualNodeOverlay: React.FC = () => {
                     className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] text-[11.5px] text-white/90 flex items-center gap-1 max-w-[175px]"
                     title={modeSpec.description || modeSpec.label || 'Model mode / variant'}
                   >
-                    <span className="text-white/50 shrink-0">
-                      {modeSpec.label || (modeSpec.name === 'variant' ? 'Variant' : 'Mode')}:
-                    </span>
                     <span className="font-medium text-white truncate">
                       {formatParamOptionLabel(activeModeVal ?? '')}
                     </span>
@@ -1832,45 +2978,21 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </div>
               )}
 
-              {/* Image Batch Count */}
-              {modality === 'image' && (
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setOpenMenu(openMenu === 'batch' ? null : 'batch')
-                    }
-                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
-                    title="Batch image count"
-                  >
-                    <span>{selectedNode.batchCount || 1}×</span>
-                    <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
-                  </button>
-                  {openMenu === 'batch' && (
-                    <div className="absolute bottom-full left-0 mb-1.5 w-[108px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
-                      {BATCH_COUNTS.map((cnt) => (
-                        <button
-                          key={cnt}
-                          type="button"
-                          onClick={() => {
-                            updateNodeFields(selectedNode.id, { batchCount: cnt });
-                            setOpenMenu(null);
-                          }}
-                          className={`w-full h-7 px-2.5 rounded-[7px] tabular-nums text-[11.5px] flex items-center justify-between ${
-                            (selectedNode.batchCount || 1) === cnt
-                              ? 'bg-white/[0.1] text-white'
-                              : 'hover:bg-white/[0.06] text-white/80'
-                          }`}
-                        >
-                          <span>{cnt} {cnt === 1 ? 'image' : 'images'}</span>
-                          {(selectedNode.batchCount || 1) === cnt && (
-                            <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+              {/* Dreamina Bottom Toolbar @ Mention Trigger */}
+              {modality !== 'audio' && (
+                <button
+                  type="button"
+                  data-testid="composer-at-btn"
+                  onClick={openAtMenuFromToolbarButton}
+                  className={`h-8 w-8 rounded-[8px] border flex items-center justify-center transition-colors ${
+                    atAutocompleteOpen
+                      ? 'bg-white text-[#0e0e0e] border-white'
+                      : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/85 hover:text-white'
+                  }`}
+                  title='Mention @Element or add reference ("@")'
+                >
+                  <AtSign className="w-3.5 h-3.5" strokeWidth={1.75} />
+                </button>
               )}
 
               {/* Video Duration + DoP Camera Rig + Dynamic Audio Toggle */}
@@ -2566,7 +3688,7 @@ const MultiReferenceSelectionBar: React.FC = () => {
   const [composerPrompt, setComposerPrompt] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<
-    null | 'platform' | 'model' | 'aspect' | 'resolution' | 'duration' | 'batch'
+    null | 'platform' | 'model' | 'format' | 'duration'
   >(null);
 
   const selectionSignature = selectedNodeIds.join('|');
@@ -2626,7 +3748,7 @@ const MultiReferenceSelectionBar: React.FC = () => {
   const [durationSec, setDurationSec] = useState<number>(
     activeModel?.defaultDurationSec || 5
   );
-  const [batchCount, setBatchCount] = useState<1 | 2 | 4>(1);
+  const [batchCount, setBatchCount] = useState<1 | 2 | 3 | 4>(1);
   const [modelParams, setModelParams] = useState<Record<string, string | number | boolean>>(
     {}
   );
@@ -2640,7 +3762,9 @@ const MultiReferenceSelectionBar: React.FC = () => {
     if (nextModel.defaultDurationSec) setDurationSec(nextModel.defaultDurationSec);
     const defaults: Record<string, string | number | boolean> = {};
     for (const p of nextModel.parameters || []) {
-      if (p.default !== undefined) defaults[p.name] = p.default;
+      if (p.default !== undefined && !FIRST_CLASS_DUP_PARAMS.has(p.name.toLowerCase())) {
+        defaults[p.name] = p.default;
+      }
     }
     setModelParams(defaults);
   }, [effectivePlatformId, targetKind, availableModels]);
@@ -2997,83 +4121,113 @@ const MultiReferenceSelectionBar: React.FC = () => {
               )}
             </div>
 
-            {/* Aspect Ratio Pill */}
-            {activeModel?.aspectRatios && activeModel.aspectRatios.length > 0 && (
+            {/* Unified Format & Resolution Pill (Aspect · Resolution · Count) */}
+            {targetKind !== 'audio' && (
               <div className="relative">
                 <button
                   type="button"
+                  data-testid="multibar-unified-format-pill"
                   onClick={() =>
-                    setOpenDropdown(openDropdown === 'aspect' ? null : 'aspect')
+                    setOpenDropdown(openDropdown === 'format' ? null : 'format')
                   }
-                  className="h-7 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/85 flex items-center gap-1"
+                  className="h-7 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] tabular-nums text-[11px] text-white/90 flex items-center gap-1.5"
                 >
                   <span>{aspectRatio}</span>
-                  <ChevronDown className="w-3 h-3 text-white/45" />
-                </button>
-                {openDropdown === 'aspect' && (
-                  <div className="absolute bottom-full left-0 mb-1.5 p-1 rounded-[10px] dreamina-menu z-50 flex flex-wrap gap-1 w-[170px]">
-                    {activeModel.aspectRatios.map((ar) => (
-                      <button
-                        key={ar}
-                        type="button"
-                        onClick={() => {
-                          setAspectRatio(ar);
-                          setOpenDropdown(null);
-                        }}
-                        className={`h-6 px-2 rounded-[6px] text-[11px] ${
-                          ar === aspectRatio
-                            ? 'bg-white text-[#0e0e0e] font-semibold'
-                            : 'bg-white/[0.05] text-white/80 hover:bg-white/[0.12]'
-                        }`}
-                      >
-                        {ar}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Resolution Pill */}
-            {activeModel?.resolutions && activeModel.resolutions.length > 0 && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setOpenDropdown(openDropdown === 'resolution' ? null : 'resolution')
-                  }
-                  className="h-7 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/85 flex items-center gap-1"
-                >
+                  <span className="text-white/35">·</span>
                   <span>{resolution}</span>
+                  <span className="text-white/35">·</span>
+                  <span>
+                    {targetKind === 'video'
+                      ? '1 video'
+                      : `${batchCount} ${batchCount === 1 ? 'image' : 'images'}`}
+                  </span>
                   <ChevronDown className="w-3 h-3 text-white/45" />
                 </button>
-                {openDropdown === 'resolution' && (
-                  <div className="absolute bottom-full left-0 mb-1.5 p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5 w-[100px]">
-                    {activeModel.resolutions.map((r) => (
-                      <button
-                        key={r}
-                        type="button"
-                        onClick={() => {
-                          setResolution(r);
-                          setOpenDropdown(null);
-                        }}
-                        className={`w-full h-6 px-2 rounded-[6px] text-[11px] text-left ${
-                          r === resolution
-                            ? 'bg-white/[0.14] text-white font-semibold'
-                            : 'text-white/80 hover:bg-white/[0.07]'
-                        }`}
-                      >
-                        {r}
-                      </button>
-                    ))}
+                {openDropdown === 'format' && (
+                  <div className="absolute bottom-full left-0 mb-1.5 w-[256px] p-2.5 rounded-[12px] dreamina-menu z-50 space-y-2.5 text-[11px]">
+                    {(activeModel?.aspectRatios?.length || 0) > 0 && (
+                      <div className="space-y-1">
+                        <div className="text-[10px] text-white/45 uppercase tracking-wider">
+                          Aspect Ratio
+                        </div>
+                        <div className="grid grid-cols-4 gap-1">
+                          {(activeModel?.aspectRatios || IMAGE_ASPECTS).map((ar) => (
+                            <button
+                              key={ar}
+                              type="button"
+                              onClick={() => setAspectRatio(ar)}
+                              className={`h-6 px-1.5 rounded-[6px] text-[10.5px] ${
+                                ar === aspectRatio
+                                  ? 'bg-white text-[#0e0e0e] font-semibold'
+                                  : 'bg-white/[0.05] text-white/80 hover:bg-white/[0.12]'
+                              }`}
+                            >
+                              {ar}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {(activeModel?.resolutions?.length || 0) > 0 && (
+                      <div className="space-y-1">
+                        <div className="text-[10px] text-white/45 uppercase tracking-wider">
+                          Resolution
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {(activeModel?.resolutions || IMAGE_RESOLUTIONS).map((r) => (
+                            <button
+                              key={r}
+                              type="button"
+                              onClick={() => setResolution(r)}
+                              className={`h-6 px-2.5 rounded-[6px] text-[10.5px] ${
+                                r === resolution
+                                  ? 'bg-white text-[#0e0e0e] font-semibold'
+                                  : 'bg-white/[0.05] text-white/80 hover:bg-white/[0.12]'
+                              }`}
+                            >
+                              {r}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {targetKind === 'image' && (
+                      <div className="space-y-1">
+                        <div className="text-[10px] text-white/45 uppercase tracking-wider">
+                          Images
+                        </div>
+                        <div className="grid grid-cols-4 gap-1">
+                          {BATCH_COUNTS.map((cnt) => (
+                            <button
+                              key={cnt}
+                              type="button"
+                              onClick={() => setBatchCount(cnt)}
+                              className={`h-6 rounded-[6px] text-[10.5px] ${
+                                cnt === batchCount
+                                  ? 'bg-white text-[#0e0e0e] font-semibold'
+                                  : 'bg-white/[0.05] text-white/80 hover:bg-white/[0.12]'
+                              }`}
+                            >
+                              {cnt}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
             )}
 
-            {/* Inline Enum Parameter Pills (e.g. Quality / Mode) */}
+            {/* Inline Enum Parameter Pills (non-duplicate params only) */}
             {(activeModel?.parameters || [])
-              .filter((p) => p.type === 'enum' && (p.options?.length || 0) > 1 && p.inlinePill !== false)
+              .filter(
+                (p) =>
+                  p.type === 'enum' &&
+                  (p.options?.length || 0) > 1 &&
+                  p.inlinePill !== false &&
+                  !FIRST_CLASS_DUP_PARAMS.has(p.name.toLowerCase())
+              )
               .slice(0, 2)
               .map((param) => {
                 const opts = param.options || [];
@@ -3108,7 +4262,7 @@ const MultiReferenceSelectionBar: React.FC = () => {
                   }
                   className="h-7 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/85 flex items-center gap-1"
                 >
-                  <span>{durationSec}s</span>
+                  <span>{durationSec === -1 ? 'Auto' : `${durationSec}s`}</span>
                   <ChevronDown className="w-3 h-3 text-white/45" />
                 </button>
                 {openDropdown === 'duration' && (
@@ -3127,42 +4281,7 @@ const MultiReferenceSelectionBar: React.FC = () => {
                             : 'text-white/80 hover:bg-white/[0.07]'
                         }`}
                       >
-                        {d}s
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Batch Count (Image) */}
-            {targetKind === 'image' && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setOpenDropdown(openDropdown === 'batch' ? null : 'batch')}
-                  className="h-7 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-white/85 flex items-center gap-1"
-                >
-                  <span>{batchCount}×</span>
-                  <ChevronDown className="w-3 h-3 text-white/45" />
-                </button>
-                {openDropdown === 'batch' && (
-                  <div className="absolute bottom-full left-0 mb-1.5 p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5 w-[80px]">
-                    {([1, 2, 4] as const).map((cnt) => (
-                      <button
-                        key={cnt}
-                        type="button"
-                        onClick={() => {
-                          setBatchCount(cnt);
-                          setOpenDropdown(null);
-                        }}
-                        className={`w-full h-6 px-2 rounded-[6px] text-[11px] text-left ${
-                          cnt === batchCount
-                            ? 'bg-white/[0.14] text-white font-semibold'
-                            : 'text-white/80 hover:bg-white/[0.07]'
-                        }`}
-                      >
-                        {cnt}× Grid
+                        {d === -1 ? 'Auto' : `${d}s`}
                       </button>
                     ))}
                   </div>

@@ -19,6 +19,10 @@ const DREAMINA_GPT_IMAGE_RATIOS = [
   '5:4',
   '21:9',
   '9:21',
+  '2:1',
+  '1:2',
+  '3:1',
+  '1:3',
 ];
 const DREAMINA_VIDEO_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
 const DREAMINA_HAPPYHORSE_RATIOS = [
@@ -49,27 +53,10 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     maxReferences: 10,
     mediaRoles: ['image_references', 'start_image'],
     aspectRatios: DREAMINA_IMAGE_RATIOS,
-    resolutions: ['1.5K', '2K', '4K'],
+    resolutions: ['1.5K', '2K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['1.5K', '2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-      {
-        name: 'quality',
-        label: 'Quality',
-        type: 'enum',
-        options: ['standard', 'high', 'ultra'],
-        default: 'high',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedream_5_0_pro',
@@ -86,24 +73,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['1.5K', '2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['1.5K', '2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-      {
-        name: 'quality',
-        label: 'Quality',
-        type: 'enum',
-        options: ['standard', 'high'],
-        default: 'high',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedream_5_0_flash',
@@ -116,19 +86,10 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     maxReferences: 6,
     mediaRoles: ['image_references', 'start_image'],
     aspectRatios: DREAMINA_IMAGE_RATIOS,
-    resolutions: ['1K', '2K'],
+    resolutions: ['2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['1K', '2K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedream_5_0_lite',
@@ -144,16 +105,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedream_4_7',
@@ -169,16 +121,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedream_4_6',
@@ -194,16 +137,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedream_4_5',
@@ -219,16 +153,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedream_4_1',
@@ -244,16 +169,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedream_4_0',
@@ -269,16 +185,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'jm_image_model_gg_bp_21',
@@ -294,16 +201,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['1K', '2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['1K', '2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'gemini_3_image_pro',
@@ -319,16 +217,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['1K', '2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['1K', '2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'dreamina_gpt_image_2_5_flare',
@@ -344,16 +233,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['1K', '2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['1K', '2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'dreamina_gpt_image_2_5_sunburst',
@@ -369,16 +249,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['1K', '2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['1K', '2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'gpt_image_2',
@@ -394,16 +265,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     resolutions: ['1K', '2K', '4K'],
     defaultAspectRatio: '16:9',
     defaultResolution: '2K',
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['1K', '2K', '4K'],
-        default: '2K',
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
 
   // =========================================================================
@@ -429,22 +291,6 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultResolution: '1080p',
     defaultDurationSec: 5,
     parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['480p', '720p', '1080p', '4k'],
-        default: '1080p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [4, 5, 8, 10, 12, 15, 20, 30],
-        default: 5,
-        inlinePill: true,
-      },
       {
         name: 'generate_audio',
         label: 'Native Audio',
@@ -482,22 +328,6 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultDurationSec: 5,
     parameters: [
       {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['480p', '720p'],
-        default: '720p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [4, 5, 8, 10, 12, 15, 20, 30],
-        default: 5,
-        inlinePill: true,
-      },
-      {
         name: 'generate_audio',
         label: 'Native Audio',
         type: 'boolean',
@@ -525,24 +355,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultAspectRatio: '16:9',
     defaultResolution: '480p',
     defaultDurationSec: 5,
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['480p'],
-        default: '480p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [4, 5, 8, 10, 15, 20, 30],
-        default: 5,
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedance_2_0',
@@ -564,22 +377,6 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultResolution: '1080p',
     defaultDurationSec: 5,
     parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['720p', '1080p', '4K'],
-        default: '1080p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [4, 5, 8, 10, 12, 15],
-        default: 5,
-        inlinePill: true,
-      },
       {
         name: 'generate_audio',
         label: 'Native Audio',
@@ -609,22 +406,6 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultDurationSec: 5,
     parameters: [
       {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['720p'],
-        default: '720p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [4, 5, 8, 10, 12, 15],
-        default: 5,
-        inlinePill: true,
-      },
-      {
         name: 'generate_audio',
         label: 'Native Audio',
         type: 'boolean',
@@ -652,24 +433,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultAspectRatio: '16:9',
     defaultResolution: '720p',
     defaultDurationSec: 5,
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['720p'],
-        default: '720p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [4, 5, 8, 10, 12, 15],
-        default: 5,
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedance_1_5_pro',
@@ -691,22 +455,6 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultResolution: '1080p',
     defaultDurationSec: 5,
     parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['480p', '720p', '1080p'],
-        default: '1080p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [4, 5, 8, 10, 12],
-        default: 5,
-        inlinePill: true,
-      },
       {
         name: 'generate_audio',
         label: 'Native Audio',
@@ -734,24 +482,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultAspectRatio: '16:9',
     defaultResolution: '1080p',
     defaultDurationSec: 5,
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['480p', '720p', '1080p'],
-        default: '1080p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [5, 8, 10],
-        default: 5,
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedance_pro_fast',
@@ -772,24 +503,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultAspectRatio: '16:9',
     defaultResolution: '720p',
     defaultDurationSec: 5,
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['720p', '1080p'],
-        default: '720p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [5, 8, 10],
-        default: 5,
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'seedance_1_0_lite',
@@ -809,24 +523,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultAspectRatio: '16:9',
     defaultResolution: '720p',
     defaultDurationSec: 5,
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['480p', '720p'],
-        default: '720p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [5, 8, 10],
-        default: 5,
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'veo_3_1',
@@ -847,24 +544,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultAspectRatio: '16:9',
     defaultResolution: '1080p',
     defaultDurationSec: 8,
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['720p', '1080p', '4k'],
-        default: '1080p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [8],
-        default: 8,
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'veo_3_1_fast',
@@ -884,24 +564,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultAspectRatio: '16:9',
     defaultResolution: '720p',
     defaultDurationSec: 8,
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['720p', '1080p', '4k'],
-        default: '720p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [8],
-        default: 8,
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'veo_3_1_lite',
@@ -921,24 +584,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultAspectRatio: '16:9',
     defaultResolution: '720p',
     defaultDurationSec: 8,
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['720p', '1080p'],
-        default: '720p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [8],
-        default: 8,
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'gemini_omni_1_1_flash',
@@ -959,24 +605,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultAspectRatio: '16:9',
     defaultResolution: '720p',
     defaultDurationSec: 5,
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['360P', '720p', '1080p', '4k'],
-        default: '720p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [4, 5, 6, 7, 8, 9, 10],
-        default: 5,
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'wan_3_0',
@@ -997,24 +626,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultAspectRatio: '16:9',
     defaultResolution: '720P',
     defaultDurationSec: 5,
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['720P', '1080P'],
-        default: '720P',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [4, 5, 8, 10, 12, 15],
-        default: 5,
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'happyhorse_1_1',
@@ -1035,24 +647,7 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultAspectRatio: '16:9',
     defaultResolution: '720P',
     defaultDurationSec: 5,
-    parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['720P', '1080P'],
-        default: '720P',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [4, 5, 8, 10, 15],
-        default: 5,
-        inlinePill: true,
-      },
-    ],
+    parameters: [],
   },
   {
     id: 'omnihuman_1_5',
@@ -1074,22 +669,6 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultResolution: '1080p',
     defaultDurationSec: 5,
     parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['720p', '1080p'],
-        default: '1080p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [5, 8, 10, 15],
-        default: 5,
-        inlinePill: true,
-      },
       {
         name: 'generate_audio',
         label: 'Native Audio',
@@ -1119,22 +698,6 @@ export const DREAMINA_CANONICAL_MODELS: PlatformModelDefinition[] = [
     defaultResolution: '1080p',
     defaultDurationSec: 5,
     parameters: [
-      {
-        name: 'resolution',
-        label: 'Resolution',
-        type: 'enum',
-        options: ['720p', '1080p'],
-        default: '1080p',
-        inlinePill: true,
-      },
-      {
-        name: 'duration',
-        label: 'Duration',
-        type: 'enum',
-        options: [5, 8, 10, 15],
-        default: 5,
-        inlinePill: true,
-      },
       {
         name: 'generate_audio',
         label: 'Native Audio',

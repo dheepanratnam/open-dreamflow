@@ -297,7 +297,7 @@ export interface CanvasNode {
   connectionMode?: ConnectionTransport;
   creditSource?: CreditSourcePreference;
   modelId?: string;
-  batchCount?: 1 | 2 | 4;
+  batchCount?: 1 | 2 | 3 | 4;
   negativePrompt?: string;
   audioEnabled?: boolean;
   voiceId?: string;
@@ -305,6 +305,7 @@ export interface CanvasNode {
   mcpToolName?: string;
   referenceUrls?: string[];
   videoReferenceUrls?: string[];
+  audioReferenceUrls?: string[];
   referenceHandles?: ReferenceHandleBinding[];
   referenceFrameMode?: 'multi-ref' | 'start-end';
   batchViewMode?: 'grid' | 'single';
@@ -347,6 +348,7 @@ export interface CanvasNode {
   mcpTool?: MCPToolDefinition;
   isTransparentCutout?: boolean;
   editBadge?: string;
+  lastError?: string;
   layers: FrameLayer[];
   providerUsed: string;
   generatedSnapshot?: {

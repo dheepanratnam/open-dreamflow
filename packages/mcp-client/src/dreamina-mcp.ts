@@ -2869,28 +2869,65 @@ export class DreaminaMcpEngine {
       const cliResolutions = extractCliFlagValues(spec, '--resolution');
       const cliDurations = extractCliFlagValues(spec, '--duration')
         .map((v) => Number(v))
-        .filter((n) => Number.isFinite(n));
-      const existingRatios = Array.isArray(entry.aspectRatios) ? (entry.aspectRatios as string[]) : [];
-      const existingRes = Array.isArray(entry.resolutions) ? (entry.resolutions as string[]) : [];
-      const existingDur = Array.isArray(entry.durations) ? (entry.durations as number[]) : [];
+        .filter((n) => Number.isFinite(n))
+        .sort((a, b) => a - b);
+
+      const resolvedRatios =
+        cliRatios.length > 0 ? cliRatios : (entry.aspectRatios as string[] | undefined);
+      const resolvedResolutions =
+        cliResolutions.length > 0 ? cliResolutions : (entry.resolutions as string[] | undefined);
+      const resolvedDurations =
+        cliDurations.length > 0
+          ? cliDurations
+          : ((entry.durationsSec || entry.durations) as number[] | undefined);
+
+      let resolvedDefaultRes =
+        typeof entry.defaultResolution === 'string' ? entry.defaultResolution : undefined;
+      if (resolvedResolutions && resolvedResolutions.length > 0) {
+        const matchDefault = resolvedDefaultRes
+          ? resolvedResolutions.find(
+              (r) => r.toLowerCase() === resolvedDefaultRes!.toLowerCase()
+            )
+          : undefined;
+        if (matchDefault) {
+          resolvedDefaultRes = matchDefault;
+        } else {
+          resolvedDefaultRes =
+            resolvedResolutions.find((r) => r.toLowerCase() === '2k') ||
+            resolvedResolutions.find((r) => r.toLowerCase() === '1080p') ||
+            resolvedResolutions.find((r) => r.toLowerCase() === '720p') ||
+            resolvedResolutions[resolvedResolutions.length - 1];
+        }
+      }
+
+      const DUP_PARAM_NAMES = new Set([
+        'resolution',
+        'duration',
+        'duration_sec',
+        'aspect_ratio',
+        'ratio',
+        'batch_count',
+        'count',
+        'quality',
+      ]);
+      const cleanedParameters = Array.isArray(entry.parameters)
+        ? (entry.parameters as Array<Record<string, unknown>>).filter(
+            (p) => !DUP_PARAM_NAMES.has(String(p.name || '').toLowerCase())
+          )
+        : [];
 
       return {
         ...entry,
         cliModel: spec.model || expectedCli,
         cliAvailable: true,
         cliModes: (spec.modes || []).map((m) => m.name).filter(Boolean),
-        aspectRatios:
-          cliRatios.length > 0
-            ? Array.from(new Set([...existingRatios, ...cliRatios]))
-            : entry.aspectRatios,
-        resolutions:
-          cliResolutions.length > 0
-            ? Array.from(new Set([...existingRes, ...cliResolutions]))
-            : entry.resolutions,
-        durations:
-          cliDurations.length > 0
-            ? Array.from(new Set([...existingDur, ...cliDurations])).sort((a, b) => a - b)
-            : entry.durations,
+        ...(resolvedRatios ? { aspectRatios: resolvedRatios } : {}),
+        ...(resolvedResolutions ? { resolutions: resolvedResolutions } : {}),
+        ...(resolvedDefaultRes ? { defaultResolution: resolvedDefaultRes } : {}),
+        ...(resolvedDurations && resolvedDurations.length > 0
+          ? { durations: resolvedDurations, durationsSec: resolvedDurations }
+          : {}),
+        parameters: cleanedParameters,
       };
     });
 
@@ -2912,16 +2949,22 @@ export class DreaminaMcpEngine {
         representedCliModels.add(`${mod}:${rawName}`);
         const cliDurations = extractCliFlagValues(spec, '--duration')
           .map((v) => Number(v))
-          .filter((n) => Number.isFinite(n));
+          .filter((n) => Number.isFinite(n))
+          .sort((a, b) => a - b);
+        const cliRes = extractCliFlagValues(spec, '--resolution');
         enriched.push({
           id: canonicalNewId || normalized,
           name: spec.displayName || rawName,
+          label: spec.displayName || rawName,
+          platformId: 'dreamina',
           modality: mod,
           providerFamily: inferProviderFamily(rawName),
           description: `Live discovered Dreamina CLI model (${rawName}).`,
           aspectRatios: extractCliFlagValues(spec, '--ratio'),
-          resolutions: extractCliFlagValues(spec, '--resolution'),
-          ...(cliDurations.length > 0 ? { durations: cliDurations } : {}),
+          resolutions: cliRes,
+          ...(cliRes.length > 0 ? { defaultResolution: cliRes[cliRes.length - 1] } : {}),
+          ...(cliDurations.length > 0 ? { durations: cliDurations, durationsSec: cliDurations } : {}),
+          parameters: [],
           cliModel: rawName,
           cliAvailable: true,
           cliDiscovered: true,
@@ -3062,7 +3105,35 @@ export class DreaminaMcpEngine {
     const ci = flagSpec.values.find((v) => v.toLowerCase() === rawValue.toLowerCase());
     if (ci) return ci;
     if (flagName === '--resolution') {
-      return flagSpec.values[0];
+      const rankRes = (val: string): number => {
+        const s = val.trim().toLowerCase();
+        if (s === '360p') return 360;
+        if (s === '480p') return 480;
+        if (s === '720p') return 720;
+        if (s === '1k') return 1024;
+        if (s === '1080p') return 1080;
+        if (s === '1.5k') return 1536;
+        if (s === '2k') return 2048;
+        if (s === '3k') return 3072;
+        if (s === '4k') return 4096;
+        const kMatch = /^([0-9]+(?:\.[0-9]+)?)k$/.exec(s);
+        if (kMatch) return Math.round(Number(kMatch[1]) * 1024);
+        const pMatch = /^([0-9]+)p$/.exec(s);
+        if (pMatch) return Number(pMatch[1]);
+        return 1080;
+      };
+      const targetRank = rankRes(rawValue);
+      let best = flagSpec.values[flagSpec.values.length - 1];
+      let bestDiff = Number.POSITIVE_INFINITY;
+      for (const candidate of flagSpec.values) {
+        const candRank = rankRes(candidate);
+        const diff = Math.abs(candRank - targetRank);
+        if (diff < bestDiff || (diff === bestDiff && candRank > rankRes(best))) {
+          best = candidate;
+          bestDiff = diff;
+        }
+      }
+      return best;
     }
     return rawValue;
   }
@@ -3499,9 +3570,11 @@ export class DreaminaMcpEngine {
     );
 
     // 5. operation wait (runs concurrently across jobs)
+    const resourceIds: string[] = [];
+    const directUrls: string[] = [];
     const waitSec = Math.max(60, Math.ceil(params.waitTimeoutMs / 1000));
     try {
-      await this.runCliJson(
+      const waitRes = await this.runCliJson(
         [
           'operation',
           'wait',
@@ -3513,16 +3586,18 @@ export class DreaminaMcpEngine {
           '--timeout',
           `${waitSec}s`,
         ],
-        { timeoutMs: params.waitTimeoutMs + 20_000 }
+        { timeoutMs: params.waitTimeoutMs + 25_000 }
       );
+      collectResourceIdsAndUrls(waitRes.data || waitRes, resourceIds, directUrls);
     } catch (waitErr) {
-      // Inspect `node show` for specific moderation/failure reason if available
+      // Inspect `node show` for specific moderation/failure reason OR late-arriving resources
       let specificReason = '';
       try {
         const inspectRes = await this.runCliJson(
           ['node', 'show', '--project-id', projectId, '--node-id', nodeId],
           { timeoutMs: 15_000 }
         );
+        collectResourceIdsAndUrls(inspectRes.data || inspectRes, resourceIds, directUrls);
         const inspectStr = JSON.stringify(inspectRes.data || inspectRes);
         const failMatch =
           /"(?:failReason|failMessage|errorMessage|statusMessage)"\s*:\s*"([^"]+)"/i.exec(
@@ -3534,22 +3609,44 @@ export class DreaminaMcpEngine {
       } catch {
         // Ignore secondary inspect failure
       }
-      const baseMsg = waitErr instanceof Error ? waitErr.message : String(waitErr);
-      throw new Error(
-        specificReason && !baseMsg.includes(specificReason)
-          ? `Dreamina generation failed: ${specificReason} (${baseMsg})`
-          : `Dreamina generation failed: ${baseMsg}`
-      );
+      if (resourceIds.length === 0 && directUrls.length === 0) {
+        const baseMsg = waitErr instanceof Error ? waitErr.message : String(waitErr);
+        throw new Error(
+          specificReason && !baseMsg.includes(specificReason)
+            ? `Dreamina generation failed: ${specificReason} (${baseMsg})`
+            : `Dreamina generation failed: ${baseMsg}`
+        );
+      }
     }
 
-    // 6. node show + resource download
+    // 6. node show + resource download (with 6x1.5s retry grace window for proxied Gemini/OpenAI draft lag)
     const showRes = await this.runCliJson(
       ['node', 'show', '--project-id', projectId, '--node-id', nodeId],
       { timeoutMs: 30_000 }
     );
-    const resourceIds: string[] = [];
-    const directUrls: string[] = [];
     collectResourceIdsAndUrls(showRes.data || showRes, resourceIds, directUrls);
+
+    for (let attempt = 0; attempt < 6 && resourceIds.length === 0 && directUrls.length === 0; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        const [retryShow, retryOp] = await Promise.allSettled([
+          this.runCliJson(['node', 'show', '--project-id', projectId, '--node-id', nodeId], {
+            timeoutMs: 20_000,
+          }),
+          this.runCliJson(['operation', 'status', submitId, '--project-id', projectId], {
+            timeoutMs: 15_000,
+          }),
+        ]);
+        if (retryShow.status === 'fulfilled') {
+          collectResourceIdsAndUrls(retryShow.value.data || retryShow.value, resourceIds, directUrls);
+        }
+        if (retryOp.status === 'fulfilled') {
+          collectResourceIdsAndUrls(retryOp.value.data || retryOp.value, resourceIds, directUrls);
+        }
+      } catch {
+        // Keep retrying within grace window
+      }
+    }
 
     const uniqueIds = Array.from(new Set(resourceIds)).slice(0, params.maxOutputs);
     const outputs: string[] = [];
@@ -4110,10 +4207,34 @@ export class DreaminaMcpEngine {
       const nodeFlags = nodeIds.flatMap((id) => ['--node-id', id]);
 
       if (toolName === 'dreamina_node_show') {
-        const res = await this.runCliJson(['node', 'show', '--project-id', pid, ...nodeFlags], {
-          timeoutMs: 25_000,
+        if (nodeIds.length <= 20) {
+          const res = await this.runCliJson(['node', 'show', '--project-id', pid, ...nodeFlags], {
+            timeoutMs: 25_000,
+          });
+          return okToolResult({ ok: true, projectId: pid, data: res.data || res });
+        }
+        const mergedItems: unknown[] = [];
+        const mergedNodes: unknown[] = [];
+        for (let i = 0; i < nodeIds.length; i += 20) {
+          const chunkFlags = nodeIds.slice(i, i + 20).flatMap((id) => ['--node-id', id]);
+          const chunkRes = await this.runCliJson(
+            ['node', 'show', '--project-id', pid, ...chunkFlags],
+            { timeoutMs: 25_000 }
+          );
+          const d = (chunkRes.data || chunkRes) as Record<string, unknown>;
+          if (Array.isArray(d.items)) mergedItems.push(...d.items);
+          if (Array.isArray(d.nodes)) mergedNodes.push(...d.nodes);
+        }
+        return okToolResult({
+          ok: true,
+          projectId: pid,
+          data: {
+            projectId: pid,
+            count: mergedItems.length || mergedNodes.length,
+            ...(mergedItems.length > 0 ? { items: mergedItems } : {}),
+            ...(mergedNodes.length > 0 ? { nodes: mergedNodes } : {}),
+          },
         });
-        return okToolResult({ ok: true, projectId: pid, data: res.data || res });
       }
       if (toolName === 'dreamina_node_quote') {
         const res = await this.runCliJson(['node', 'quote', '--project-id', pid, ...nodeFlags], {
@@ -4691,7 +4812,7 @@ export class DreaminaMcpEngine {
         const pipeOut = await this.executeCliNodePipeline({
           modality: 'image',
           createArgs,
-          waitTimeoutMs: Math.max(Number(timeoutMs) || 0, 180_000),
+          waitTimeoutMs: Math.max(Number(timeoutMs) || 0, 300_000),
           maxOutputs: clampedCount,
         });
 
@@ -4706,7 +4827,7 @@ export class DreaminaMcpEngine {
                 createArgs: createArgs.map((v, idx, arr) =>
                   arr[idx - 1] === '--count' ? '1' : v
                 ),
-                waitTimeoutMs: Math.max(Number(timeoutMs) || 0, 180_000),
+                waitTimeoutMs: Math.max(Number(timeoutMs) || 0, 300_000),
                 maxOutputs: 1,
               })
             )

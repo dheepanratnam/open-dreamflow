@@ -776,7 +776,7 @@ export interface GenerateNodeBackendParams {
     aspectRatio?: AspectRatio;
     resolution?: ResolutionTier;
     quality?: string;
-    batchCount?: 1 | 2 | 4;
+    batchCount?: 1 | 2 | 3 | 4;
     durationSec?: number;
     audioEnabled?: boolean;
     audioMode?: 'tts' | 'ambient' | 'voiceover' | 'sfx';
@@ -787,6 +787,7 @@ export interface GenerateNodeBackendParams {
   modelParams?: Record<string, string | number | boolean>;
   referenceImages?: string[];
   videoReferences?: string[];
+  audioReferences?: string[];
   referenceHandles?: ReferenceHandleBinding[];
   referenceFrameMode?: 'multi-ref' | 'start-end';
   startImageUrl?: string;
@@ -917,6 +918,9 @@ export async function generateNodeViaBackend(
     const cleanedVideoRefs = (params.videoReferences || [])
       .filter(Boolean)
       .map((u) => toBackendRelativeMediaPath(u) || u);
+    const cleanedAudioRefs = (params.audioReferences || [])
+      .filter(Boolean)
+      .map((u) => toBackendRelativeMediaPath(u) || u);
     const cleanedStartImg = params.startImageUrl
       ? toBackendRelativeMediaPath(params.startImageUrl) || params.startImageUrl
       : undefined;
@@ -934,6 +938,7 @@ export async function generateNodeViaBackend(
       ...params,
       referenceImages: cleanedRefs,
       ...(cleanedVideoRefs.length > 0 ? { videoReferences: cleanedVideoRefs } : {}),
+      ...(cleanedAudioRefs.length > 0 ? { audioReferences: cleanedAudioRefs } : {}),
       ...(cleanedHandles.length > 0 ? { referenceHandles: cleanedHandles } : {}),
       ...(params.referenceFrameMode ? { referenceFrameMode: params.referenceFrameMode } : {}),
       ...(cleanedStartImg ? { startImageUrl: cleanedStartImg } : {}),

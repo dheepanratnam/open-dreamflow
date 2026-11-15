@@ -408,6 +408,7 @@ export interface StudioState {
   toastKind: 'ok' | 'error';
   lightboxNodeId: string | null;
   lightboxMediaUrl: string | null;
+  canvasRefPickerSourceNodeId: string | null;
 
   panX: number;
   panY: number;
@@ -496,6 +497,7 @@ export interface StudioState {
     kind?: CanvasEdge['kind'],
     label?: string
   ) => void;
+  disconnectNodes: (sourceId: string, targetId: string) => void;
   deleteSelectedNodes: (explicitId?: string) => void;
   updateNodeFields: (nodeId: string, patch: Partial<CanvasNode>) => void;
   copySelectedNode: (explicitId?: string) => void;
@@ -522,7 +524,7 @@ export interface StudioState {
       aspectRatio?: AspectRatio;
       resolution?: ResolutionTier;
       quality?: string;
-      batchCount?: 1 | 2 | 4;
+      batchCount?: 1 | 2 | 3 | 4;
       durationSec?: number;
       modelParams?: Record<string, string | number | boolean>;
       referenceFrameMode?: 'multi-ref' | 'start-end';
@@ -626,9 +628,26 @@ export interface StudioState {
     modelId?: string
   ) => void;
   setNodeAspectRatio: (nodeId: string, aspectRatio: AspectRatio) => void;
+  setCanvasRefPickerSourceNodeId: (nodeId: string | null) => void;
   uploadReferenceToNode: (nodeId: string, file: File) => Promise<void>;
-  attachReferenceToNode: (nodeId: string, file: File) => Promise<void>;
+  attachReferenceToNode: (
+    nodeId: string,
+    file: File,
+    opts?: { motionMode?: boolean; preferredHandle?: string }
+  ) => Promise<string | null>;
+  attachAssetUrlToNode: (
+    nodeId: string,
+    payload: {
+      url: string;
+      title?: string;
+      kind?: 'image' | 'video' | 'audio';
+      handle?: string;
+      motionMode?: boolean;
+    }
+  ) => string;
   removeReferenceUrlFromNode: (nodeId: string, url: string) => void;
+  removeVideoReferenceUrlFromNode: (nodeId: string, url: string) => void;
+  removeAudioReferenceUrlFromNode: (nodeId: string, url: string) => void;
   saveNodeAsElementReference: (nodeId: string, customHandle?: string) => void;
   generateSingleNode: (nodeId: string) => Promise<boolean>;
   runWorkflowPipeline: (startFromNodeId?: string) => Promise<void>;
@@ -840,6 +859,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   activeProjectSharedWithTeam: false,
   lightboxNodeId: null,
   lightboxMediaUrl: null,
+  canvasRefPickerSourceNodeId: null,
   assetsCatalog: [],
   assetsLoading: false,
   assetsSourceFilter: 'all',
@@ -961,6 +981,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   openLightbox: (nodeId, mediaUrl = null) =>
     set({ lightboxNodeId: nodeId, lightboxMediaUrl: mediaUrl ?? null }),
   closeLightbox: () => set({ lightboxNodeId: null, lightboxMediaUrl: null }),
+  setCanvasRefPickerSourceNodeId: (canvasRefPickerSourceNodeId) =>
+    set({ canvasRefPickerSourceNodeId }),
 
   downloadNodeMedia: async (nodeId, overrideUrl) => {
     const node = get().nodes.find((n) => n.id === nodeId);
@@ -1478,6 +1500,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     ) {
       get().sendNodeToTimeline(sourceNode.id);
     }
+  },
+
+  disconnectNodes: (sourceId, targetId) => {
+    get().pushHistory();
+    set((s) => ({
+      edges: s.edges.filter((e) => !(e.sourceId === sourceId && e.targetId === targetId)),
+    }));
+    void get().persistActiveProjectToDisk();
   },
 
   deleteSelectedNodes: (explicitId) => {
@@ -6499,36 +6529,133 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     get().showToast(`Loaded "${file.name}" onto ${target.title}`);
   },
 
-  attachReferenceToNode: async (nodeId, file) => {
+  attachReferenceToNode: async (nodeId, file, opts) => {
     const target = get().nodes.find((n) => n.id === nodeId);
-    if (!target) return;
+    if (!target) return null;
     const dataUrl = await new Promise<string>((resolve) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result || ''));
       reader.onerror = () => resolve('');
       reader.readAsDataURL(file);
     });
-    if (!dataUrl) return;
+    if (!dataUrl) return null;
     const commaIdx = dataUrl.indexOf(',');
     const b64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+    const lowerMime = (file.type || '').toLowerCase();
+    const lowerName = (file.name || '').toLowerCase();
+    const detectedKind: 'image' | 'video' | 'audio' =
+      lowerMime.startsWith('video/') || /\.(mp4|mov|webm|mkv)$/i.test(lowerName)
+        ? 'video'
+        : lowerMime.startsWith('audio/') || /\.(mp3|wav|m4a|ogg|aac)$/i.test(lowerName)
+        ? 'audio'
+        : 'image';
+    const defaultMime =
+      detectedKind === 'video'
+        ? 'video/mp4'
+        : detectedKind === 'audio'
+        ? 'audio/mpeg'
+        : 'image/png';
     const uploaded = await uploadMediaViaBackend({
-      filename: file.name || `ref_${Date.now()}.png`,
-      mimeType: file.type || 'image/png',
+      filename: file.name || `ref_${Date.now()}.${detectedKind === 'video' ? 'mp4' : detectedKind === 'audio' ? 'mp3' : 'png'}`,
+      mimeType: file.type || defaultMime,
       dataBase64: b64,
     });
     const finalUrl = uploaded.ok && uploaded.mediaUrl ? uploaded.mediaUrl : dataUrl;
 
+    const assignedHandle = get().attachAssetUrlToNode(nodeId, {
+      url: finalUrl,
+      title: file.name ? file.name.replace(/\.[^.]+$/, '') : undefined,
+      kind: detectedKind,
+      handle: opts?.preferredHandle,
+      motionMode: opts?.motionMode,
+    });
+    return assignedHandle;
+  },
+
+  attachAssetUrlToNode: (nodeId, payload) => {
+    const { url, title, kind = 'image', handle, motionMode } = payload;
+    const target = get().nodes.find((n) => n.id === nodeId);
+    if (!target || !url) return '@Ref1';
+
+    const existingHandles = new Set(
+      (target.referenceHandles || []).map((h) => h.handle.toLowerCase())
+    );
+    const prefix =
+      motionMode
+        ? 'Motion'
+        : kind === 'video'
+        ? 'Video'
+        : kind === 'audio'
+        ? 'Audio'
+        : 'Image';
+
+    let cleanHandle = '';
+    if (handle && handle.trim()) {
+      const stripped = handle.trim().replace(/^@+/, '').replace(/[^A-Za-z0-9_]/g, '');
+      if (stripped) cleanHandle = `@${stripped}`;
+    } else if (title && title.trim()) {
+      const slug = title
+        .trim()
+        .replace(/^@+/, '')
+        .replace(/[^A-Za-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 20);
+      if (slug && !/^(img|image|vid|video|dsc|screenshot|ref)[_0-9]*$/i.test(slug)) {
+        cleanHandle = `@${slug}`;
+      }
+    }
+    if (!cleanHandle || existingHandles.has(cleanHandle.toLowerCase())) {
+      let idx = 1;
+      while (existingHandles.has(`@${prefix.toLowerCase()}${idx}`)) {
+        idx += 1;
+      }
+      cleanHandle = `@${prefix}${idx}`;
+    }
+
     set((s) => ({
-      nodes: s.nodes.map((n) =>
-        n.id === nodeId
-          ? {
-              ...n,
-              referenceUrls: Array.from(new Set([...(n.referenceUrls || []), finalUrl])),
-            }
-          : n
-      ),
+      nodes: s.nodes.map((n) => {
+        if (n.id !== nodeId) return n;
+        const nextImgRefs =
+          kind === 'image'
+            ? Array.from(new Set([...(n.referenceUrls || []), url]))
+            : n.referenceUrls;
+        const nextVidRefs =
+          kind === 'video'
+            ? Array.from(new Set([...(n.videoReferenceUrls || []), url]))
+            : n.videoReferenceUrls;
+        const nextAudRefs =
+          kind === 'audio'
+            ? Array.from(new Set([...(n.audioReferenceUrls || []), url]))
+            : n.audioReferenceUrls;
+        const filteredHandles = (n.referenceHandles || []).filter(
+          (b) => b.url !== url && b.handle.toLowerCase() !== cleanHandle.toLowerCase()
+        );
+        const nextHandles: ReferenceHandleBinding[] = [
+          ...filteredHandles,
+          {
+            handle: cleanHandle,
+            url,
+            label: title || cleanHandle.replace(/^@/, ''),
+            kind,
+          },
+        ];
+        const nextFrameMode =
+          n.kind === 'video' && (motionMode || kind === 'video' || (nextImgRefs?.length || 0) >= 2)
+            ? ('multi-ref' as const)
+            : n.referenceFrameMode;
+        return {
+          ...n,
+          ...(nextImgRefs ? { referenceUrls: nextImgRefs } : {}),
+          ...(nextVidRefs ? { videoReferenceUrls: nextVidRefs } : {}),
+          ...(nextAudRefs ? { audioReferenceUrls: nextAudRefs } : {}),
+          referenceHandles: nextHandles,
+          ...(nextFrameMode ? { referenceFrameMode: nextFrameMode } : {}),
+        };
+      }),
     }));
-    get().showToast(`Attached reference to "${target.title}"`);
+    void get().persistActiveProjectToDisk();
+    get().showToast(`Attached ${cleanHandle} to "${target.title}"`);
+    return cleanHandle;
   },
 
   removeReferenceUrlFromNode: (nodeId, url) => {
@@ -6538,10 +6665,42 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           ? {
               ...n,
               referenceUrls: (n.referenceUrls || []).filter((u) => u !== url),
+              referenceHandles: (n.referenceHandles || []).filter((h) => h.url !== url),
             }
           : n
       ),
     }));
+    void get().persistActiveProjectToDisk();
+  },
+
+  removeVideoReferenceUrlFromNode: (nodeId, url) => {
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === nodeId
+          ? {
+              ...n,
+              videoReferenceUrls: (n.videoReferenceUrls || []).filter((u) => u !== url),
+              referenceHandles: (n.referenceHandles || []).filter((h) => h.url !== url),
+            }
+          : n
+      ),
+    }));
+    void get().persistActiveProjectToDisk();
+  },
+
+  removeAudioReferenceUrlFromNode: (nodeId, url) => {
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === nodeId
+          ? {
+              ...n,
+              audioReferenceUrls: (n.audioReferenceUrls || []).filter((u) => u !== url),
+              referenceHandles: (n.referenceHandles || []).filter((h) => h.url !== url),
+            }
+          : n
+      ),
+    }));
+    void get().persistActiveProjectToDisk();
   },
 
   saveNodeAsElementReference: (nodeId, customHandle) => {
@@ -6680,6 +6839,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     // 3. Canvas `element` nodes or Vault `@Elements` referenced in prompt or attached to node
     const refSet = new Set<string>();
     const videoRefSet = new Set<string>();
+    const audioRefSet = new Set<string>();
     const handleMap = new Map<string, ReferenceHandleBinding>();
     const registerHandle = (
       rawHandle: string | undefined,
@@ -6710,6 +6870,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     let upImgIdx = 0;
     let upVidIdx = 0;
+    let upAudIdx = 0;
     for (const up of upstreamNodes) {
       if (
         (up.kind === 'image' || up.kind === 'element' || up.kind === 'contact-sheet') &&
@@ -6729,6 +6890,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         videoRefSet.add(up.videoUrl);
         registerHandle(deriveNodeHandle(up, upVidIdx), up.videoUrl, up.title, 'video');
         registerHandle(`@Video${upVidIdx}`, up.videoUrl, up.title, 'video');
+      } else if (up.kind === 'audio' && up.audioUrl) {
+        upAudIdx += 1;
+        audioRefSet.add(up.audioUrl);
+        registerHandle(deriveNodeHandle(up, upAudIdx), up.audioUrl, up.title, 'audio');
+        registerHandle(`@Audio${upAudIdx}`, up.audioUrl, up.title, 'audio');
       }
     }
     let attachedIdx = upImgIdx;
@@ -6747,11 +6913,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         registerHandle(`@Video${upVidIdx}`, vUrl, `Video ${upVidIdx}`, 'video');
       }
     }
+    for (const aUrl of node.audioReferenceUrls || []) {
+      if (aUrl) {
+        upAudIdx += 1;
+        audioRefSet.add(aUrl);
+        registerHandle(`@Audio${upAudIdx}`, aUrl, `Audio ${upAudIdx}`, 'audio');
+      }
+    }
     for (const explicitBinding of node.referenceHandles || []) {
       if (explicitBinding?.handle && explicitBinding?.url) {
         if (explicitBinding.kind === 'video') {
           videoRefSet.add(explicitBinding.url);
-        } else if (explicitBinding.kind !== 'audio') {
+        } else if (explicitBinding.kind === 'audio') {
+          audioRefSet.add(explicitBinding.url);
+        } else {
           refSet.add(explicitBinding.url);
         }
         registerHandle(
@@ -6789,6 +6964,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
     const imageRefsList = Array.from(refSet);
     const videoRefsList = Array.from(videoRefSet);
+    const audioRefsList = Array.from(audioRefSet);
     const referenceHandlesList = Array.from(handleMap.values());
 
     // Infer whether this video node is First/Last-Frame (`start-end`) vs Omni Reference-to-Video (`multi-ref`)
@@ -6887,6 +7063,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         status: 'generating',
         progress: 30,
         editBadge: `Generating on ${badge}…`,
+        lastError: undefined,
         imageUrl: undefined,
         videoUrl: undefined,
         audioUrl: undefined,
@@ -6943,6 +7120,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
                 status: 'generating' as const,
                 progress: 30,
                 editBadge: `Generating on ${badge}…`,
+                lastError: undefined,
               }
             : n
         ),
@@ -6985,6 +7163,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       ...(mergedModelParams ? { modelParams: mergedModelParams } : {}),
       referenceImages: imageRefsList,
       ...(videoRefsList.length > 0 ? { videoReferences: videoRefsList } : {}),
+      ...(audioRefsList.length > 0 ? { audioReferences: audioRefsList } : {}),
       ...(referenceHandlesList.length > 0 ? { referenceHandles: referenceHandlesList } : {}),
       ...(effectiveReferenceFrameMode ? { referenceFrameMode: effectiveReferenceFrameMode } : {}),
       ...(effectiveStartImg ? { startImageUrl: effectiveStartImg } : {}),
@@ -7027,6 +7206,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             status: hadMedia ? ('ready' as const) : ('idle' as const),
             progress: undefined,
             editBadge: hadMedia ? undefined : 'Failed · Retry',
+            lastError: res.error || `${badge} generation failed — please try again.`,
           };
         }),
       }));
@@ -7098,6 +7278,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             status: 'ready' as const,
             progress: 100,
             editBadge: undefined,
+            lastError: undefined,
             imageUrl: resolvedImageForCard,
             videoUrl: primaryVid || n.videoUrl,
             audioUrl: primaryAud || n.audioUrl,
@@ -7570,7 +7751,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
                 ...rm,
                 label: lm.label || rm.label,
                 providerFamily: rm.providerFamily || lm.providerFamily,
-                parameters: rm.parameters?.length ? rm.parameters : lm.parameters,
+                parameters: Array.isArray(rm.parameters) ? rm.parameters : lm.parameters,
                 aspectRatios: rm.aspectRatios?.length ? rm.aspectRatios : lm.aspectRatios,
                 resolutions: rm.resolutions?.length ? rm.resolutions : lm.resolutions,
                 durationsSec: rm.durationsSec?.length ? rm.durationsSec : lm.durationsSec,

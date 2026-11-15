@@ -330,7 +330,7 @@ export interface CompactRecipePayload {
     platformId?: CanvasNode['platformId'];
     connectionMode?: CanvasNode['connectionMode'];
     modelId?: string;
-    batchCount?: 1 | 2 | 4;
+    batchCount?: 1 | 2 | 3 | 4;
     negativePrompt?: string;
     audioEnabled?: boolean;
     audioMode?: CanvasNode['audioMode'];
