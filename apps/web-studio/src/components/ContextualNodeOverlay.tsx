@@ -346,8 +346,8 @@ export const ContextualNodeOverlay: React.FC = () => {
     Math.min(window.innerWidth - popoverWidth - 20, centerScreenX - popoverWidth / 2)
   );
   const popoverTop = Math.min(
-    window.innerHeight - 238,
-    Math.max(96, nodeBottomScreen + 18)
+    window.innerHeight - 318,
+    Math.max(76, nodeBottomScreen + 18)
   );
 
   // Wired upstream & downstream inspection
