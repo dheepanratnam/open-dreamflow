@@ -80,6 +80,7 @@ import {
 } from '../utils/proceduralMedia';
 import {
   CLIENT_INSTANCE_ID,
+  IS_CLOUD_BACKEND,
   LOCAL_MCP_BASE,
   LOCAL_MCP_HTTP_URL,
   checkBrowserConnectionsViaBackend,
@@ -5150,6 +5151,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     const cleanProjects = listing.projects.filter((p) => !isLegacySlopId(p.id));
     set({ diskProjects: cleanProjects });
+    if (IS_CLOUD_BACKEND) {
+      try {
+        localStorage.removeItem('dreamflow_local_project_backup');
+      } catch {
+        // ignore
+      }
+    }
 
     const storedId = (() => {
       try {
@@ -5257,16 +5265,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     try {
       localStorage.setItem(ACTIVE_PROJECT_KEY, activeProjectId);
-      localStorage.setItem(
-        'dreamflow_local_project_backup',
-        JSON.stringify({
-          id: activeProjectId,
-          name: projectTitle,
-          nodes,
-          edges,
-          timelineClips,
-        })
-      );
+      if (!IS_CLOUD_BACKEND) {
+        localStorage.setItem(
+          'dreamflow_local_project_backup',
+          JSON.stringify({
+            id: activeProjectId,
+            name: projectTitle,
+            nodes,
+            edges,
+            timelineClips,
+          })
+        );
+      }
     } catch {
       // ignore storage quota errors
     }
@@ -5295,6 +5305,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     });
 
     if (res.ok) {
+      if (IS_CLOUD_BACKEND) {
+        try {
+          localStorage.removeItem('dreamflow_local_project_backup');
+        } catch {
+          // ignore
+        }
+      }
       const listing = await listDiskProjects();
       let nextSnaps = get().projectSnapshots;
       if (opts?.createSnapshot) {
@@ -5320,6 +5337,29 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         },
       }));
     } else {
+      if (IS_CLOUD_BACKEND) {
+        try {
+          const stripDataUrl = (u?: string) => (u && u.startsWith('data:') ? undefined : u);
+          localStorage.setItem(
+            'dreamflow_local_project_backup',
+            JSON.stringify({
+              id: activeProjectId,
+              name: projectTitle,
+              nodes: nodes.map((n) => ({
+                ...n,
+                imageUrl: stripDataUrl(n.imageUrl),
+                videoUrl: stripDataUrl(n.videoUrl),
+                audioUrl: stripDataUrl(n.audioUrl),
+                generatedOutputs: undefined,
+              })),
+              edges,
+              timelineClips,
+            })
+          );
+        } catch {
+          // ignore
+        }
+      }
       set({ saveStatus: 'local' });
     }
   },

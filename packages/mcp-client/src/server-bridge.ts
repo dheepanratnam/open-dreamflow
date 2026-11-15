@@ -74,6 +74,7 @@ import {
   uploadBufferToR2,
   listR2Objects,
   downloadObjectFromR2,
+  deleteR2Object,
 } from './cloud-r2.js';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -1777,6 +1778,9 @@ export class McpStdioBridgeServer {
   private dailyRateSyncStartupTimer: NodeJS.Timeout | null = null;
   private dailyRateSyncInterval: NodeJS.Timeout | null = null;
   private inFlightModelRateSync: Promise<Record<string, unknown>> | null = null;
+  private cloudSyncStartupTimer: NodeJS.Timeout | null = null;
+  private inFlightCloudSync: Promise<Record<string, unknown>> | null = null;
+  private lastCloudSyncAt: string | null = null;
 
   public async start(): Promise<{
     port: number;
@@ -1821,6 +1825,11 @@ export class McpStdioBridgeServer {
     }, 6000);
     this.dailyRateSyncStartupTimer.unref?.();
 
+    this.cloudSyncStartupTimer = setTimeout(() => {
+      void this.syncWorkspaceWithCloudBucket({ pruneLocalCache: true }).catch(() => {});
+    }, 2500);
+    this.cloudSyncStartupTimer.unref?.();
+
     this.dailyRateSyncInterval = setInterval(() => {
       void this.syncAllModelCreditRates({ force: true }).catch(() => {});
     }, 24 * 3600_000);
@@ -1833,6 +1842,10 @@ export class McpStdioBridgeServer {
     if (this.dailyRateSyncStartupTimer) {
       clearTimeout(this.dailyRateSyncStartupTimer);
       this.dailyRateSyncStartupTimer = null;
+    }
+    if (this.cloudSyncStartupTimer) {
+      clearTimeout(this.cloudSyncStartupTimer);
+      this.cloudSyncStartupTimer = null;
     }
     if (this.dailyRateSyncInterval) {
       clearInterval(this.dailyRateSyncInterval);
@@ -1923,6 +1936,16 @@ export class McpStdioBridgeServer {
     } catch {
       // Non-fatal mirror step
     }
+    if (isR2Configured() && !this.loadMediaIndex()[filename]?.r2Key) {
+      try {
+        const buf = fs.readFileSync(sourceFullPath);
+        const ext = path.extname(filename).toLowerCase();
+        const ct = MIME_BY_EXT[ext] || 'application/octet-stream';
+        void this.mirrorBufferToR2AndIndex(filename, buf, ct).catch(() => {});
+      } catch {
+        // Non-fatal background cloud mirror
+      }
+    }
   }
 
   /**
@@ -1988,6 +2011,14 @@ export class McpStdioBridgeServer {
         if (baseName && fs.existsSync(localCandidate) && fs.statSync(localCandidate).isFile()) {
           return this.preferResidentMediaPath(localCandidate);
         }
+        if (baseName && parsed.pathname.includes('/media/') && isR2Configured()) {
+          const dl = await downloadObjectFromR2(`media/${baseName}`);
+          if (dl.ok && dl.body && dl.body.byteLength > 0) {
+            fs.mkdirSync(this.mediaDir, { recursive: true });
+            fs.writeFileSync(localCandidate, dl.body);
+            return localCandidate;
+          }
+        }
 
         const res = await fetch(trimmed);
         if (res.ok) {
@@ -2009,9 +2040,18 @@ export class McpStdioBridgeServer {
 
     // 4. Relative `/media/<name>` or `<name>` inside `this.mediaDir`
     const stripped = trimmed.replace(/^\/+/, '').replace(/^media\/+/i, '');
-    const candidateInMedia = path.join(this.mediaDir, path.basename(stripped));
-    if (fs.existsSync(candidateInMedia) && fs.statSync(candidateInMedia).isFile()) {
+    const safeBase = path.basename(stripped);
+    const candidateInMedia = path.join(this.mediaDir, safeBase);
+    if (safeBase && fs.existsSync(candidateInMedia) && fs.statSync(candidateInMedia).isFile()) {
       return this.preferResidentMediaPath(candidateInMedia);
+    }
+    if (safeBase && isR2Configured()) {
+      const dl = await downloadObjectFromR2(`media/${safeBase}`);
+      if (dl.ok && dl.body && dl.body.byteLength > 0) {
+        fs.mkdirSync(this.mediaDir, { recursive: true });
+        fs.writeFileSync(candidateInMedia, dl.body);
+        return candidateInMedia;
+      }
     }
 
     return null;
@@ -2926,6 +2966,7 @@ export class McpStdioBridgeServer {
 
     writeJsonAtomically(filePath, record);
     this.projectsIndex.set(id, record);
+    void this.mirrorProjectToCloudBucket(record).catch(() => {});
     this.broadcastBridgeWsPayload({
       type: 'canvas_sync_update',
       projectId: record.id,
@@ -3553,7 +3594,242 @@ export class McpStdioBridgeServer {
       deleted = true;
     }
     this.projectsIndex.delete(id);
+    if (isR2Configured()) {
+      void deleteR2Object(`projects/${id}.json`).catch(() => {});
+    }
     return { ok: true, id, deleted };
+  }
+
+  private async mirrorProjectToCloudBucket(record: PersistedProjectRecord): Promise<boolean> {
+    if (!isR2Configured()) return false;
+    try {
+      const body = Buffer.from(JSON.stringify(record), 'utf8');
+      const up = await uploadBufferToR2(`projects/${record.id}.json`, body, 'application/json');
+      if (up.ok) {
+        this.lastCloudSyncAt = new Date().toISOString();
+      }
+      return up.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  private pruneLocalMediaCacheAfterR2Sync(
+    remoteMediaKeys: Set<string>,
+    capBytes = 200 * 1024 * 1024
+  ): number {
+    if (!isR2Configured() || !fs.existsSync(this.mediaDir)) return 0;
+    let entries: Array<{ name: string; fullPath: string; size: number; mtimeMs: number }> = [];
+    let totalBytes = 0;
+    try {
+      for (const name of fs.readdirSync(this.mediaDir)) {
+        if (!name || name.startsWith('.') || name.endsWith('.tmp')) continue;
+        const fullPath = path.join(this.mediaDir, name);
+        const st = fs.statSync(fullPath);
+        if (!st.isFile()) continue;
+        totalBytes += st.size;
+        entries.push({ name, fullPath, size: st.size, mtimeMs: st.mtimeMs });
+      }
+    } catch {
+      return 0;
+    }
+    if (totalBytes <= capBytes) return 0;
+
+    const targetBytes = Math.floor(capBytes * 0.8);
+    const minAgeCutoff = Date.now() - 10 * 60_000;
+    entries = entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+
+    let evictedCount = 0;
+    for (const item of entries) {
+      if (totalBytes <= targetBytes) break;
+      if (item.mtimeMs > minAgeCutoff) continue;
+      if (item.name.startsWith('real_')) continue;
+      if (!remoteMediaKeys.has(`media/${item.name}`)) continue;
+      try {
+        fs.unlinkSync(item.fullPath);
+        totalBytes -= item.size;
+        evictedCount++;
+      } catch {
+        // Ignore
+      }
+    }
+    return evictedCount;
+  }
+
+  public async getCloudSyncStatus(): Promise<Record<string, unknown>> {
+    const r2Summary = getR2ConfigSummary();
+    let volumeCacheFiles = 0;
+    let volumeCacheBytes = 0;
+    if (fs.existsSync(this.mediaDir)) {
+      try {
+        for (const name of fs.readdirSync(this.mediaDir)) {
+          if (!name || name.startsWith('.') || name.endsWith('.tmp')) continue;
+          const st = fs.statSync(path.join(this.mediaDir, name));
+          if (st.isFile()) {
+            volumeCacheFiles++;
+            volumeCacheBytes += st.size;
+          }
+        }
+      } catch {
+        // Ignore
+      }
+    }
+
+    let syncedProjectsCount = 0;
+    let cloudProjectsBytes = 0;
+    let syncedMediaCount = 0;
+    let cloudMediaBytes = 0;
+    if (r2Summary.configured) {
+      const [projObjs, mediaObjs] = await Promise.all([
+        listR2Objects('projects/', 500),
+        listR2Objects('media/', 1000),
+      ]);
+      const jsonProjObjs = projObjs.filter((o) => o.key.endsWith('.json'));
+      syncedProjectsCount = jsonProjObjs.length;
+      cloudProjectsBytes = jsonProjObjs.reduce((acc, o) => acc + (o.size || 0), 0);
+      syncedMediaCount = mediaObjs.length;
+      cloudMediaBytes = mediaObjs.reduce((acc, o) => acc + (o.size || 0), 0);
+    }
+
+    return {
+      ok: true,
+      cloudMode: Boolean(process.env.RAILWAY_PUBLIC_DOMAIN || r2Summary.configured),
+      s3Configured: r2Summary.configured,
+      bucket: r2Summary.bucket,
+      localProjectsCount: this.projectsIndex.size,
+      syncedProjectsCount,
+      syncedMediaCount,
+      cloudProjectsBytes,
+      cloudMediaBytes,
+      volumeCacheFiles,
+      volumeCacheBytes,
+      volumeCacheCapBytes: 200 * 1024 * 1024,
+      laptopDiskBytes: 0,
+      lastSyncedAt: this.lastCloudSyncAt,
+    };
+  }
+
+  public async syncWorkspaceWithCloudBucket(opts?: {
+    pruneLocalCache?: boolean;
+  }): Promise<Record<string, unknown>> {
+    if (this.inFlightCloudSync) {
+      return this.inFlightCloudSync;
+    }
+    const run = async (): Promise<Record<string, unknown>> => {
+      if (!isR2Configured()) {
+        return this.getCloudSyncStatus();
+      }
+      fs.mkdirSync(this.projectsDir, { recursive: true });
+      fs.mkdirSync(this.mediaDir, { recursive: true });
+
+      const remoteProjects = await listR2Objects('projects/', 500);
+      const remoteProjectMap = new Map(remoteProjects.map((o) => [o.key, o]));
+
+      // 1. Restore any projects present in S3 that are missing locally (or strictly newer in S3)
+      for (const obj of remoteProjects) {
+        if (!obj.key.endsWith('.json')) continue;
+        const id = sanitizeProjectId(path.basename(obj.key, '.json'));
+        if (!id) continue;
+        const localRec = this.projectsIndex.get(id);
+        const localUpdatedMs = localRec ? Date.parse(localRec.updatedAt || '0') || 0 : 0;
+        const remoteModifiedMs = Date.parse(obj.lastModified || '0') || 0;
+        if (!localRec || remoteModifiedMs > localUpdatedMs + 5000) {
+          const dl = await downloadObjectFromR2(obj.key);
+          if (dl.ok && dl.body && dl.body.byteLength > 0) {
+            try {
+              const parsed = JSON.parse(dl.body.toString('utf8')) as PersistedProjectRecord;
+              const remoteRecUpdatedMs = Date.parse(parsed.updatedAt || '0') || 0;
+              if (!localRec || remoteRecUpdatedMs > localUpdatedMs) {
+                const normalized: PersistedProjectRecord = {
+                  ...parsed,
+                  id: parsed.id || id,
+                  ownerId: parsed.ownerId || 'owner',
+                  isSharedWithTeam: Boolean(parsed.isSharedWithTeam),
+                };
+                writeJsonAtomically(path.join(this.projectsDir, `${id}.json`), normalized);
+                this.projectsIndex.set(id, normalized);
+              }
+            } catch {
+              // Ignore malformed cloud project record
+            }
+          }
+        }
+      }
+
+      // 2. Mirror all local projects to S3 if missing or updated more recently locally
+      let uploadedProjects = 0;
+      for (const rec of this.projectsIndex.values()) {
+        const r2Key = `projects/${rec.id}.json`;
+        const remoteObj = remoteProjectMap.get(r2Key);
+        const localUpdatedMs = Date.parse(rec.updatedAt || '0') || 0;
+        const remoteModifiedMs = remoteObj ? Date.parse(remoteObj.lastModified || '0') || 0 : 0;
+        if (!remoteObj || localUpdatedMs > remoteModifiedMs + 1000) {
+          const ok = await this.mirrorProjectToCloudBucket(rec);
+          if (ok) uploadedProjects++;
+        }
+      }
+
+      // 3. Mirror all local `/data/media/*` assets to S3 if missing
+      const remoteMedia = await listR2Objects('media/', 1000);
+      const remoteMediaKeys = new Set(remoteMedia.map((o) => o.key));
+      let uploadedMedia = 0;
+      if (fs.existsSync(this.mediaDir)) {
+        const files = fs.readdirSync(this.mediaDir);
+        for (const fname of files) {
+          if (!fname || fname.startsWith('.') || fname.endsWith('.tmp')) continue;
+          const fullPath = path.join(this.mediaDir, fname);
+          let st: fs.Stats;
+          try {
+            st = fs.statSync(fullPath);
+          } catch {
+            continue;
+          }
+          if (!st.isFile() || st.size === 0) continue;
+          const r2Key = `media/${fname}`;
+          if (remoteMediaKeys.has(r2Key)) continue;
+          try {
+            const buf = fs.readFileSync(fullPath);
+            const ext = path.extname(fname).toLowerCase();
+            const ct = MIME_BY_EXT[ext] || 'application/octet-stream';
+            const up = await uploadBufferToR2(r2Key, buf, ct);
+            if (up.ok) {
+              remoteMediaKeys.add(r2Key);
+              uploadedMedia++;
+              const inferredPlatform = fname.startsWith('dreamina_')
+                ? 'dreamina'
+                : fname.startsWith('kling_')
+                  ? 'kling'
+                  : fname.startsWith('higgsfield_')
+                    ? 'higgsfield'
+                    : undefined;
+              this.recordMediaOwnership(fname, 'owner', inferredPlatform, up.publicUrl, up.key);
+            }
+          } catch {
+            // Continue syncing remaining files
+          }
+        }
+      }
+
+      // 4. Keep local `/data/media` volume lean via LRU eviction of verified S3-backed files
+      const evictedCacheFiles =
+        opts?.pruneLocalCache !== false
+          ? this.pruneLocalMediaCacheAfterR2Sync(remoteMediaKeys, 200 * 1024 * 1024)
+          : 0;
+
+      this.lastCloudSyncAt = new Date().toISOString();
+      const status = await this.getCloudSyncStatus();
+      return {
+        ...status,
+        uploadedProjects,
+        uploadedMedia,
+        evictedCacheFiles,
+      };
+    };
+
+    this.inFlightCloudSync = run().finally(() => {
+      this.inFlightCloudSync = null;
+    });
+    return this.inFlightCloudSync;
   }
 
   public importProjectBundle(bodyObj: Record<string, unknown>): {
@@ -3594,6 +3870,7 @@ export class McpStdioBridgeServer {
 
     writeJsonAtomically(filePath, record);
     this.projectsIndex.set(id, record);
+    void this.mirrorProjectToCloudBucket(record).catch(() => {});
     return { ok: true, id: record.id, project: record };
   }
 
@@ -14851,6 +15128,35 @@ export class McpStdioBridgeServer {
       } catch (err) {
         const status = err instanceof BridgeHttpError ? err.statusCode : 400;
         this.sendJson(res, status, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    // 2.9 Cloud Storage & Multi-Device Sync Routes (`/api/cloud/*`)
+    if (pathname === '/api/cloud/status' && req.method === 'GET') {
+      try {
+        this.sendJson(res, 200, await this.getCloudSyncStatus());
+      } catch (err) {
+        this.sendJson(res, 500, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/cloud/sync' && req.method === 'POST') {
+      try {
+        const bodyObj = (await this.readJsonBody(req)) || {};
+        const synced = await this.syncWorkspaceWithCloudBucket({
+          pruneLocalCache: bodyObj.pruneLocalCache !== false,
+        });
+        this.sendJson(res, 200, synced);
+      } catch (err) {
+        this.sendJson(res, 500, {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
         });

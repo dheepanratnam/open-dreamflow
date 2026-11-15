@@ -27,6 +27,24 @@ import type {
   ExternalMcpToolSchema,
   McpOAuthAccountInfo,
 } from './external-mcp-host.js';
+import {
+  downloadObjectFromR2,
+  isR2Configured,
+  uploadBufferToR2,
+} from './cloud-r2.js';
+
+const DREAMINA_EXT_MIMES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.mp4': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+};
 
 const execFileAsync = promisify(execFile);
 
@@ -3073,6 +3091,13 @@ export class DreaminaMcpEngine {
       const candidate = path.join(mediaDir, rel);
       if (fs.existsSync(candidate)) {
         localFilePath = candidate;
+      } else if (rel && isR2Configured()) {
+        const dl = await downloadObjectFromR2(`media/${rel}`);
+        if (dl.ok && dl.body && dl.body.byteLength > 0) {
+          fs.mkdirSync(mediaDir, { recursive: true, mode: 0o755 });
+          fs.writeFileSync(candidate, dl.body);
+          localFilePath = candidate;
+        }
       }
     } else if (/^https?:\/\//i.test(trimmed)) {
       const parsed = new URL(trimmed);
@@ -3084,6 +3109,13 @@ export class DreaminaMcpEngine {
         const candidate = path.join(mediaDir, rel);
         if (fs.existsSync(candidate)) {
           localFilePath = candidate;
+        } else if (rel && isR2Configured()) {
+          const dl = await downloadObjectFromR2(`media/${rel}`);
+          if (dl.ok && dl.body && dl.body.byteLength > 0) {
+            fs.mkdirSync(mediaDir, { recursive: true, mode: 0o755 });
+            fs.writeFileSync(candidate, dl.body);
+            localFilePath = candidate;
+          }
         }
       }
       if (!localFilePath) {
@@ -3174,6 +3206,18 @@ export class DreaminaMcpEngine {
     }
   }
 
+  private mirrorSavedMediaToCloud(finalPath: string, fileName: string): void {
+    if (!isR2Configured()) return;
+    try {
+      const buf = fs.readFileSync(finalPath);
+      const ext = path.extname(fileName).toLowerCase();
+      const mime = DREAMINA_EXT_MIMES[ext] || 'application/octet-stream';
+      void uploadBufferToR2(`media/${fileName}`, buf, mime).catch(() => {});
+    } catch {
+      // Non-fatal background cloud mirror
+    }
+  }
+
   private async persistNormalizedMediaFile(
     source: { filePath?: string; buffer?: Buffer },
     modality: 'image' | 'video' | 'audio'
@@ -3194,6 +3238,7 @@ export class DreaminaMcpEngine {
         fs.writeFileSync(finalPath, source.buffer);
       }
       fs.chmodSync(finalPath, 0o644);
+      this.mirrorSavedMediaToCloud(finalPath, fileName);
       return `/media/${fileName}`;
     }
 
@@ -3228,6 +3273,7 @@ export class DreaminaMcpEngine {
       if (source.filePath) fs.copyFileSync(source.filePath, finalPath);
       else if (source.buffer) fs.writeFileSync(finalPath, source.buffer);
       fs.chmodSync(finalPath, 0o644);
+      this.mirrorSavedMediaToCloud(finalPath, fileName);
       return `/media/${fileName}`;
     }
 
@@ -3237,6 +3283,7 @@ export class DreaminaMcpEngine {
       if (source.filePath) fs.copyFileSync(source.filePath, finalPath);
       else if (source.buffer) fs.writeFileSync(finalPath, source.buffer);
       fs.chmodSync(finalPath, 0o644);
+      this.mirrorSavedMediaToCloud(finalPath, fileName);
       return `/media/${fileName}`;
     }
 
@@ -3259,6 +3306,7 @@ export class DreaminaMcpEngine {
       );
       if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 0) {
         fs.chmodSync(pngPath, 0o644);
+        this.mirrorSavedMediaToCloud(pngPath, pngName);
         return `/media/${pngName}`;
       }
     } catch {
@@ -3279,6 +3327,7 @@ export class DreaminaMcpEngine {
     if (source.filePath) fs.copyFileSync(source.filePath, fallbackPath);
     else if (source.buffer) fs.writeFileSync(fallbackPath, source.buffer);
     fs.chmodSync(fallbackPath, 0o644);
+    this.mirrorSavedMediaToCloud(fallbackPath, fallbackName);
     return `/media/${fallbackName}`;
   }
 

@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   Clapperboard,
+  Cloud,
   Compass,
   Copy,
   Download,
@@ -48,7 +49,13 @@ import type { DreaminaToolId, PlatformId } from '../types/studio';
 import { useStudioStore } from '../store/useStudioStore';
 import { SmartMediaImage } from './SmartMedia';
 import { PlatformBrandIcon } from './PlatformBrandIcon';
-import { normalizeBackendMediaUrl } from '../services/executionRouter';
+import {
+  IS_CLOUD_BACKEND,
+  getCloudSyncStatusViaBackend,
+  normalizeBackendMediaUrl,
+  triggerCloudSyncViaBackend,
+  type CloudSyncStatusSnapshot,
+} from '../services/executionRouter';
 import { downloadTextFile, generateFcpxmlDocument } from '../utils/exporters';
 
 interface DockToolItem {
@@ -148,6 +155,9 @@ export const DreaminaFloatingChrome: React.FC = () => {
   const sendChatAssistantPrompt = useStudioStore((s) => s.sendChatAssistantPrompt);
   const runChatQuickAction = useStudioStore((s) => s.runChatQuickAction);
   const switchDiskProject = useStudioStore((s) => s.switchDiskProject);
+  const persistActiveProjectToDisk = useStudioStore(
+    (s) => s.persistActiveProjectToDisk
+  );
   const createNewBlankProject = useStudioStore((s) => s.createNewBlankProject);
   const renameSavedProject = useStudioStore((s) => s.renameSavedProject);
   const deleteSavedProject = useStudioStore((s) => s.deleteSavedProject);
@@ -178,8 +188,22 @@ export const DreaminaFloatingChrome: React.FC = () => {
     };
   }, []);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [cloudMenuOpen, setCloudMenuOpen] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState<CloudSyncStatusSnapshot | null>(null);
+  const [cloudSyncingNow, setCloudSyncingNow] = useState(false);
   const [shareMenuOpen, setShareMenuOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (!cloudMenuOpen && !IS_CLOUD_BACKEND) return;
+    let cancelled = false;
+    void getCloudSyncStatusViaBackend().then((st) => {
+      if (!cancelled && st.ok) setCloudStatus(st);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudMenuOpen, authUser?.id]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [assetSearch, setAssetSearch] = useState('');
@@ -396,7 +420,10 @@ export const DreaminaFloatingChrome: React.FC = () => {
             <div className="flex items-center gap-0.5">
               <button
                 type="button"
-                onClick={() => setProjectMenuOpen(!projectMenuOpen)}
+                onClick={() => {
+                  setCloudMenuOpen(false);
+                  setProjectMenuOpen(!projectMenuOpen);
+                }}
                 onDoubleClick={() => setEditingTitle(true)}
                 className="h-7 px-1.5 rounded-[6px] hover:bg-[#252525] flex items-center gap-1 text-[13px] font-medium text-[#f5f5f5] transition-colors"
               >
@@ -408,6 +435,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 title="Rename canvas"
                 onClick={() => {
                   setProjectMenuOpen(false);
+                  setCloudMenuOpen(false);
                   setEditingTitle(true);
                 }}
                 className="w-6 h-6 rounded-[6px] hover:bg-[#252525] text-white/45 hover:text-white flex items-center justify-center transition-colors"
@@ -421,13 +449,137 @@ export const DreaminaFloatingChrome: React.FC = () => {
             {nodes.length} nodes
           </span>
 
-          <span className="text-[11px] text-white/42 hidden sm:inline pr-1">
-            {saveStatus === 'saving'
-              ? 'Saving…'
-              : saveStatus === 'saved'
-                ? 'Auto saved · Disk'
-                : 'Saved locally'}
-          </span>
+          <button
+            type="button"
+            data-testid="cloud-sync-pill"
+            title={
+              IS_CLOUD_BACKEND
+                ? 'Cloud Storage & Multi-Device Sync — 0 MB saved on laptop'
+                : 'Workspace save status'
+            }
+            onClick={() => {
+              setProjectMenuOpen(false);
+              setCloudMenuOpen((prev) => !prev);
+            }}
+            className="h-6 px-2 rounded-[6px] hover:bg-white/[0.08] flex items-center gap-1.5 text-[11px] font-medium text-white/75 transition-colors"
+          >
+            {saveStatus === 'saving' || cloudSyncingNow ? (
+              <>
+                <Loader2 className="w-3 h-3 text-white/70 animate-spin" strokeWidth={1.8} />
+                <span className="hidden sm:inline">
+                  {IS_CLOUD_BACKEND ? 'Syncing…' : 'Saving…'}
+                </span>
+              </>
+            ) : saveStatus === 'saved' ? (
+              IS_CLOUD_BACKEND ? (
+                <>
+                  <Cloud className="w-3.5 h-3.5 text-emerald-400" strokeWidth={1.8} />
+                  <span className="hidden sm:inline text-white/80">Cloud Synced</span>
+                </>
+              ) : (
+                <span className="hidden sm:inline text-white/50">Auto saved · Local</span>
+              )
+            ) : (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                <span className="hidden sm:inline text-amber-200/90">
+                  {IS_CLOUD_BACKEND ? 'Pending Cloud Sync' : 'Saved locally'}
+                </span>
+              </>
+            )}
+          </button>
+
+          {cloudMenuOpen && (
+            <div
+              data-testid="cloud-sync-popover"
+              className="absolute left-0 top-[42px] w-[304px] p-3 rounded-[12px] dreamina-menu z-50 space-y-2.5"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <Cloud className="w-3.5 h-3.5 text-emerald-400" strokeWidth={1.8} />
+                  <span className="text-[12px] font-semibold text-white">
+                    Cloud Storage &amp; Sync
+                  </span>
+                </div>
+                <span className="px-1.5 py-0.5 rounded-[5px] bg-emerald-500/15 text-emerald-300 text-[10px] font-semibold">
+                  {cloudStatus?.s3Configured
+                    ? 'S3 Cloud Active'
+                    : IS_CLOUD_BACKEND
+                      ? 'Cloud Active'
+                      : 'Local Dev'}
+                </span>
+              </div>
+
+              <div className="p-2 rounded-[8px] bg-white/[0.04] border border-white/[0.07] space-y-1.5 text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-white/55">Laptop Disk Used</span>
+                  <span className="font-semibold text-emerald-300">
+                    {IS_CLOUD_BACKEND ? '0 MB (Cloud-Only)' : 'Local Workspace'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-white/55">Cloud Canvases</span>
+                  <span className="font-medium text-white/90 tabular-nums">
+                    {cloudStatus?.syncedProjectsCount ?? diskProjects.length} synced
+                  </span>
+                </div>
+                {cloudStatus?.s3Configured && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-white/55">Cloud Media Bucket</span>
+                    <span className="font-medium text-white/90 tabular-nums">
+                      {cloudStatus.syncedMediaCount ?? 0} files ·{' '}
+                      {(((cloudStatus.cloudMediaBytes ?? 0) + (cloudStatus.cloudProjectsBytes ?? 0)) /
+                        (1024 * 1024)).toFixed(1)}{' '}
+                      MB
+                    </span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between">
+                  <span className="text-white/55">Live Multi-Device Sync</span>
+                  <span className="font-medium text-white/85">
+                    {bridgeWsConnected ? 'Real-time WebSocket' : 'Auto HTTP Sync'}
+                  </span>
+                </div>
+              </div>
+
+              <p className="text-[11px] leading-[1.45] text-white/50">
+                Canvases, version snapshots, uploads, and generated images &amp; videos save
+                directly to cloud storage—nothing fills your laptop disk.
+              </p>
+
+              <button
+                type="button"
+                data-testid="cloud-sync-now-btn"
+                disabled={cloudSyncingNow}
+                onClick={async () => {
+                  setCloudSyncingNow(true);
+                  try {
+                    await persistActiveProjectToDisk();
+                    const synced = await triggerCloudSyncViaBackend();
+                    if (synced.ok) {
+                      setCloudStatus(synced);
+                      showToast(
+                        `Synced ${synced.syncedProjectsCount ?? diskProjects.length} canvases & ${
+                          synced.syncedMediaCount ?? 0
+                        } media files to Cloud Storage.`
+                      );
+                    } else {
+                      showToast('Active canvas synced to Cloud.');
+                    }
+                  } finally {
+                    setCloudSyncingNow(false);
+                  }
+                }}
+                className="w-full h-8 rounded-[8px] bg-white hover:bg-[#e6e6e6] disabled:opacity-50 text-[#0e0e0e] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${cloudSyncingNow ? 'animate-spin' : ''}`}
+                  strokeWidth={1.8}
+                />
+                <span>{cloudSyncingNow ? 'Syncing All to Cloud…' : 'Sync All to Cloud Now'}</span>
+              </button>
+            </div>
+          )}
 
           {projectMenuOpen && (
             <div className="absolute left-0 top-[42px] w-[288px] p-1.5 rounded-[12px] dreamina-menu z-50 space-y-0.5">
@@ -446,7 +598,7 @@ export const DreaminaFloatingChrome: React.FC = () => {
               <div className="my-1 h-px bg-white/[0.07]" />
 
               <div className="px-2.5 py-1 text-[11px] text-white/45 font-medium flex items-center justify-between">
-                <span>Saved Canvases</span>
+                <span>{IS_CLOUD_BACKEND ? 'Cloud Canvases' : 'Saved Canvases'}</span>
                 <span className="tabular-nums text-[10px] text-white/35">
                   {diskProjects.length}
                 </span>
@@ -661,7 +813,9 @@ export const DreaminaFloatingChrome: React.FC = () => {
                 <div className="pt-1 border-t border-white/[0.07] space-y-1 max-h-[180px] overflow-y-auto">
                   {projectSnapshots.length === 0 ? (
                     <div className="px-1.5 py-2 text-[11px] text-white/40 text-center">
-                      No disk snapshots saved yet.
+                      {IS_CLOUD_BACKEND
+                        ? 'No cloud snapshots saved yet.'
+                        : 'No disk snapshots saved yet.'}
                     </div>
                   ) : (
                     projectSnapshots.map((snap) => (

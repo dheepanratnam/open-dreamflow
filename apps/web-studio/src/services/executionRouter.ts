@@ -72,6 +72,9 @@ const LOCAL_MCP_WS_ORIGIN = LOCAL_MCP_BASE.replace(/^http:\/\//, 'ws://').replac
 export const LOCAL_MCP_HTTP_URL = `${LOCAL_MCP_BASE}/mcp`;
 export const LOCAL_MCP_WS_URL = `${LOCAL_MCP_WS_ORIGIN}/mcp`;
 export const LOCAL_BRIDGE_WS_URL = `${LOCAL_MCP_WS_ORIGIN}/bridge`;
+export const IS_CLOUD_BACKEND = !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(
+  LOCAL_MCP_BASE
+);
 
 export const AUTH_TOKEN_STORAGE_KEY = 'dreamflow_auth_token_v1';
 
@@ -3234,6 +3237,50 @@ export async function saveDiskProject(params: {
       updatedAt: json.updatedAt,
       snapshotCount: json.snapshotCount,
     };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export interface CloudSyncStatusSnapshot {
+  ok: boolean;
+  cloudMode?: boolean;
+  s3Configured?: boolean;
+  bucket?: string | null;
+  localProjectsCount?: number;
+  syncedProjectsCount?: number;
+  syncedMediaCount?: number;
+  cloudProjectsBytes?: number;
+  cloudMediaBytes?: number;
+  volumeCacheFiles?: number;
+  volumeCacheBytes?: number;
+  volumeCacheCapBytes?: number;
+  laptopDiskBytes?: number;
+  lastSyncedAt?: string | null;
+  uploadedProjects?: number;
+  uploadedMedia?: number;
+  evictedCacheFiles?: number;
+}
+
+export async function getCloudSyncStatusViaBackend(): Promise<CloudSyncStatusSnapshot> {
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/cloud/status`);
+    if (!res.ok) return { ok: false };
+    return (await res.json()) as CloudSyncStatusSnapshot;
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function triggerCloudSyncViaBackend(): Promise<CloudSyncStatusSnapshot> {
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/cloud/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pruneLocalCache: true }),
+    });
+    if (!res.ok) return { ok: false };
+    return (await res.json()) as CloudSyncStatusSnapshot;
   } catch {
     return { ok: false };
   }
