@@ -463,7 +463,8 @@ export class ElevenLabsClient {
     }
 
     const modelId = req.modelId === 'music_v2' ? 'music_v2' : 'music_v2_5';
-    const outputFormat = req.outputFormat || 'auto';
+    const outputFormat =
+      req.outputFormat && req.outputFormat !== 'auto' ? req.outputFormat : 'mp3_44100_128';
     const musicLengthMs =
       typeof req.durationSeconds === 'number' &&
       Number.isFinite(req.durationSeconds) &&

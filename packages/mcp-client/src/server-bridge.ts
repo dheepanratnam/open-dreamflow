@@ -9938,11 +9938,28 @@ export class McpStdioBridgeServer {
               ))
         : null;
 
+    const rawCreditSrc = String(params.creditSource ?? settings.creditSource ?? 'auto')
+      .trim()
+      .toLowerCase();
+    const elCreditSource: 'auto' | 'own' | 'shared' | 'owner' =
+      rawCreditSrc === 'own' || rawCreditSrc === 'shared' || rawCreditSrc === 'owner'
+        ? rawCreditSrc
+        : 'auto';
+    const elDirectAuth =
+      platformId === 'elevenlabs'
+        ? await this.resolveElevenLabsAuthForUser(ctx.user, {
+            creditSource: elCreditSource,
+            explicitApiKey: apiKey || undefined,
+            explicitBaseUrl: baseUrl || undefined,
+            explicitMcpServerId: mcpServerId || ctx.resolvedMcpServerId || undefined,
+          })
+        : null;
+    const hasElevenLabsDirectAuth = Boolean(
+      elDirectAuth && (elDirectAuth.apiKey || elDirectAuth.oauthAccessToken)
+    );
+
     const bypassMcpForElevenLabsDirectRest =
-      platformId === 'elevenlabs' &&
-      !mcpToolName &&
-      (Boolean(apiKey) ||
-        Boolean(candidateMcpServer && this.externalMcpHost.hasOAuthToken(candidateMcpServer.id)));
+      platformId === 'elevenlabs' && !mcpToolName && hasElevenLabsDirectAuth;
 
     if (
       !bypassMcpForElevenLabsDirectRest &&
@@ -11199,7 +11216,7 @@ export class McpStdioBridgeServer {
     // -------------------------------------------------------------------------
     // Route 2: Direct Official BYOK REST API / Local ComfyUI (`api-key`)
     // -------------------------------------------------------------------------
-    const hasDirectCredentials = Boolean(apiKey || accessKey);
+    const hasDirectCredentials = Boolean(apiKey || accessKey || hasElevenLabsDirectAuth);
     const isApiOnlyPlatform =
       platformId === 'openai' ||
       platformId === 'fal' ||
@@ -11306,11 +11323,14 @@ export class McpStdioBridgeServer {
         }
 
         if (platformId === 'elevenlabs') {
-          const elAuth = await this.resolveElevenLabsAuthForUser(ctx.user, {
-            explicitApiKey: apiKey || undefined,
-            explicitBaseUrl: baseUrl || undefined,
-            explicitMcpServerId: mcpServerId || ctx.resolvedMcpServerId || undefined,
-          });
+          const elAuth =
+            elDirectAuth ||
+            (await this.resolveElevenLabsAuthForUser(ctx.user, {
+              creditSource: elCreditSource,
+              explicitApiKey: apiKey || undefined,
+              explicitBaseUrl: baseUrl || undefined,
+              explicitMcpServerId: mcpServerId || ctx.resolvedMcpServerId || undefined,
+            }));
           if (!elAuth.apiKey && !elAuth.oauthAccessToken) {
             throw new BridgeHttpError(
               400,
