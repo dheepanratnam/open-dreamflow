@@ -407,6 +407,24 @@ async function runTeamCommand(subArgs) {
   let res;
   if (action === 'list') {
     res = await fetch(`${baseUrl}/api/team/members`, { method: 'GET', headers });
+    if (res.status === 404) {
+      const sumRes = await fetch(`${baseUrl}/api/credits/summary`, { method: 'GET', headers });
+      if (sumRes.ok) {
+        const sumData = await sumRes.json();
+        console.log(
+          JSON.stringify(
+            {
+              ok: true,
+              teamMembers: sumData.teamMembers || [],
+              sharedPools: sumData.sharedPools || [],
+            },
+            null,
+            2
+          )
+        );
+        return;
+      }
+    }
   } else if (action === 'invite') {
     const memberEmail = String(flags['member-email'] || flags.inviteEmail || flags.email_invite || (flags._[1] || '')).trim() || String(flags.to || '').trim();
     const displayName = String(flags.name || flags.displayName || '').trim();

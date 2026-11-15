@@ -639,7 +639,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                   </button>
                 )}
 
-                {selectedNode.kind === 'contact-sheet' && (
+                {(selectedNode.kind === 'contact-sheet' || Boolean(selectedNode.imageUrl)) && (
                   <>
                     <button
                       type="button"
@@ -651,15 +651,17 @@ export const ContextualNodeOverlay: React.FC = () => {
                       <Grid3X3 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
                       <span>Slice 3×3 (9)</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => void sliceContactSheetNode(selectedNode.id, 2, 2)}
-                      className="h-7 px-2 rounded-[7px] hover:bg-white/[0.08] text-white/80 flex items-center gap-1"
-                      title="Slice 2×2 sheet into 4 standalone nodes"
-                    >
-                      <Grid2X2 className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
-                      <span>2×2</span>
-                    </button>
+                    {selectedNode.kind === 'contact-sheet' && (
+                      <button
+                        type="button"
+                        onClick={() => void sliceContactSheetNode(selectedNode.id, 2, 2)}
+                        className="h-7 px-2 rounded-[7px] hover:bg-white/[0.08] text-white/80 flex items-center gap-1"
+                        title="Slice 2×2 sheet into 4 standalone nodes"
+                      >
+                        <Grid2X2 className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
+                        <span>2×2</span>
+                      </button>
+                    )}
                   </>
                 )}
 
