@@ -6399,6 +6399,23 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         externalMcpServers
       ) || platformId;
 
+    const upstreamImgCount = edges.filter((e) => {
+      if (e.targetId !== nodeId) return false;
+      const src = nodes.find((sn) => sn.id === e.sourceId);
+      return Boolean(src && src.kind !== 'video' && src.kind !== 'audio' && src.imageUrl);
+    }).length;
+    const upstreamAnyRefCount = edges.filter((e) => {
+      if (e.targetId !== nodeId) return false;
+      const src = nodes.find((sn) => sn.id === e.sourceId);
+      return Boolean(src && (src.imageUrl || src.videoUrl || src.audioUrl));
+    }).length;
+    const totalImgRefs = upstreamImgCount + (target.referenceUrls?.length || 0);
+    const hasAnyNodeRefs =
+      upstreamAnyRefCount > 0 ||
+      (target.referenceUrls?.length || 0) > 0 ||
+      (target.videoReferenceUrls?.length || 0) > 0 ||
+      (target.audioReferenceUrls?.length || 0) > 0;
+
     const canOmniRef =
       chosenModel?.supportsReferences !== false && chosenModel?.supportsOmniRef !== false;
     const canStartEndFrame =
@@ -6406,26 +6423,21 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const nextReferenceFrameMode =
       modality !== 'video'
         ? undefined
+        : target.platformId && target.platformId !== platformId && !hasAnyNodeRefs
+        ? undefined
         : target.referenceFrameMode === 'multi-ref'
         ? canOmniRef
           ? 'multi-ref'
-          : canStartEndFrame
+          : canStartEndFrame && totalImgRefs > 0
           ? 'start-end'
           : undefined
         : target.referenceFrameMode === 'start-end'
         ? canStartEndFrame
           ? 'start-end'
-          : canOmniRef
+          : canOmniRef && hasAnyNodeRefs
           ? 'multi-ref'
           : undefined
         : target.referenceFrameMode;
-
-    const upstreamImgCount = edges.filter((e) => {
-      if (e.targetId !== nodeId) return false;
-      const src = nodes.find((sn) => sn.id === e.sourceId);
-      return Boolean(src && src.kind !== 'video' && src.kind !== 'audio' && src.imageUrl);
-    }).length;
-    const totalImgRefs = upstreamImgCount + (target.referenceUrls?.length || 0);
     if (
       modality === 'video' &&
       platformId === 'kling' &&

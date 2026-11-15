@@ -3051,6 +3051,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                 <div className="relative">
                   <button
                     type="button"
+                    data-testid="model-mode-variant-pill"
                     onClick={() =>
                       setOpenMenu(openMenu === 'mode' ? null : 'mode')
                     }
