@@ -508,6 +508,7 @@ export const ContextualNodeOverlay: React.FC = () => {
   const modeSpec = activeModelDef?.parameters?.find(
     (p) =>
       !FIRST_CLASS_DUP_PARAMS.has(p.name.toLowerCase()) &&
+      (p.options?.length || 0) > 0 &&
       (p.name === 'mode' ||
         p.name === 'variant' ||
         (p.inlinePill && p.name !== 'quality'))
@@ -525,6 +526,7 @@ export const ContextualNodeOverlay: React.FC = () => {
     (p) =>
       p.name !== 'quality' &&
       p !== modeSpec &&
+      !(showVideoAudioPill && p.name === 'generate_audio') &&
       !FIRST_CLASS_DUP_PARAMS.has(p.name.toLowerCase())
   );
   const customParamCount = remainingParamSpecs.filter((spec) => {
