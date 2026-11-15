@@ -244,6 +244,11 @@ export const DreaminaFloatingChrome: React.FC = () => {
     externalMcpServers.find(
       (srv) => srv.status === 'connected' && srv.platformId === 'dreamina'
     )?.balance?.credits;
+  const klingCredits =
+    mcpBalances.kling?.credits ??
+    externalMcpServers.find(
+      (srv) => srv.status === 'connected' && srv.platformId === 'kling'
+    )?.balance?.credits;
   const anyMcpWithBalance = externalMcpServers.find(
     (srv) => srv.status === 'connected' && srv.balance?.credits !== undefined
   );
@@ -251,13 +256,19 @@ export const DreaminaFloatingChrome: React.FC = () => {
     v >= 10000
       ? `${(v / 1000).toFixed(1)}k cr`
       : `${v.toLocaleString(undefined, { maximumFractionDigits: 1 })} cr`;
+  const balancePillSegments: string[] = [];
+  if (hfCredits !== undefined) {
+    balancePillSegments.push(`HF ${Math.round(hfCredits).toLocaleString()} cr`);
+  }
+  if (drmCredits !== undefined) {
+    balancePillSegments.push(`Dreamina ${fmtCompactCredits(drmCredits)}`);
+  }
+  if (klingCredits !== undefined) {
+    balancePillSegments.push(`Kling ${fmtCompactCredits(klingCredits)}`);
+  }
   const formattedBalancePill =
-    hfCredits !== undefined && drmCredits !== undefined
-      ? `HF ${Math.round(hfCredits).toLocaleString()} cr · Dreamina ${fmtCompactCredits(drmCredits)}`
-      : drmCredits !== undefined
-      ? `Dreamina · ${drmCredits.toLocaleString(undefined, { maximumFractionDigits: 0 })} cr`
-      : hfCredits !== undefined
-      ? `Higgsfield MCP · ${hfCredits.toLocaleString(undefined, { maximumFractionDigits: 1 })} cr`
+    balancePillSegments.length > 0
+      ? balancePillSegments.join(' · ')
       : anyMcpWithBalance?.balance?.credits !== undefined
       ? `MCP · ${fmtCompactCredits(anyMcpWithBalance.balance.credits)}`
       : null;

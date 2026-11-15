@@ -525,12 +525,16 @@ const MCP_TOOL_CATEGORIES: McpToolCategory[] = [
 function classifyMcpToolCategory(toolName: string): Exclude<McpToolCategory, 'All'> {
   const n = toolName.toLowerCase();
   if (/(model|voice)/.test(n)) return 'Models & Voices';
-  if (/(balance|auth|session|account|quota|credit|schema|gpu_status)/.test(n)) {
+  if (/(balance|auth|session|account|quota|credit|schema|gpu_status|who_am_i)/.test(n)) {
     return 'Account';
   }
   if (/(workflow|director|template)/.test(n)) return 'Workflows & 3D';
-  if (/(resource|operation)/.test(n)) return 'Resources & Ops';
-  if (/(upscale|cutout|interpolate|promote|inpaint|outpaint|remove_bg)/.test(n)) {
+  if (/(resource|operation|file_upload|query_tasks)/.test(n)) return 'Resources & Ops';
+  if (
+    /(upscale|cutout|interpolate|promote|inpaint|outpaint|remove_bg|video_extend|lip_sync|multi_elements)/.test(
+      n
+    )
+  ) {
     return 'Post-Edit';
   }
   if (/(canvas|node)/.test(n)) return 'Canvas & Nodes';

@@ -724,6 +724,106 @@ export function getHiggsfieldMcpMediaRole(
   return 'image_references';
 }
 
+export function generateRfc4122UuidV7(nowMs = Date.now()): string {
+  const bytes = crypto.randomBytes(16);
+  const ts = BigInt(Math.max(0, Math.trunc(nowMs)));
+  bytes[0] = Number((ts >> 40n) & 0xffn);
+  bytes[1] = Number((ts >> 32n) & 0xffn);
+  bytes[2] = Number((ts >> 24n) & 0xffn);
+  bytes[3] = Number((ts >> 16n) & 0xffn);
+  bytes[4] = Number((ts >> 8n) & 0xffn);
+  bytes[5] = Number(ts & 0xffn);
+  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+export function normalizeKlingOfficialMcpModelId(
+  rawModelId: unknown,
+  toolName: string,
+  kind: 'image' | 'video' | 'audio'
+): string {
+  const cleaned = String(rawModelId || '').trim();
+  const aliasMap: Record<string, string> = {
+    'kling-4.0': 'kling-video-v4_0',
+    'kling4_0': 'kling-video-v4_0',
+    'kling-4.0-flash': 'kling-video-v4_0_flash',
+    'kling_4_0_flash': 'kling-video-v4_0_flash',
+    'kling-3.0-master': 'kling-video-v3_0_omni',
+    'kling-3.0-omni': 'kling-video-v3_0_omni',
+    'kling-3.0': 'kling-video-v3_0',
+    'kling-3.0-turbo': 'kling-video-v3_0_turbo',
+    'kling-o1': 'kling-video-o1',
+    'kling-2.6-pro': 'kling-video-v2_6',
+    'kling-2.6': 'kling-video-v2_6',
+    'kling-2.5': 'kling-video-v2_5',
+    'kling-elements': 'kling-video-v4_0',
+    'kolors-2.0': 'kling-image-v3_0_omni',
+    'kling-image-3.0-omni': 'kling-image-v3_0_omni',
+    'kling-image-3.0': 'kling-image-v3_0',
+    'kling-image-2.1': 'kling-image-v2_1',
+  };
+  let resolved = aliasMap[cleaned] || cleaned;
+  if (!resolved) {
+    resolved = kind === 'image' ? 'kling-image-v3_0_omni' : 'kling-video-v4_0';
+  }
+  // Kling MCP v1.3.3 quirk: text_to_image uses `gpt-image-2`, image_to_image uses `gpt-image2`
+  if (toolName === 'image_to_image' && resolved === 'gpt-image-2') {
+    return 'gpt-image2';
+  }
+  if (toolName === 'text_to_image' && resolved === 'gpt-image2') {
+    return 'gpt-image-2';
+  }
+  return resolved;
+}
+
+export function rewritePromptHandlesForKlingOfficialMcp(
+  prompt: string,
+  orderedRefUrls: string[],
+  referenceHandles: Array<{ handle?: string; url?: string }> = [],
+  slotFormatter: (slotIndex1Based: number) => string = (n) => `图片${n}`
+): string {
+  const raw = String(prompt || '');
+  if (!raw || orderedRefUrls.length === 0) return raw;
+
+  const handleToSlot = new Map<string, number>();
+  for (const h of referenceHandles) {
+    const cleanHandle = String(h?.handle || '')
+      .trim()
+      .replace(/^@+/, '')
+      .toLowerCase();
+    const hUrl = String(h?.url || '').trim();
+    if (!cleanHandle || !hUrl) continue;
+    const idx = orderedRefUrls.findIndex((u) => u === hUrl);
+    if (idx >= 0) {
+      handleToSlot.set(cleanHandle, idx + 1);
+    }
+  }
+
+  const seenPositional = new Map<string, number>();
+  let nextPositional = 1;
+  return raw.replace(/@([A-Za-z0-9_.\-]{1,48})/g, (_full, name: string) => {
+    const lower = name.toLowerCase();
+    if (/^image_\d+$/i.test(lower)) {
+      const n = Number(lower.split('_')[1]);
+      if (n >= 1 && n <= orderedRefUrls.length) return slotFormatter(n);
+    }
+    const explicitSlot = handleToSlot.get(lower);
+    if (explicitSlot !== undefined) {
+      return slotFormatter(explicitSlot);
+    }
+    const prev = seenPositional.get(lower);
+    if (prev !== undefined) {
+      return slotFormatter(prev);
+    }
+    const assigned = Math.min(nextPositional, orderedRefUrls.length);
+    nextPositional += 1;
+    seenPositional.set(lower, assigned);
+    return slotFormatter(assigned);
+  });
+}
+
 export function normalizeProviderChoice(
   rawProvider: unknown,
   rawApiKey?: string
@@ -1520,6 +1620,16 @@ export class McpStdioBridgeServer {
   private readonly mcpCatalogCache = new Map<
     string,
     { fetchedAt: number; models: Array<Record<string, unknown>> }
+  >();
+  private readonly klingWhoAmICache = new Map<
+    string,
+    {
+      fetchedAt: number;
+      availableModels: Record<
+        string,
+        { defaultModel?: string; models?: Array<Record<string, unknown>> }
+      >;
+    }
   >();
   private bridgeEvents: BridgeRelayEvent[] = [];
   private readonly bridgeJobs = new Map<string, BridgeJobRecord>();
@@ -5591,11 +5701,13 @@ export class McpStdioBridgeServer {
         const rawCredits =
           structured.credits ??
           structured.balance ??
+          structured.availableRemainCredits ??
           structured.availableCredits ??
           structured.remaining_credits ??
           structured.available_credits ??
           structured.remainingUnits ??
           structured.credit_balance ??
+          nestedData.availableRemainCredits ??
           nestedData.credits ??
           nestedData.remaining_credits ??
           nestedData.available_credits ??
@@ -5607,13 +5719,16 @@ export class McpStdioBridgeServer {
           if (Number.isFinite(parsed)) credits = parsed;
         }
         const rawPlan =
+          structured.membershipTypeDescription ??
           structured.plan ??
           structured.subscription_plan_type ??
           structured.membership_type ??
+          structured.membershipType ??
           structured.membership ??
           structured.vipLevel ??
           structured.tier ??
           structured.subscription ??
+          nestedData.membershipTypeDescription ??
           nestedData.membership_type ??
           nestedData.plan ??
           nestedData.tier;
@@ -5624,7 +5739,8 @@ export class McpStdioBridgeServer {
           structured.account ??
           structured.email ??
           nestedData.account ??
-          nestedData.email;
+          nestedData.email ??
+          (structured.userId !== undefined ? `UID ${structured.userId}` : undefined);
         if (typeof rawAccount === 'string' && rawAccount.trim()) {
           account = rawAccount.trim();
         }
@@ -7188,7 +7304,11 @@ export class McpStdioBridgeServer {
     const totalPoolCredits =
       (typeof dreaminaSummary.credits === 'number' ? dreaminaSummary.credits : 0) +
       (typeof hfBal?.credits === 'number' ? hfBal.credits : 0) +
-      (typeof klingQuota.remainingUnits === 'number' ? klingQuota.remainingUnits : 0);
+      (typeof platforms.kling?.credits === 'number'
+        ? (platforms.kling.credits as number)
+        : typeof klingQuota.remainingUnits === 'number'
+          ? klingQuota.remainingUnits
+          : 0);
 
     const sharedPools =
       user.role === 'owner'
@@ -7980,6 +8100,210 @@ export class McpStdioBridgeServer {
 
     this.mcpRefUploadCache.set(cacheKey, mediaId);
     return mediaId;
+  }
+
+  private async getKlingWhoAmISchema(
+    serverId: string,
+    taskTraceId: string,
+    forceRefresh = false
+  ): Promise<
+    Record<string, { defaultModel?: string; models?: Array<Record<string, unknown>> }>
+  > {
+    const now = Date.now();
+    const cached = this.klingWhoAmICache.get(serverId);
+    if (!forceRefresh && cached && now - cached.fetchedAt < 10 * 60_000) {
+      return cached.availableModels;
+    }
+    try {
+      const res = await this.externalMcpHost.callTool({
+        serverId,
+        toolName: 'who_am_i',
+        arguments: { taskTraceId },
+        timeoutMs: 12_000,
+      });
+      let parsed: Record<string, unknown> | null =
+        typeof res.rawResult?.structuredContent === 'object' &&
+        res.rawResult.structuredContent !== null
+          ? (res.rawResult.structuredContent as Record<string, unknown>)
+          : null;
+      const rawText = String(res.textSummary || '').trim();
+      if (!parsed && rawText.startsWith('{')) {
+        parsed = JSON.parse(rawText) as Record<string, unknown>;
+      }
+      const availableModels =
+        typeof parsed?.availableModels === 'object' && parsed.availableModels !== null
+          ? (parsed.availableModels as Record<
+              string,
+              { defaultModel?: string; models?: Array<Record<string, unknown>> }
+            >)
+          : {};
+      if (Object.keys(availableModels).length > 0) {
+        this.klingWhoAmICache.set(serverId, { fetchedAt: now, availableModels });
+      }
+      return availableModels;
+    } catch {
+      return cached?.availableModels || {};
+    }
+  }
+
+  private async uploadReferenceForKlingMcp(
+    serverId: string,
+    refSource: string,
+    tools: ExternalMcpToolSchema[],
+    taskTraceId: string,
+    mediaHint: 'image' | 'video' | 'audio' = 'image'
+  ): Promise<string> {
+    const trimmed = String(refSource || '').trim();
+    if (!trimmed) return '';
+    if (/^https?:\/\/[^/]*klingai\.com\//i.test(trimmed)) {
+      return trimmed;
+    }
+
+    const hasUploadTool = tools.some((t) => t.name === 'file_upload');
+    const dataUriMatch = /^data:([^;,]+);base64,(.+)$/i.exec(trimmed);
+    const strippedAbsPath = trimmed.startsWith('absfile:')
+      ? trimmed.slice('absfile:'.length)
+      : trimmed;
+    const isLocalPath =
+      !dataUriMatch &&
+      !/^https?:\/\//i.test(trimmed) &&
+      fs.existsSync(strippedAbsPath) &&
+      fs.statSync(strippedAbsPath).isFile();
+
+    let cacheKey = `${serverId}::kling:${mediaHint}:url:${trimmed}`;
+    if (dataUriMatch) {
+      const digest = crypto.createHash('sha256').update(trimmed).digest('hex');
+      cacheKey = `${serverId}::kling:${mediaHint}:data:${digest}`;
+    } else if (isLocalPath) {
+      const st = fs.statSync(strippedAbsPath);
+      cacheKey = `${serverId}::kling:${mediaHint}:file:${path.resolve(strippedAbsPath)}:${st.size}:${Math.trunc(st.mtimeMs)}`;
+    }
+    const cached = this.mcpRefUploadCache.get(cacheKey);
+    if (cached) return cached;
+
+    if (!hasUploadTool) {
+      if (/^https?:\/\//i.test(trimmed)) return trimmed;
+      throw new BridgeHttpError(
+        400,
+        'Kling MCP server does not expose file_upload and reference is not a public URL.',
+        'kling'
+      );
+    }
+
+    let bytes: Buffer;
+    let contentType =
+      mediaHint === 'video' ? 'video/mp4' : mediaHint === 'audio' ? 'audio/mpeg' : 'image/jpeg';
+    let filename =
+      mediaHint === 'video'
+        ? 'reference.mp4'
+        : mediaHint === 'audio'
+          ? 'reference.mp3'
+          : 'reference.jpg';
+
+    if (dataUriMatch) {
+      const rawMime = dataUriMatch[1].trim().toLowerCase();
+      if (rawMime === 'image/png') {
+        contentType = 'image/png';
+        filename = 'reference.png';
+      } else if (rawMime === 'image/jpeg' || rawMime === 'image/jpg') {
+        contentType = 'image/jpeg';
+        filename = 'reference.jpg';
+      } else if (rawMime === 'video/mp4') {
+        contentType = 'video/mp4';
+        filename = 'reference.mp4';
+      } else if (rawMime === 'audio/wav') {
+        contentType = 'audio/wav';
+        filename = 'reference.wav';
+      } else if (rawMime === 'audio/mpeg' || rawMime === 'audio/mp3') {
+        contentType = 'audio/mpeg';
+        filename = 'reference.mp3';
+      }
+      bytes = Buffer.from(dataUriMatch[2], 'base64');
+    } else if (isLocalPath) {
+      bytes = fs.readFileSync(strippedAbsPath);
+      const ext = path.extname(strippedAbsPath).toLowerCase();
+      filename = path.basename(strippedAbsPath) || filename;
+      if (ext === '.png') contentType = 'image/png';
+      else if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
+      else if (ext === '.mp4') contentType = 'video/mp4';
+      else if (ext === '.wav') contentType = 'audio/wav';
+      else if (ext === '.mp3') contentType = 'audio/mpeg';
+    } else if (/^https?:\/\//i.test(trimmed)) {
+      const dl = await fetch(trimmed, { signal: AbortSignal.timeout(25_000) });
+      if (!dl.ok) {
+        return trimmed;
+      }
+      const hdrCt = (dl.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      if (hdrCt === 'image/png') {
+        contentType = 'image/png';
+        filename = 'reference.png';
+      } else if (hdrCt === 'image/jpeg' || hdrCt === 'image/jpg') {
+        contentType = 'image/jpeg';
+        filename = 'reference.jpg';
+      } else if (hdrCt === 'video/mp4') {
+        contentType = 'video/mp4';
+        filename = 'reference.mp4';
+      } else if (hdrCt === 'audio/wav') {
+        contentType = 'audio/wav';
+        filename = 'reference.wav';
+      }
+      bytes = Buffer.from(await dl.arrayBuffer());
+    } else {
+      throw new BridgeHttpError(400, `Unsupported Kling reference source: ${trimmed.slice(0, 80)}`, 'kling');
+    }
+
+    const ticketRes = await this.externalMcpHost.callTool({
+      serverId,
+      toolName: 'file_upload',
+      arguments: {
+        filename,
+        contentType,
+        size: bytes.length,
+        taskTraceId,
+      },
+      timeoutMs: 20_000,
+    });
+    let ticketObj: Record<string, unknown> | null =
+      typeof ticketRes.rawResult?.structuredContent === 'object' &&
+      ticketRes.rawResult.structuredContent !== null
+        ? (ticketRes.rawResult.structuredContent as Record<string, unknown>)
+        : null;
+    const ticketText = String(ticketRes.textSummary || '').trim();
+    if (!ticketObj && ticketText.startsWith('{')) {
+      ticketObj = JSON.parse(ticketText) as Record<string, unknown>;
+    }
+    const ticket = String(ticketObj?.ticket || '').trim();
+    const uploadUrl = String(ticketObj?.uploadUrl || ticketObj?.upload_url || '').trim();
+    if (!ticket || !uploadUrl) {
+      if (/^https?:\/\//i.test(trimmed)) return trimmed;
+      throw new BridgeHttpError(502, 'Kling MCP file_upload did not return a valid upload ticket.', 'kling');
+    }
+
+    const form = new FormData();
+    form.append('ticket', ticket);
+    form.append('file', new Blob([new Uint8Array(bytes)], { type: contentType }), filename);
+    const upRes = await fetch(uploadUrl, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(45_000),
+    });
+    const upJson = (await upRes.json().catch(() => ({}))) as Record<string, unknown>;
+    const upData =
+      typeof upJson.data === 'object' && upJson.data !== null
+        ? (upJson.data as Record<string, unknown>)
+        : {};
+    const uploadedUrl = String(upData.url || upJson.url || upJson.fileUrl || '').trim();
+    if (!uploadedUrl) {
+      if (/^https?:\/\//i.test(trimmed)) return trimmed;
+      throw new BridgeHttpError(
+        502,
+        `Kling MCP file upload failed (HTTP ${upRes.status}).`,
+        'kling'
+      );
+    }
+
+    this.mcpRefUploadCache.set(cacheKey, uploadedUrl);
+    return uploadedUrl;
   }
 
   private async findHiggsfieldModelSchema(
@@ -9142,7 +9466,7 @@ export class McpStdioBridgeServer {
         }
       }
 
-      const chosenTool = this.externalMcpHost.selectBestToolForModality(
+      let chosenTool = this.externalMcpHost.selectBestToolForModality(
         candidateMcpServer.id,
         kind,
         effectiveToolNameHint
@@ -9163,6 +9487,15 @@ export class McpStdioBridgeServer {
         'params' in chosenToolProps &&
         (candidateMcpServer.platformId === 'higgsfield' ||
           /^(generate_image|generate_video|generate_audio)$/i.test(chosenTool.name));
+      const isKlingOfficialMcp =
+        !isHiggsfieldOfficialMcp &&
+        'arguments' in chosenToolProps &&
+        'inputs' in chosenToolProps &&
+        (candidateMcpServer.platformId === 'kling' ||
+          /^(text_to_image|image_to_image|text_to_video|image_to_video|omni_ref_video|motion_control)$/i.test(
+            chosenTool.name
+          ));
+      const klingTaskTraceId = isKlingOfficialMcp ? generateRfc4122UuidV7() : '';
 
       const explicitMcpArgs =
         typeof params.mcpArguments === 'object' && params.mcpArguments !== null
@@ -9306,6 +9639,243 @@ export class McpStdioBridgeServer {
           context: 'Generate media asset for Open-DreamFlow spatial canvas node.',
           ...explicitTop,
         };
+      } else if (isKlingOfficialMcp) {
+        const whoAmI = await this.getKlingWhoAmISchema(candidateMcpServer.id, klingTaskTraceId);
+        let klingModelId = normalizeKlingOfficialMcpModelId(
+          rawModelForMcpResolved,
+          chosenTool.name,
+          kind
+        );
+
+        const omniModels = Array.isArray(whoAmI.omni_ref_video?.models)
+          ? whoAmI.omni_ref_video!.models!
+          : [];
+        const i2vModels = Array.isArray(whoAmI.image_to_video?.models)
+          ? whoAmI.image_to_video!.models!
+          : [];
+        if (
+          chosenTool.name === 'omni_ref_video' &&
+          omniModels.length > 0 &&
+          !omniModels.some((m) => String(m.model || '') === klingModelId) &&
+          i2vModels.some((m) => String(m.model || '') === klingModelId)
+        ) {
+          const fallbackI2vTool = candidateMcpServer.tools.find((t) => t.name === 'image_to_video');
+          if (fallbackI2vTool) {
+            chosenTool = fallbackI2vTool;
+            klingModelId = normalizeKlingOfficialMcpModelId(
+              rawModelForMcpResolved,
+              chosenTool.name,
+              kind
+            );
+          }
+        }
+
+        const toolSection = whoAmI[chosenTool.name] || {};
+        const toolModels = Array.isArray(toolSection.models) ? toolSection.models : [];
+        let modelSpec = toolModels.find((m) => String(m.model || '') === klingModelId);
+        if (!modelSpec && toolSection.defaultModel) {
+          klingModelId = String(toolSection.defaultModel);
+          modelSpec = toolModels.find((m) => String(m.model || '') === klingModelId);
+        }
+
+        const specArgs = Array.isArray(modelSpec?.arguments)
+          ? (modelSpec!.arguments as Array<Record<string, unknown>>)
+          : [];
+        const specInputs = Array.isArray(modelSpec?.inputs)
+          ? (modelSpec!.inputs as Array<Record<string, unknown>>)
+          : [];
+        const argSpecByName = new Map<string, Record<string, unknown>>();
+        for (const a of specArgs) {
+          if (typeof a.name === 'string') argSpecByName.set(a.name, a);
+        }
+        const inputNames = new Set(
+          specInputs.map((inp) => String(inp.name || '')).filter(Boolean)
+        );
+
+        const klingInputs: Array<{ inputType: 'URL'; name: string; url: string }> = [];
+        const orderedRawImageRefs: string[] = [];
+
+        const startRaw =
+          typeof params.startImageUrl === 'string' ? params.startImageUrl.trim() : '';
+        const endRaw =
+          typeof params.endImageUrl === 'string' ? params.endImageUrl.trim() : '';
+
+        if (chosenTool.name === 'motion_control') {
+          const subjRef = startRaw || resolvedReferenceImages[0] || '';
+          if (subjRef) {
+            const url = await this.uploadReferenceForKlingMcp(
+              candidateMcpServer.id,
+              resolveReferenceToPublicOrDataUrl(subjRef, this.mediaDir),
+              candidateMcpServer.tools,
+              klingTaskTraceId,
+              'image'
+            );
+            klingInputs.push({ inputType: 'URL', name: 'image', url });
+            orderedRawImageRefs.push(subjRef);
+          }
+          if (resolvedVideoReferences[0]) {
+            const vUrl = await this.uploadReferenceForKlingMcp(
+              candidateMcpServer.id,
+              resolvedVideoReferences[0],
+              candidateMcpServer.tools,
+              klingTaskTraceId,
+              'video'
+            );
+            klingInputs.push({ inputType: 'URL', name: 'video', url: vUrl });
+          }
+        } else if (inputNames.has('first_image')) {
+          const firstSource = startRaw || resolvedReferenceImages[0] || '';
+          const tailSource =
+            endRaw ||
+            (referenceFrameMode === 'start-end' && resolvedReferenceImages[1]
+              ? resolvedReferenceImages[1]
+              : !startRaw && resolvedReferenceImages.length === 2
+                ? resolvedReferenceImages[1]
+                : '');
+          if (firstSource) {
+            const firstUrl = await this.uploadReferenceForKlingMcp(
+              candidateMcpServer.id,
+              resolveReferenceToPublicOrDataUrl(firstSource, this.mediaDir),
+              candidateMcpServer.tools,
+              klingTaskTraceId,
+              'image'
+            );
+            klingInputs.push({ inputType: 'URL', name: 'first_image', url: firstUrl });
+            orderedRawImageRefs.push(firstSource);
+          }
+          if (tailSource && inputNames.has('tail_image')) {
+            const tailUrl = await this.uploadReferenceForKlingMcp(
+              candidateMcpServer.id,
+              resolveReferenceToPublicOrDataUrl(tailSource, this.mediaDir),
+              candidateMcpServer.tools,
+              klingTaskTraceId,
+              'image'
+            );
+            klingInputs.push({ inputType: 'URL', name: 'tail_image', url: tailUrl });
+            orderedRawImageRefs.push(tailSource);
+          }
+        } else if (inputNames.has('subject_image_0')) {
+          for (let i = 0; i < Math.min(resolvedReferenceImages.length, 4); i++) {
+            const slotName = `subject_image_${i}`;
+            if (!inputNames.has(slotName)) break;
+            const upUrl = await this.uploadReferenceForKlingMcp(
+              candidateMcpServer.id,
+              resolvedReferenceImages[i],
+              candidateMcpServer.tools,
+              klingTaskTraceId,
+              'image'
+            );
+            klingInputs.push({ inputType: 'URL', name: slotName, url: upUrl });
+            orderedRawImageRefs.push(resolvedReferenceImages[i]);
+          }
+        } else if (inputNames.has('image_1') || specInputs.length === 0) {
+          const maxImgSlots =
+            specInputs.filter((inp) => /^image_\d+$/.test(String(inp.name || ''))).length || 10;
+          for (let i = 0; i < Math.min(resolvedReferenceImages.length, maxImgSlots); i++) {
+            const slotName = `image_${i + 1}`;
+            if (specInputs.length > 0 && !inputNames.has(slotName)) break;
+            const upUrl = await this.uploadReferenceForKlingMcp(
+              candidateMcpServer.id,
+              resolvedReferenceImages[i],
+              candidateMcpServer.tools,
+              klingTaskTraceId,
+              'image'
+            );
+            klingInputs.push({ inputType: 'URL', name: slotName, url: upUrl });
+            orderedRawImageRefs.push(resolvedReferenceImages[i]);
+          }
+          if (inputNames.has('video_1') && resolvedVideoReferences.length > 0) {
+            const maxVidSlots =
+              specInputs.filter((inp) => /^video_\d+$/.test(String(inp.name || ''))).length || 5;
+            for (let i = 0; i < Math.min(resolvedVideoReferences.length, maxVidSlots); i++) {
+              const slotName = `video_${i + 1}`;
+              if (!inputNames.has(slotName)) break;
+              const upVUrl = await this.uploadReferenceForKlingMcp(
+                candidateMcpServer.id,
+                resolvedVideoReferences[i],
+                candidateMcpServer.tools,
+                klingTaskTraceId,
+                'video'
+              );
+              klingInputs.push({ inputType: 'URL', name: slotName, url: upVUrl });
+            }
+          }
+        }
+
+        const effectiveKlingPrompt =
+          orderedRawImageRefs.length > 0
+            ? rewritePromptHandlesForKlingOfficialMcp(
+                prompt,
+                orderedRawImageRefs,
+                resolvedReferenceHandles,
+                (n) => `图片${n}`
+              )
+            : prompt;
+
+        const kvArgs: Array<{ name: string; value: string }> = [];
+        const pushAllowedArg = (argName: string, candidateVal: unknown) => {
+          if (candidateVal === undefined || candidateVal === null || candidateVal === '') return;
+          const strVal = String(candidateVal).trim();
+          if (!strVal) return;
+          if (argSpecByName.size > 0 && !argSpecByName.has(argName)) return;
+          const spec = argSpecByName.get(argName);
+          const allowed = Array.isArray(spec?.allowedValues)
+            ? (spec!.allowedValues as unknown[]).map((v) => String(v))
+            : [];
+          if (allowed.length > 0) {
+            const exact = allowed.find((v) => v === strVal);
+            const ci = exact ?? allowed.find((v) => v.toLowerCase() === strVal.toLowerCase());
+            if (!ci) return;
+            kvArgs.push({ name: argName, value: ci });
+          } else {
+            kvArgs.push({ name: argName, value: strVal });
+          }
+        };
+
+        kvArgs.push({ name: 'prompt', value: effectiveKlingPrompt });
+
+        if (kind === 'video') {
+          if (durationSec) pushAllowedArg('duration', Math.round(Number(durationSec)));
+          if (resolution) pushAllowedArg('resolution', String(resolution).toLowerCase());
+          if (aspectRatio) pushAllowedArg('aspect_ratio', aspectRatio);
+          if (typeof audioEnabled === 'boolean') {
+            if (resolvedVideoReferences.length > 0 && klingModelId === 'kling-video-v3_0_omni') {
+              pushAllowedArg('enable_audio', 'false');
+            } else {
+              pushAllowedArg('enable_audio', audioEnabled ? 'true' : 'false');
+            }
+          }
+          if (chosenTool.name === 'motion_control') {
+            pushAllowedArg(
+              'motionDirection',
+              mergedModelParams.motionDirection || 'image_direction'
+            );
+          }
+        } else if (kind === 'image') {
+          if (resolution) pushAllowedArg('img_resolution', String(resolution).toLowerCase());
+          if (aspectRatio) pushAllowedArg('aspect_ratio', aspectRatio);
+          if (quality) pushAllowedArg('quality', String(quality).toLowerCase());
+          if (batchCount && batchCount > 1) {
+            if (argSpecByName.has('image_count')) {
+              pushAllowedArg('image_count', batchCount);
+            } else {
+              pushAllowedArg('imageCount', batchCount);
+            }
+          }
+        }
+
+        if (typeof mergedModelParams.elements === 'string' && mergedModelParams.elements.trim()) {
+          pushAllowedArg('elements', mergedModelParams.elements.trim());
+        }
+
+        mcpToolArgs = {
+          model: klingModelId,
+          arguments: kvArgs,
+          ...(klingInputs.length > 0 ? { inputs: klingInputs } : {}),
+          rationale: `Generate ${kind} asset on Open-DreamFlow spatial canvas node (${klingModelId}).`,
+          taskTraceId: klingTaskTraceId,
+          ...explicitMcpArgs,
+        };
       } else {
         const isDreaminaMcpTool =
           candidateMcpServer.platformId === 'dreamina' ||
@@ -9435,7 +10005,14 @@ export class McpStdioBridgeServer {
             pollArgs = { jobId: jid, ...(usesSync ? { sync: true } : {}) };
           } else if ('generation_ids' in statusProps) {
             pollArgs = { generation_ids: [jid] };
-          } else if ('generation_id' in statusProps || statusTool.name === 'query_tasks') {
+          } else if (statusTool.name === 'query_tasks' || 'generationId' in statusProps) {
+            pollArgs = {
+              generationId: jid,
+              ...(klingTaskTraceId && 'taskTraceId' in statusProps
+                ? { taskTraceId: klingTaskTraceId }
+                : {}),
+            };
+          } else if ('generation_id' in statusProps) {
             pollArgs = { generation_id: jid };
           } else if ('task_ids' in statusProps) {
             pollArgs = { task_ids: [jid] };

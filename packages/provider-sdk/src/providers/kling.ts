@@ -159,6 +159,14 @@ export async function signKlingJwtHs256(
 }
 
 const KLING_VIDEO_MODEL_MAP: Record<string, string> = {
+  'kling-video-v4_0': 'kling-v2-1-master',
+  'kling-video-v4_0_flash': 'kling-v2-1-master',
+  'kling-video-v3_0_omni': 'kling-v2-1-master',
+  'kling-video-v3_0': 'kling-v2-master',
+  'kling-video-v3_0_turbo': 'kling-v2-master',
+  'kling-video-o1': 'kling-v2-1-master',
+  'kling-video-v2_6': 'kling-v1-6',
+  'kling-video-v2_5': 'kling-v1-6',
   'kling-4.0': 'kling-v2-1-master',
   'kling-3.0-master': 'kling-v2-master',
   'kling-2.1-master': 'kling-v2-1-master',
@@ -170,6 +178,9 @@ const KLING_VIDEO_MODEL_MAP: Record<string, string> = {
 };
 
 const KLING_IMAGE_MODEL_MAP: Record<string, string> = {
+  'kling-image-v3_0_omni': 'kling-v2',
+  'kling-image-v3_0': 'kling-v2',
+  'kling-image-v2_1': 'kling-v2',
   'kolors-2.0': 'kling-v2',
   'kling-v2': 'kling-v2',
   'kling-image-o1': 'kling-v1-5',
