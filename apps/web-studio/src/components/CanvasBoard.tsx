@@ -191,6 +191,9 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
   const externalMcpServers = useStudioStore((s) => s.externalMcpServers);
   const sendNodeToTimeline = useStudioStore((s) => s.sendNodeToTimeline);
   const sliceContactSheetNode = useStudioStore((s) => s.sliceContactSheetNode);
+  const generateAiNineGridStoryboard = useStudioStore(
+    (s) => s.generateAiNineGridStoryboard
+  );
   const branchVideoMultiTurn = useStudioStore((s) => s.branchVideoMultiTurn);
   const executeMcpToolNode = useStudioStore((s) => s.executeMcpToolNode);
   const applyInpaintToNode = useStudioStore((s) => s.applyInpaintToNode);
@@ -1152,6 +1155,24 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                         {node.quality ? ` · ${node.quality}` : ''}
                       </span>
                     )}
+                  {typeof node.lastCreditsUsed === 'number' && (
+                    <span
+                      title={
+                        node.creditCostSource === 'measured'
+                          ? 'Exact credit deduction measured via live before/after balance diff'
+                          : `Credit cost (${node.creditCostSource || 'estimated'})`
+                      }
+                      className={`tabular-nums text-[10px] px-1.5 py-0.5 rounded-[5px] shrink-0 ${
+                        node.creditCostSource === 'measured'
+                          ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/25'
+                          : 'bg-white/[0.06] text-white/55'
+                      }`}
+                    >
+                      {node.lastCreditsUsed}{' '}
+                      {node.creditUnit === 'characters' ? 'ch' : 'cr'}
+                      {node.creditCostSource === 'measured' ? ' ✓' : ''}
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -2197,18 +2218,34 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                 )}
 
                 {(contextNode.kind === 'image' ||
+                  contextNode.kind === 'element' ||
                   contextNode.kind === 'contact-sheet') && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void sliceContactSheetNode(contextNode.id, 3, 3);
-                      setContextMenu(null);
-                    }}
-                    className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
-                  >
-                    <Grid3X3 className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
-                    <span>Slice 9-Grid Sheet</span>
-                  </button>
+                  <>
+                    {contextNode.kind !== 'contact-sheet' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void generateAiNineGridStoryboard(contextNode.id);
+                          setContextMenu(null);
+                        }}
+                        className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-[#8cf0ff] flex items-center gap-2"
+                      >
+                        <Grid3X3 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                        <span>AI 9-Grid Storyboard (9 Nodes)</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void sliceContactSheetNode(contextNode.id, 3, 3);
+                        setContextMenu(null);
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
+                    >
+                      <Grid3X3 className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
+                      <span>Slice 9-Grid Sheet (3×3)</span>
+                    </button>
+                  </>
                 )}
 
                 {contextNode.kind === 'video' && (

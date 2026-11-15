@@ -33,10 +33,12 @@ Commands:
   doctor               Verify Node.js, FFmpeg, Provider SDK, MCP Bridge, and Studio build
   mcp-remote           Run a stdio MCP bridge connected to a live Open-DreamFlow cloud workspace
   canvas <action>      Control a live Open-DreamFlow canvas via MCP (list, get, create, rename,
-                       organize, generate, connect, credits, sync-rates)
+                       share, organize, generate, slice-9grid, connect, credits, sync-rates)
+  team <action>        Manage invited workspace members & shared credit caps (list, invite,
+                       grant, remove)
   help, --help, -h     Show this help message
 
-Cloud / MCP Options ('mcp-remote' & 'canvas'):
+Cloud / MCP Options ('mcp-remote', 'canvas' & 'team'):
   --url <url>          Workspace URL (default: $OPEN_DREAMFLOW_URL or ${DEFAULT_CLOUD_URL})
   --token <token>      Auth bearer token ($OPEN_DREAMFLOW_TOKEN)
   --email <email>      Auto-login email ($OPEN_DREAMFLOW_EMAIL)
@@ -45,15 +47,23 @@ Cloud / MCP Options ('mcp-remote' & 'canvas'):
 Canvas Subcommands:
   open-dreamflow canvas list
   open-dreamflow canvas get [--project canvas_default]
-  open-dreamflow canvas create --name "Storyboard v2"
+  open-dreamflow canvas create --name "Storyboard v2" [--shared]
   open-dreamflow canvas rename --project canvas_default --name "Ramayana Visual Dev"
+  open-dreamflow canvas share --project canvas_default [--private]
   open-dreamflow canvas organize [--project canvas_default]
-  open-dreamflow canvas generate --project canvas_default --platform higgsfield --model gpt_image_2_6 --prompt "..."
+  open-dreamflow canvas generate --project canvas_default --platform higgsfield --model gpt_image_2_6 --prompt "..." [--auto-slice]
+  open-dreamflow canvas slice-9grid --project canvas_default --node <nodeId> [--grid 3x3]
   open-dreamflow canvas credits [--refresh]
   open-dreamflow canvas sync-rates
   open-dreamflow canvas media-audit [--project canvas_default]
   open-dreamflow canvas download --src /media/... --out ./shot.png [--name "Shot 01"]
   open-dreamflow canvas download-zip [--project canvas_default] [--nodes id1,id2] --out ./group.zip
+
+Team Subcommands:
+  open-dreamflow team list
+  open-dreamflow team invite --name "Alex" --to alex@studio.com --pin alex2026 [--grants higgsfield:300,dreamina:400 | --byok-only]
+  open-dreamflow team grant --member <userId> [--grants higgsfield:300,dreamina:off] [--reset higgsfield] [--pin newpass]
+  open-dreamflow team remove --member <userId>
 `);
 }
 
@@ -201,6 +211,12 @@ async function runCanvasCommand(subArgs) {
         name: String(flags.name || flags._[1] || ''),
       });
       break;
+    case 'share':
+      out = await invokeTool('canvas_rename', {
+        projectId,
+        isSharedWithTeam: !Boolean(flags.private),
+      });
+      break;
     case 'organize':
       out = await invokeTool('canvas_organize_layout', { projectId });
       break;
@@ -221,7 +237,7 @@ async function runCanvasCommand(subArgs) {
         projectId,
         ...(typeof flags.node === 'string' ? { nodeId: flags.node } : {}),
         ...(typeof flags.title === 'string' ? { title: flags.title } : {}),
-        kind: String(flags.kind || 'image'),
+        kind: String(flags.kind || (flags['auto-slice'] ? 'contact-sheet' : 'image')),
         platformId: String(flags.platform || 'higgsfield'),
         modelId: String(flags.model || 'gpt_image_2_6'),
         prompt: String(flags.prompt || ''),
@@ -231,6 +247,16 @@ async function runCanvasCommand(subArgs) {
         ...(flags.duration ? { durationSec: Number(flags.duration) } : {}),
         ...(typeof flags.ref === 'string' ? { referenceImages: flags.ref.split(',') } : {}),
         overwriteInPlace: Boolean(flags.overwrite),
+        autoSlice9Grid: Boolean(flags['auto-slice'] || flags.autoSlice9Grid),
+      });
+      break;
+    case 'slice-9grid':
+    case 'slice':
+      out = await invokeTool('canvas_slice_9grid', {
+        projectId,
+        nodeId: String(flags.node || flags.nodeId || flags._[1] || ''),
+        grid: String(flags.grid || '3x3'),
+        trimGutters: flags['no-trim'] ? false : true,
       });
       break;
     case 'credits':
@@ -343,6 +369,102 @@ async function runCanvasCommand(subArgs) {
   console.log(JSON.stringify(out, null, 2));
 }
 
+function parseGrantsSpec(specRaw, byokOnly = false) {
+  if (byokOnly) return {};
+  if (typeof specRaw !== 'string' || !specRaw.trim()) return undefined;
+  const grants = {};
+  for (const part of specRaw.split(',')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const [rawPid, rawVal] = trimmed.split(':');
+    const pid = String(rawPid || '').trim().toLowerCase();
+    if (!pid) continue;
+    const val = String(rawVal ?? 'unlimited').trim().toLowerCase();
+    if (val === 'off' || val === 'false' || val === 'none' || val === 'disable') {
+      grants[pid] = { enabled: false, capCredits: null };
+    } else if (val === '' || val === 'unlimited' || val === 'inf' || val === 'null') {
+      grants[pid] = { enabled: true, capCredits: null };
+    } else {
+      const n = Number(val);
+      grants[pid] = {
+        enabled: true,
+        capCredits: Number.isFinite(n) ? Math.max(0, Math.round(n)) : null,
+      };
+    }
+  }
+  return grants;
+}
+
+async function runTeamCommand(subArgs) {
+  const flags = parseSimpleFlags(subArgs);
+  const action = flags._[0] || 'list';
+  const { baseUrl, token } = await resolveRemoteAuth(flags);
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+
+  let res;
+  if (action === 'list') {
+    res = await fetch(`${baseUrl}/api/team/members`, { method: 'GET', headers });
+  } else if (action === 'invite') {
+    const memberEmail = String(flags['member-email'] || flags.inviteEmail || flags.email_invite || (flags._[1] || '')).trim() || String(flags.to || '').trim();
+    const displayName = String(flags.name || flags.displayName || '').trim();
+    const memberPass = String(flags['member-passcode'] || flags.invitePasscode || flags.pin || '').trim();
+    if (!memberEmail || !memberPass) {
+      throw new Error(
+        'Usage: open-dreamflow team invite --name "Alex" --to alex@studio.com --pin alex2026 [--grants higgsfield:300,dreamina:400 | --byok-only]'
+      );
+    }
+    const sharedGrants = parseGrantsSpec(flags.grants, Boolean(flags['byok-only']));
+    res = await fetch(`${baseUrl}/api/team/invites`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        email: memberEmail,
+        displayName: displayName || memberEmail.split('@')[0],
+        passcode: memberPass,
+        ...(sharedGrants !== undefined ? { sharedGrants } : {}),
+      }),
+    });
+  } else if (action === 'grant') {
+    const memberId = String(flags.member || flags.id || flags._[1] || '').trim();
+    if (!memberId) {
+      throw new Error(
+        'Usage: open-dreamflow team grant --member <userId> [--grants higgsfield:300,dreamina:off] [--reset higgsfield] [--pin newpass]'
+      );
+    }
+    const grants = parseGrantsSpec(flags.grants, false);
+    res = await fetch(`${baseUrl}/api/team/members/${encodeURIComponent(memberId)}/grants`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        ...(grants ? { grants } : {}),
+        ...(typeof flags.reset === 'string' ? { resetUsagePlatformId: flags.reset } : {}),
+        ...(typeof flags.pin === 'string' ? { passcode: flags.pin } : {}),
+        ...(typeof flags.name === 'string' ? { displayName: flags.name } : {}),
+      }),
+    });
+  } else if (action === 'remove' || action === 'delete') {
+    const memberId = String(flags.member || flags.id || flags._[1] || '').trim();
+    if (!memberId) {
+      throw new Error('Usage: open-dreamflow team remove --member <userId>');
+    }
+    res = await fetch(`${baseUrl}/api/team/members/${encodeURIComponent(memberId)}`, {
+      method: 'DELETE',
+      headers,
+    });
+  } else {
+    throw new Error(`Unknown team subcommand "${action}". Use: list, invite, grant, remove.`);
+  }
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    throw new Error(`Team ${action} failed (${res.status}): ${data.error || JSON.stringify(data)}`);
+  }
+  console.log(JSON.stringify(data, null, 2));
+}
+
 function resolveFfmpeg(explicitEnv, candidates, fallbackCmd) {
   if (explicitEnv && fs.existsSync(explicitEnv)) {
     return { available: true, binPath: explicitEnv };
@@ -452,6 +574,11 @@ if (firstArg === '--help' || firstArg === '-h' || firstArg === 'help') {
 } else if (firstArg === 'canvas') {
   runCanvasCommand(rawArgs.slice(1)).catch((err) => {
     console.error('[open-dreamflow canvas] Error:', err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+} else if (firstArg === 'team') {
+  runTeamCommand(rawArgs.slice(1)).catch((err) => {
+    console.error('[open-dreamflow team] Error:', err instanceof Error ? err.message : err);
     process.exit(1);
   });
 } else if (firstArg === 'start' || firstArg.startsWith('-')) {

@@ -49,11 +49,16 @@ export interface UsageLedgerEntry {
   id: string;
   userId: string;
   userDisplayName: string;
+  userName?: string;
   platformId: string;
   modelId: string;
   modality: string;
   creditsUsed: number;
   creditSource: 'own' | 'shared' | 'owner';
+  costSource?: 'measured' | 'provider_quote' | 'calibrated' | 'estimated';
+  preBalance?: number;
+  postBalance?: number;
+  unit?: 'credits' | 'characters';
   nodeId?: string;
   timestamp: string;
 }
@@ -204,6 +209,9 @@ export class AuthCreditsStore {
             sessions: parsed.sessions || {},
             usageLedger: Array.isArray(parsed.usageLedger) ? parsed.usageLedger : [],
             calibratedRates: parsed.calibratedRates || {},
+            ...(typeof parsed.lastDailyRateSyncAt === 'string'
+              ? { lastDailyRateSyncAt: parsed.lastDailyRateSyncAt }
+              : {}),
           };
         }
       }
@@ -669,10 +677,14 @@ export class AuthCreditsStore {
 
   public getMePayload(user: StoredUserRecord): Record<string, unknown> {
     const ownByok = this.getUserDecryptedByok(user.id);
-    const ledger =
+    const rawLedger =
       user.role === 'owner'
         ? this.state.usageLedger.slice(0, 100)
         : this.state.usageLedger.filter((e) => e.userId === user.id).slice(0, 100);
+    const ledger = rawLedger.map((e) => ({
+      ...e,
+      userName: e.userName || e.userDisplayName || e.userId,
+    }));
     return {
       ok: true,
       user: this.toPublicUser(user),
@@ -691,6 +703,10 @@ export class AuthCreditsStore {
     modality: string;
     creditsUsed: number;
     creditSource: 'own' | 'shared' | 'owner';
+    costSource?: 'measured' | 'provider_quote' | 'calibrated' | 'estimated';
+    preBalance?: number;
+    postBalance?: number;
+    unit?: 'credits' | 'characters';
     nodeId?: string;
   }): void {
     const user = this.state.users[entry.userId];
@@ -705,15 +721,25 @@ export class AuthCreditsStore {
       }
     }
 
+    const displayName = user?.displayName || entry.userId;
     const record: UsageLedgerEntry = {
       id: `led_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
       userId: entry.userId,
-      userDisplayName: user?.displayName || entry.userId,
+      userDisplayName: displayName,
+      userName: displayName,
       platformId: entry.platformId,
       modelId: entry.modelId,
       modality: entry.modality,
       creditsUsed: credits,
       creditSource: entry.creditSource,
+      ...(entry.costSource ? { costSource: entry.costSource } : {}),
+      ...(typeof entry.preBalance === 'number' && Number.isFinite(entry.preBalance)
+        ? { preBalance: entry.preBalance }
+        : {}),
+      ...(typeof entry.postBalance === 'number' && Number.isFinite(entry.postBalance)
+        ? { postBalance: entry.postBalance }
+        : {}),
+      ...(entry.unit ? { unit: entry.unit } : {}),
       ...(entry.nodeId ? { nodeId: entry.nodeId } : {}),
       timestamp: now,
     };

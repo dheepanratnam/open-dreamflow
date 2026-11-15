@@ -13,6 +13,7 @@ import {
   Film,
   GitBranch,
   Grid2X2,
+  Grid3X3,
   Image as ImageIcon,
   Link2,
   Loader2,
@@ -219,6 +220,10 @@ export const ContextualNodeOverlay: React.FC = () => {
   const openLightbox = useStudioStore((s) => s.openLightbox);
   const downloadNodeMedia = useStudioStore((s) => s.downloadNodeMedia);
   const downloadSelectedNodesMedia = useStudioStore((s) => s.downloadSelectedNodesMedia);
+  const sliceContactSheetNode = useStudioStore((s) => s.sliceContactSheetNode);
+  const generateAiNineGridStoryboard = useStudioStore(
+    (s) => s.generateAiNineGridStoryboard
+  );
 
   const [openMenu, setOpenMenu] = useState<
     | null
@@ -620,6 +625,43 @@ export const ContextualNodeOverlay: React.FC = () => {
                   <Clapperboard className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
                   <span>→ Create Video</span>
                 </button>
+
+                {selectedNode.kind !== 'contact-sheet' && (
+                  <button
+                    type="button"
+                    data-testid="quickbar-ai-9grid-btn"
+                    onClick={() => void generateAiNineGridStoryboard(selectedNode.id)}
+                    className="h-7 px-2.5 rounded-[7px] bg-[#20D5EC]/12 hover:bg-[#20D5EC]/22 border border-[#20D5EC]/35 text-[#8cf0ff] font-medium flex items-center gap-1.5"
+                    title="Generate a 3×3 multi-angle storyboard via GPT Image 2.6 and slice into 9 keyframe nodes"
+                  >
+                    <Grid3X3 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                    <span>→ AI 9-Grid</span>
+                  </button>
+                )}
+
+                {selectedNode.kind === 'contact-sheet' && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="quickbar-slice-3x3-btn"
+                      onClick={() => void sliceContactSheetNode(selectedNode.id, 3, 3)}
+                      className="h-7 px-2.5 rounded-[7px] bg-[#20D5EC]/15 hover:bg-[#20D5EC]/25 border border-[#20D5EC]/40 text-[#8cf0ff] font-medium flex items-center gap-1.5"
+                      title="Slice 3×3 contact sheet into 9 standalone camera-angle nodes via FFmpeg"
+                    >
+                      <Grid3X3 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                      <span>Slice 3×3 (9)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void sliceContactSheetNode(selectedNode.id, 2, 2)}
+                      className="h-7 px-2 rounded-[7px] hover:bg-white/[0.08] text-white/80 flex items-center gap-1"
+                      title="Slice 2×2 sheet into 4 standalone nodes"
+                    >
+                      <Grid2X2 className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
+                      <span>2×2</span>
+                    </button>
+                  </>
+                )}
 
                 <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
 

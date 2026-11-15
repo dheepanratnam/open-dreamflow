@@ -648,6 +648,10 @@ export interface StudioState {
   ) => Promise<void>;
   retakeNode: (nodeId: string) => Promise<void>;
   sliceContactSheetNode: (nodeId: string, rows?: number, cols?: number) => Promise<void>;
+  generateAiNineGridStoryboard: (
+    sourceNodeId?: string,
+    customPrompt?: string
+  ) => Promise<void>;
   generateFourAngleCoverage: (nodeId: string) => Promise<void>;
   convertImageToOmniVideo: (nodeId: string, durationSec?: number) => Promise<void>;
   branchVideoMultiTurn: (nodeId: string, deltaPrompt: string) => Promise<void>;
@@ -3177,14 +3181,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         ? node.gridSpec.labels
         : defaultLabels;
 
-    const candidateImg =
-      node.kind === 'contact-sheet' && node.imageUrl
-        ? node.imageUrl
-        : rows === 3 && cols === 3
-        ? renderContactSheetDataUrl(3, 3, node.prompt || '9-Grid Shot Sheet', node.seed).dataUrl
-        : node.imageUrl;
+    const candidateImg = node.imageUrl
+      ? node.imageUrl
+      : renderContactSheetDataUrl(
+          rows,
+          cols,
+          node.prompt || `${rows}×${cols} Shot Sheet`,
+          node.seed
+        ).dataUrl;
 
-    get().showToast(`Slicing ${rows}×${cols} sheet via :3001 FFmpeg...`);
+    get().showToast(`Slicing ${rows}×${cols} storyboard grid via FFmpeg...`);
 
     let slicedUrls: string[] = [];
     let usedBackend = false;
@@ -3199,7 +3205,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     if (slicedUrls.length === 0) {
       let sourceDataUrl = candidateImg;
-      if (!sourceDataUrl || (node.kind !== 'contact-sheet' && rows === 2)) {
+      if (!sourceDataUrl) {
         const sheet = renderContactSheetDataUrl(rows, cols, node.prompt, node.seed);
         sourceDataUrl = sheet.dataUrl;
       }
@@ -3237,7 +3243,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         interactionId: `int_slice_${idx + 1}`,
         elementHandles: node.elementHandles,
         layers: createDefaultLayers(url),
-        providerUsed: usedBackend ? 'FFmpeg Slicer (:3001)' : `${rows}×${cols} Slicer`,
+        providerUsed: usedBackend ? 'FFmpeg 9-Grid Slicer' : `${rows}×${cols} Slicer`,
         createdAt: Date.now() + idx,
       });
       spawnedEdges.push({
@@ -3254,7 +3260,137 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       selectedNodeIds: spawnedNodes.map((sn) => sn.id),
     }));
 
-    get().showToast(`Unpacked ${spawnedNodes.length} sliced frames onto canvas`);
+    void get().persistActiveProjectToDisk();
+    get().showToast(`Unpacked ${spawnedNodes.length} sliced keyframe nodes onto canvas`);
+  },
+
+  generateAiNineGridStoryboard: async (sourceNodeId, customPrompt) => {
+    const state = get();
+    const sourceNode = sourceNodeId
+      ? state.nodes.find((n) => n.id === sourceNodeId)
+      : state.nodes.find(
+          (n) =>
+            state.selectedNodeIds.includes(n.id) &&
+            (n.kind === 'image' || n.kind === 'element' || n.kind === 'contact-sheet')
+        );
+
+    const isPlatConnected = (pid: PlatformId): boolean => {
+      const summaryPlat = state.creditsSummary?.platforms?.find((p) => p.platformId === pid);
+      if (summaryPlat?.connected) return true;
+      const sharedGrant = state.sharedGrants?.[pid];
+      if (sharedGrant?.enabled) return true;
+      const backendPlat = state.platformsCatalog.find((p) => p.id === pid);
+      return getPlatformConnectionStatus(
+        pid,
+        state.byok,
+        state.chromeBridge,
+        state.externalMcpServers,
+        backendPlat,
+        {
+          connectedBrowserPlatforms: state.connectedBrowserPlatforms,
+          connectedMcpPlatforms: state.connectedMcpPlatforms,
+          configuredApiPlatforms: state.configuredApiPlatforms,
+        }
+      ).connected;
+    };
+
+    let chosenPlatform: PlatformId = 'higgsfield';
+    let chosenModel = 'gpt_image_2_6';
+    if (isPlatConnected('higgsfield')) {
+      chosenPlatform = 'higgsfield';
+      chosenModel = 'gpt_image_2_6';
+    } else if (isPlatConnected('openai')) {
+      chosenPlatform = 'openai';
+      chosenModel = 'gpt-image-1';
+    } else if (isPlatConnected('dreamina')) {
+      chosenPlatform = 'dreamina';
+      chosenModel = 'seedream-5.0';
+    } else if (isPlatConnected('google-flow')) {
+      chosenPlatform = 'google-flow';
+      chosenModel = 'gemini-3.1-flash-image-preview';
+    } else if (isPlatConnected('fal')) {
+      chosenPlatform = 'fal';
+      chosenModel = 'fal-ai/flux-pro/v1.1';
+    }
+
+    const baseSubject = (
+      customPrompt ||
+      sourceNode?.prompt ||
+      state.promptText ||
+      sourceNode?.title ||
+      'Cinematic hero character in dramatic film lighting'
+    ).trim();
+
+    const structuredGridPrompt = /3x3|9-grid|contact sheet/i.test(baseSubject)
+      ? baseSubject
+      : `Seamless 3x3 cinematic storyboard contact sheet grid containing 9 distinct edge-to-edge 16:9 camera frames with zero borders, zero text captions, and strict character, wardrobe, prop, and lighting continuity across all 9 panels: [1] Extreme wide establishing shot; [2] Wide master composition; [3] Medium two-shot; [4] Over-the-shoulder view; [5] Medium close-up hero expression; [6] Macro close-up detail; [7] Low-angle hero tracking shot; [8] High-angle overhead crane view; [9] Backlit dramatic profile. Scene: ${baseSubject}`;
+
+    const refUrls: string[] = [];
+    if (sourceNode?.imageUrl) refUrls.push(sourceNode.imageUrl);
+    if (sourceNode?.referenceUrls) {
+      for (const r of sourceNode.referenceUrls) {
+        if (r && !refUrls.includes(r)) refUrls.push(r);
+      }
+    }
+
+    state.pushHistory();
+    const sheetId = `node_9grid_${Date.now()}`;
+    const sheetW = 480;
+    const sheetH = 270;
+    const sheetX = sourceNode
+      ? sourceNode.x + sourceNode.width + 110
+      : Math.max(140, ...state.nodes.map((n) => n.x + n.width + 90));
+    const sheetY = sourceNode ? sourceNode.y : 160;
+
+    const sheetNode: CanvasNode = {
+      id: sheetId,
+      kind: 'contact-sheet',
+      title: `AI 9-Grid · ${chosenModel === 'gpt_image_2_6' ? 'GPT Image 2.6' : chosenModel}`,
+      prompt: structuredGridPrompt,
+      x: sheetX,
+      y: sheetY,
+      width: sheetW,
+      height: sheetH,
+      aspectRatio: '16:9',
+      resolution: '2K',
+      status: 'idle',
+      platformId: chosenPlatform,
+      modelId: chosenModel,
+      referenceUrls: refUrls,
+      gridSpec: { rows: 3, cols: 3, labels: NINE_GRID_LABELS },
+      seed: Math.floor(Math.random() * 9000) + 1000,
+      elementHandles: sourceNode?.elementHandles ? [...sourceNode.elementHandles] : [],
+      layers: [],
+      providerUsed: chosenPlatform,
+      createdAt: Date.now(),
+    };
+
+    const nextEdges: CanvasEdge[] = sourceNode
+      ? [
+          ...state.edges,
+          {
+            id: `edge_9grid_${sourceNode.id}_${sheetId}`,
+            sourceId: sourceNode.id,
+            targetId: sheetId,
+            kind: 'lineage',
+            label: '9-Grid Ref',
+          },
+        ]
+      : state.edges;
+
+    set((s) => ({
+      nodes: [...s.nodes, sheetNode],
+      edges: nextEdges,
+      selectedNodeIds: [sheetId],
+    }));
+
+    get().showToast(
+      `Generating 3×3 storyboard via ${chosenPlatform} · ${chosenModel}, then slicing into 9 nodes...`
+    );
+    const ok = await get().generateSingleNode(sheetId);
+    if (ok) {
+      await get().sliceContactSheetNode(sheetId, 3, 3);
+    }
   },
 
   generateFourAngleCoverage: async (nodeId) => {
@@ -6834,6 +6970,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               ? createDefaultLayers(resolvedImageForCard)
               : n.layers,
             providerUsed: res.providerUsed || badge,
+            ...(typeof res.creditsUsed === 'number'
+              ? { lastCreditsUsed: res.creditsUsed }
+              : {}),
+            ...(res.creditCostSource ? { creditCostSource: res.creditCostSource } : {}),
+            ...(res.creditUnit ? { creditUnit: res.creditUnit } : {}),
             generatedSnapshot: {
               prompt: finalPrompt,
               platformId,
@@ -6850,9 +6991,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
     void get().persistActiveProjectToDisk();
     void get().refreshCreditsSummary(true);
+    if (get().authUser) {
+      void get().refreshAuthMe();
+    }
     const finishedTitle =
       get().nodes.find((n) => n.id === targetNodeId)?.title || node.title;
-    get().showToast(`Generated "${finishedTitle}" via ${res.providerUsed || badge}`);
+    const creditNote =
+      typeof res.creditsUsed === 'number'
+        ? ` · ${res.creditsUsed} ${res.creditUnit === 'characters' ? 'chars' : 'cr'}${
+            res.creditCostSource === 'measured' ? ' ✓' : ''
+          }`
+        : '';
+    get().showToast(
+      `Generated "${finishedTitle}" via ${res.providerUsed || badge}${creditNote}`
+    );
     return true;
   },
 

@@ -1099,6 +1099,7 @@ export const BUILTIN_DREAMFLOW_MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         projectId: { type: 'string' },
         name: { type: 'string' },
+        isSharedWithTeam: { type: 'boolean' },
       },
     },
   },
@@ -1195,6 +1196,27 @@ export const BUILTIN_DREAMFLOW_MCP_TOOLS: McpToolDefinition[] = [
         x: { type: 'number' },
         y: { type: 'number' },
         overwriteInPlace: { type: 'boolean', default: false },
+        autoSlice9Grid: {
+          type: 'boolean',
+          default: false,
+          description: 'When true on an image/contact-sheet node, slices the generated 3x3 sheet into 9 standalone keyframe nodes wired to the sheet.',
+        },
+      },
+    },
+  },
+  {
+    name: 'canvas_slice_9grid',
+    description:
+      'Slice an existing 3x3 (9-grid) or 2x2 (4-grid) contact sheet node on a canvas via FFmpeg, upload all sliced frames to R2/media storage, and spawn 9 (or 4) wired camera-angle nodes.',
+    annotations: { title: 'Canvas · Slice 9-Grid Storyboard to Nodes' },
+    inputSchema: {
+      type: 'object',
+      required: ['nodeId'],
+      properties: {
+        projectId: { type: 'string', description: 'Target canvas ID (defaults to canvas_default)' },
+        nodeId: { type: 'string', description: 'Source contact-sheet or grid image node ID' },
+        grid: { type: 'string', enum: ['3x3', '2x2'], default: '3x3' },
+        trimGutters: { type: 'boolean', default: true },
       },
     },
   },
@@ -2821,27 +2843,36 @@ export class McpStdioBridgeServer {
     };
   }
 
-  public renameProject(params: { projectId: string; name: string }): Record<string, unknown> {
+  public renameProject(params: {
+    projectId: string;
+    name?: string;
+    isSharedWithTeam?: boolean;
+  }): Record<string, unknown> {
     const projectId = String(params.projectId || 'canvas_default').trim() || 'canvas_default';
-    const nextName = String(params.name || '').trim();
-    if (!nextName) {
-      throw new BridgeHttpError(400, 'Canvas name is required.');
-    }
     const existing = this.getProject(projectId);
     if (!existing) {
       throw new BridgeHttpError(404, `Canvas "${projectId}" not found.`);
+    }
+    const nextName =
+      typeof params.name === 'string' && params.name.trim() ? params.name.trim() : existing.name;
+    if (!nextName) {
+      throw new BridgeHttpError(400, 'Canvas name is required.');
     }
     const saved = this.saveProject({
       id: existing.id,
       name: nextName,
       state: existing.state,
-      isSharedWithTeam: existing.isSharedWithTeam,
+      isSharedWithTeam:
+        typeof params.isSharedWithTeam === 'boolean'
+          ? params.isSharedWithTeam
+          : existing.isSharedWithTeam,
       source: 'mcp',
     });
     return {
       ok: true,
       id: saved.id,
       name: saved.name,
+      isSharedWithTeam: saved.isSharedWithTeam,
       updatedAt: saved.updatedAt,
     };
   }
@@ -3229,8 +3260,9 @@ export class McpStdioBridgeServer {
     const batchCount = Number(params.batchCount ?? existingNode?.batchCount ?? 1) || 1;
 
     const effectivePrompt =
-      rawKind === 'contact-sheet' && !/3x3|9-grid|contact sheet/i.test(prompt)
-        ? `3x3 cinematic storyboard contact sheet grid (9 distinct panels with consistent characters, wardrobe, and lighting): ${prompt}`
+      (rawKind === 'contact-sheet' || Boolean(params.autoSlice9Grid)) &&
+      !/3x3|9-grid|contact sheet/i.test(prompt)
+        ? `Seamless 3x3 cinematic storyboard contact sheet grid containing 9 distinct edge-to-edge 16:9 camera frames with zero borders, zero text captions, and strict character, wardrobe, and lighting continuity across all 9 panels: [1] Extreme wide establishing; [2] Wide master shot; [3] Medium two-shot; [4] Over-the-shoulder; [5] Medium close-up; [6] Extreme close-up detail; [7] Low-angle hero shot; [8] High-angle overhead; [9] Backlit dramatic profile. Scene: ${prompt}`
         : prompt;
 
     const genRes = await this.generateNode({
@@ -3332,6 +3364,10 @@ export class McpStdioBridgeServer {
       layers: [],
       seed: Number(existingNode?.seed || Math.floor(Math.random() * 9000) + 100),
       providerUsed: String(genRes.providerUsed || `${platformId}-mcp`),
+      ...(typeof genRes.creditsUsed === 'number' ? { lastCreditsUsed: genRes.creditsUsed } : {}),
+      ...(typeof genRes.creditCostSource === 'string'
+        ? { creditCostSource: genRes.creditCostSource }
+        : {}),
       createdAt:
         existingNode && !shouldForkSibling
           ? Number(existingNode.createdAt || Date.now())
@@ -3370,6 +3406,16 @@ export class McpStdioBridgeServer {
       source: 'mcp',
     });
 
+    let slicedGridOut: Record<string, unknown> | undefined;
+    if (Boolean(params.autoSlice9Grid) && genModality === 'image') {
+      slicedGridOut = await this.sliceCanvasNodeToGrid({
+        projectId: saved.id,
+        nodeId: targetNodeId,
+        grid: '3x3',
+        trimGutters: params.trimGutters !== false,
+      });
+    }
+
     return {
       ok: true,
       projectId: saved.id,
@@ -3378,7 +3424,9 @@ export class McpStdioBridgeServer {
       mediaUrl: genRes.mediaUrl,
       fullUrl: genRes.fullUrl,
       creditsUsed: genRes.creditsUsed,
+      creditCostSource: genRes.creditCostSource,
       providerUsed: genRes.providerUsed,
+      ...(slicedGridOut ? { slicedGrid: slicedGridOut } : {}),
     };
   }
 
@@ -4576,6 +4624,10 @@ export class McpStdioBridgeServer {
           provider: 'kling',
           authMode: verified.authMode,
           models: verified.models,
+          ...(verified.remainingUnits !== undefined
+            ? { remainingUnits: verified.remainingUnits }
+            : {}),
+          ...(verified.expiresAt !== undefined ? { expiresAt: verified.expiresAt } : {}),
         };
       } catch (err) {
         return {
@@ -4747,7 +4799,8 @@ export class McpStdioBridgeServer {
         };
       }
       try {
-        const res = await fetch('https://api.replicate.com/v1/account', {
+        const repBase = (baseUrl || 'https://api.replicate.com/v1').replace(/\/+$/, '');
+        const res = await fetch(`${repBase}/account`, {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -4790,8 +4843,9 @@ export class McpStdioBridgeServer {
         };
       }
       try {
+        const falBase = (baseUrl || 'https://queue.fal.run').replace(/\/+$/, '');
         const res = await fetch(
-          'https://queue.fal.run/fal-ai/fast-sdxl/requests/00000000-0000-0000-0000-000000000000/status',
+          `${falBase}/fal-ai/fast-sdxl/requests/00000000-0000-0000-0000-000000000000/status`,
           {
             method: 'GET',
             headers: {
@@ -5590,34 +5644,74 @@ export class McpStdioBridgeServer {
       return '';
     };
     if (platformId === 'google-flow' || platformId === 'gemini') {
-      return { apiKey: pick('google-flow', 'gemini', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'), accessKey: '', secretKey: '' };
+      return {
+        apiKey: pick(
+          'geminiApiKey',
+          'google-flow',
+          'googleFlowApiKey',
+          'gemini',
+          'GEMINI_API_KEY',
+          'GOOGLE_API_KEY'
+        ),
+        accessKey: '',
+        secretKey: '',
+        baseUrl: pick('geminiBaseUrl', 'googleFlowBaseUrl', 'google-flow_base_url') || undefined,
+      };
     }
     if (platformId === 'kling') {
       return {
-        apiKey: pick('kling', 'KLING_API_KEY'),
+        apiKey: pick('klingApiKey', 'kling', 'KLING_API_KEY'),
         accessKey: pick('klingAccessKey', 'kling_access_key', 'KLING_ACCESS_KEY'),
         secretKey: pick('klingSecretKey', 'kling_secret_key', 'KLING_SECRET_KEY'),
+        baseUrl: pick('klingBaseUrl', 'kling_base_url', 'KLING_BASE_URL') || undefined,
       };
     }
     if (platformId === 'higgsfield') {
       return {
-        apiKey: pick('higgsfield', 'HIGGSFIELD_API_KEY'),
-        accessKey: '',
-        secretKey: pick('higgsfieldSecretKey', 'higgsfield_secret_key', 'HIGGSFIELD_SECRET_KEY'),
+        apiKey: pick('higgsfieldApiKey', 'higgsfield', 'HIGGSFIELD_API_KEY'),
+        accessKey: pick('higgsfieldKeyId', 'higgsfieldAccessKey', 'HIGGSFIELD_KEY_ID'),
+        secretKey: pick(
+          'higgsfieldKeySecret',
+          'higgsfieldSecretKey',
+          'higgsfield_secret_key',
+          'HIGGSFIELD_SECRET_KEY'
+        ),
+        baseUrl: pick('higgsfieldBaseUrl', 'higgsfield_base_url') || undefined,
       };
     }
     if (platformId === 'comfyui') {
-      const url = pick('comfyui', 'comfyuiBaseUrl', 'COMFYUI_URL');
+      const url = pick('comfyUiUrl', 'comfyui', 'comfyuiBaseUrl', 'COMFYUI_URL');
       return { apiKey: '', accessKey: '', secretKey: '', baseUrl: url || undefined };
     }
     if (platformId === 'dreamina') {
-      return { apiKey: pick('dreamina', 'ark', 'ARK_API_KEY', 'SEEDANCE_API_KEY'), accessKey: '', secretKey: '' };
+      return {
+        apiKey: pick('seedanceApiKey', 'dreaminaApiKey', 'dreamina', 'ark', 'ARK_API_KEY', 'SEEDANCE_API_KEY'),
+        accessKey: '',
+        secretKey: '',
+        baseUrl: pick('seedanceEndpoint', 'dreaminaBaseUrl', 'dreamina_base_url') || undefined,
+      };
+    }
+    if (platformId === 'elevenlabs') {
+      return {
+        apiKey: pick('elevenlabsApiKey', 'elevenLabsApiKey', 'elevenlabs', 'elevenlabs_api_key', 'ELEVENLABS_API_KEY'),
+        accessKey: '',
+        secretKey: '',
+        baseUrl: pick('elevenlabsBaseUrl', 'elevenLabsBaseUrl', 'elevenlabs_base_url') || undefined,
+      };
+    }
+    if (platformId === 'replicate') {
+      return {
+        apiKey: pick('replicateApiKey', 'replicateApiToken', 'replicate', 'replicate_api_key', 'REPLICATE_API_TOKEN'),
+        accessKey: '',
+        secretKey: '',
+        baseUrl: pick('replicateBaseUrl', 'replicate_base_url') || undefined,
+      };
     }
     return {
-      apiKey: pick(platformId, `${platformId}_api_key`, `${platformId}ApiKey`),
-      accessKey: '',
-      secretKey: pick(`${platformId}_secret`, `${platformId}SecretKey`),
-      baseUrl: pick(`${platformId}_base_url`, `${platformId}BaseUrl`) || undefined,
+      apiKey: pick(`${platformId}ApiKey`, platformId, `${platformId}_api_key`),
+      accessKey: pick(`${platformId}AccessKey`, `${platformId}_access_key`),
+      secretKey: pick(`${platformId}SecretKey`, `${platformId}_secret`),
+      baseUrl: pick(`${platformId}BaseUrl`, `${platformId}_base_url`) || undefined,
     };
   }
 
@@ -6491,6 +6585,155 @@ export class McpStdioBridgeServer {
     return payload;
   }
 
+  private computePlatformExpiryInfo(params: {
+    manualExpiresAt?: string | null;
+    liveExpiresAt?: string | number | null;
+    resetDay?: number | null;
+    nowMs?: number;
+  }): {
+    expiresAt: string | null;
+    nextResetAt: string | null;
+    daysRemaining: number | null;
+  } {
+    const nowMs = params.nowMs ?? Date.now();
+    const parseToTargetMs = (raw?: string | number | null): { ms: number; iso: string } | null => {
+      if (raw === null || raw === undefined || raw === '') return null;
+      if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+        const ms = raw > 1e12 ? raw : raw * 1000;
+        return { ms, iso: new Date(ms).toISOString().slice(0, 10) };
+      }
+      const str = String(raw).trim();
+      if (!str) return null;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+        const ms = Date.parse(`${str}T23:59:59.000Z`);
+        if (Number.isFinite(ms)) return { ms, iso: str };
+      }
+      const ms = Date.parse(str);
+      if (Number.isFinite(ms)) {
+        return { ms, iso: new Date(ms).toISOString().slice(0, 10) };
+      }
+      return null;
+    };
+
+    const manualParsed = parseToTargetMs(params.manualExpiresAt);
+    const liveParsed = parseToTargetMs(params.liveExpiresAt);
+
+    let resetParsed: { ms: number; iso: string } | null = null;
+    if (typeof params.resetDay === 'number' && Number.isFinite(params.resetDay)) {
+      const cleanDay = Math.max(1, Math.min(31, Math.round(params.resetDay)));
+      const nowDate = new Date(nowMs);
+      const y = nowDate.getUTCFullYear();
+      const m = nowDate.getUTCMonth();
+      const daysInThisMonth = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+      const thisMonthDay = Math.min(cleanDay, daysInThisMonth);
+      let candidateMs = Date.UTC(y, m, thisMonthDay, 23, 59, 59);
+      if (candidateMs < nowMs) {
+        const ny = m === 11 ? y + 1 : y;
+        const nm = (m + 1) % 12;
+        const daysInNextMonth = new Date(Date.UTC(ny, nm + 1, 0)).getUTCDate();
+        const nextMonthDay = Math.min(cleanDay, daysInNextMonth);
+        candidateMs = Date.UTC(ny, nm, nextMonthDay, 23, 59, 59);
+      }
+      resetParsed = {
+        ms: candidateMs,
+        iso: new Date(candidateMs).toISOString().slice(0, 10),
+      };
+    }
+
+    const chosenExpiry = manualParsed || liveParsed;
+    const primaryTarget = chosenExpiry || resetParsed;
+    const daysRemaining = primaryTarget
+      ? Math.max(0, Math.ceil((primaryTarget.ms - nowMs) / 86_400_000))
+      : null;
+
+    return {
+      expiresAt: chosenExpiry ? chosenExpiry.iso : null,
+      nextResetAt: resetParsed ? resetParsed.iso : chosenExpiry ? chosenExpiry.iso : null,
+      daysRemaining,
+    };
+  }
+
+  private async snapshotLivePlatformBalance(params: {
+    user: StoredUserRecord;
+    platformId: string;
+    effectiveCreditSource: 'own' | 'shared' | 'owner';
+    effectiveMcpServer: ReturnType<ExternalMcpHost['listServers']>[number] | null;
+    effectiveKeys: {
+      apiKey?: string;
+      accessKey?: string;
+      secretKey?: string;
+      baseUrl?: string;
+    };
+  }): Promise<{ balance: number; unit: 'credits' | 'characters' } | null> {
+    const { user, platformId, effectiveCreditSource, effectiveMcpServer, effectiveKeys } = params;
+
+    if (platformId === 'dreamina') {
+      const profile =
+        effectiveCreditSource === 'shared' || user.role === 'owner' ? 'default' : user.id;
+      if (this.dreaminaMcpEngine.hasProfileConnected(profile)) {
+        const sum = await this.dreaminaMcpEngine
+          .getFullCreditSummary(true, profile)
+          .catch(() => null);
+        if (sum?.loggedIn && typeof sum.credits === 'number' && Number.isFinite(sum.credits)) {
+          return { balance: sum.credits, unit: 'credits' };
+        }
+      }
+    }
+
+    if (
+      effectiveMcpServer &&
+      effectiveMcpServer.tools.some((t) => t.name === 'balance')
+    ) {
+      const bal = await this.getMcpBalanceWithCache(effectiveMcpServer.id, true).catch(() => null);
+      if (typeof bal?.credits === 'number' && Number.isFinite(bal.credits)) {
+        return { balance: bal.credits, unit: 'credits' };
+      }
+    }
+
+    if (platformId === 'elevenlabs' && effectiveKeys.apiKey) {
+      try {
+        const elBase = (effectiveKeys.baseUrl || 'https://api.elevenlabs.io').replace(/\/+$/, '');
+        const elRes = await fetch(`${elBase}/v1/user/subscription`, {
+          headers: { 'xi-api-key': effectiveKeys.apiKey },
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (elRes.ok) {
+          const elJson = (await elRes.json()) as Record<string, unknown>;
+          const used = Number(elJson.character_count);
+          const limit = Number(elJson.character_limit);
+          if (Number.isFinite(used) && Number.isFinite(limit)) {
+            return { balance: Math.max(0, limit - used), unit: 'characters' };
+          }
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    if (
+      platformId === 'kling' &&
+      (effectiveKeys.apiKey || (effectiveKeys.accessKey && effectiveKeys.secretKey))
+    ) {
+      try {
+        const sdk = await this.loadProviderSdk();
+        const client = new sdk.KlingClient({
+          accessKey: effectiveKeys.accessKey || undefined,
+          secretKey: effectiveKeys.secretKey || undefined,
+          apiKey: effectiveKeys.apiKey || undefined,
+          baseUrl: effectiveKeys.baseUrl || undefined,
+        });
+        const costs = await client.getAccountCosts(AbortSignal.timeout(5_000));
+        if (typeof costs.remainingUnits === 'number' && Number.isFinite(costs.remainingUnits)) {
+          return { balance: costs.remainingUnits, unit: 'credits' };
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    return null;
+  }
+
   public async getCreditsSummary(
     options: { forceRefresh?: boolean } = {}
   ): Promise<Record<string, unknown>> {
@@ -6534,14 +6777,18 @@ export class McpStdioBridgeServer {
     const hfSupportsUnlimited = /ultimate|unlimited|pro/i.test(hfPlan);
 
     // 3. ElevenLabs Quota (`/v1/user/subscription`)
-    const ownElKey = this.extractPlatformKeysFromByok(ownByok, 'elevenlabs').apiKey;
-    const ownerElKey =
-      this.extractPlatformKeysFromByok(ownerByok, 'elevenlabs').apiKey ||
-      this.getEnvKeysForPlatform('elevenlabs').apiKey;
+    const ownElKeys = this.extractPlatformKeysFromByok(ownByok, 'elevenlabs');
+    const ownerElKeys = this.extractPlatformKeysFromByok(ownerByok, 'elevenlabs');
+    const envElKeys = this.getEnvKeysForPlatform('elevenlabs');
+    const ownElKey = ownElKeys.apiKey;
+    const ownerElKey = ownerElKeys.apiKey || envElKeys.apiKey;
     const elApiKey =
       user.role === 'owner'
         ? ownElKey || ownerElKey
         : ownElKey || (this.hasActiveSharedGrantForPlatform(user, 'elevenlabs') ? ownerElKey : '');
+    const elBaseUrl = (
+      (ownElKey ? ownElKeys.baseUrl : ownerElKeys.baseUrl) || 'https://api.elevenlabs.io'
+    ).replace(/\/+$/, '');
     let elevenLabsQuota: {
       connected: boolean;
       characterCount?: number;
@@ -6554,7 +6801,7 @@ export class McpStdioBridgeServer {
     };
     if (elApiKey) {
       try {
-        const elRes = await fetch('https://api.elevenlabs.io/v1/user/subscription', {
+        const elRes = await fetch(`${elBaseUrl}/v1/user/subscription`, {
           headers: { 'xi-api-key': elApiKey },
           signal: AbortSignal.timeout(5_000),
         });
@@ -6580,6 +6827,75 @@ export class McpStdioBridgeServer {
       }
     }
 
+    // 4. Kling Official API Resource Packs (`/account/costs`)
+    const ownKlKeys = this.extractPlatformKeysFromByok(ownByok, 'kling');
+    const ownerKlKeys = this.extractPlatformKeysFromByok(ownerByok, 'kling');
+    const envKlKeys = this.getEnvKeysForPlatform('kling');
+    const hasOwnKling = Boolean(ownKlKeys.apiKey || (ownKlKeys.accessKey && ownKlKeys.secretKey));
+    const useSharedKling =
+      !hasOwnKling &&
+      user.role === 'member' &&
+      this.hasActiveSharedGrantForPlatform(user, 'kling');
+    const effKlingKeys = hasOwnKling
+      ? ownKlKeys
+      : user.role === 'owner' || useSharedKling
+        ? {
+            apiKey: ownerKlKeys.apiKey || envKlKeys.apiKey,
+            accessKey: ownerKlKeys.accessKey || envKlKeys.accessKey,
+            secretKey: ownerKlKeys.secretKey || envKlKeys.secretKey,
+            baseUrl: ownerKlKeys.baseUrl,
+          }
+        : { apiKey: '', accessKey: '', secretKey: '', baseUrl: undefined };
+    let klingQuota: {
+      connected: boolean;
+      remainingUnits: number | null;
+      totalUnits: number | null;
+      expiresAt: string | null;
+      daysRemaining: number | null;
+      buckets: Array<{ credits: number; expiresAt: string; daysRemaining: number }>;
+    } = {
+      connected: Boolean(effKlingKeys.apiKey || (effKlingKeys.accessKey && effKlingKeys.secretKey)),
+      remainingUnits: null,
+      totalUnits: null,
+      expiresAt: null,
+      daysRemaining: null,
+      buckets: [],
+    };
+    if (klingQuota.connected) {
+      try {
+        const sdk = await this.loadProviderSdk();
+        const klClient = new sdk.KlingClient({
+          accessKey: effKlingKeys.accessKey || undefined,
+          secretKey: effKlingKeys.secretKey || undefined,
+          apiKey: effKlingKeys.apiKey || undefined,
+          baseUrl: effKlingKeys.baseUrl || undefined,
+        });
+        const costs = await klClient.getAccountCosts(AbortSignal.timeout(5_000));
+        klingQuota = {
+          connected: true,
+          remainingUnits: costs.remainingUnits,
+          totalUnits: costs.totalUnits,
+          expiresAt: costs.expiresAt,
+          daysRemaining: costs.daysRemaining,
+          buckets: (
+            costs.packs as Array<{
+              remainingUnits: number;
+              expiresAt?: string;
+              daysRemaining?: number;
+            }>
+          )
+            .filter((pk) => pk.remainingUnits > 0 && pk.expiresAt)
+            .map((pk) => ({
+              credits: pk.remainingUnits,
+              expiresAt: pk.expiresAt!.slice(0, 10),
+              daysRemaining: pk.daysRemaining ?? 0,
+            })),
+        };
+      } catch {
+        // Non-fatal if key tier does not expose /account/costs
+      }
+    }
+
     const expiringSoonAlerts: Array<{
       platformId: string;
       label: string;
@@ -6587,19 +6903,33 @@ export class McpStdioBridgeServer {
       expiresAt: string;
       daysRemaining: number;
     }> = [];
+    const bucketAlertPlatforms = new Set<string>();
     for (const b of dreaminaSummary.buckets || []) {
       if (
         typeof b.daysRemaining === 'number' &&
-        b.daysRemaining <= 7 &&
+        b.daysRemaining <= 14 &&
         b.credits > 0 &&
         b.expiresAt
       ) {
+        bucketAlertPlatforms.add('dreamina');
         expiringSoonAlerts.push({
           platformId: 'dreamina',
           label: `Dreamina credits (${b.daysRemaining}d left)`,
           credits: b.credits,
           expiresAt: b.expiresAt,
           daysRemaining: b.daysRemaining,
+        });
+      }
+    }
+    for (const kb of klingQuota.buckets) {
+      if (kb.daysRemaining <= 14 && kb.credits > 0 && kb.expiresAt) {
+        bucketAlertPlatforms.add('kling');
+        expiringSoonAlerts.push({
+          platformId: 'kling',
+          label: `Kling resource pack (${kb.daysRemaining}d left)`,
+          credits: kb.credits,
+          expiresAt: kb.expiresAt,
+          daysRemaining: kb.daysRemaining,
         });
       }
     }
@@ -6623,13 +6953,25 @@ export class McpStdioBridgeServer {
     for (const pid of platformIds) {
       const meta: UserBillingMetaEntry = billingMeta[pid] || {};
       if (pid === 'dreamina') {
+        const earliestBucket = (dreaminaSummary.buckets || []).find(
+          (b) => b.credits > 0 && b.expiresAt
+        );
+        const expInfo = this.computePlatformExpiryInfo({
+          manualExpiresAt: meta.manualExpiresAt,
+          liveExpiresAt: earliestBucket?.expiresAt || dreaminaSummary.vipLevelExpiresAt || null,
+          resetDay: meta.resetDay ?? null,
+          nowMs: now,
+        });
         platforms[pid] = {
           platformId: pid,
           connected: Boolean(dreaminaSummary.loggedIn),
-          credits: dreaminaSummary.credits ?? null,
+          credits: dreaminaSummary.credits ?? meta.manualBudgetCredits ?? null,
           plan: dreaminaSummary.vipLevel || null,
           vipLevelExpiresAt: dreaminaSummary.vipLevelExpiresAt || null,
           tokenExpiresAt: dreaminaSummary.tokenExpiresAt || null,
+          expiresAt: expInfo.expiresAt,
+          nextResetAt: expInfo.nextResetAt,
+          daysRemaining: expInfo.daysRemaining,
           account: dreaminaSummary.account || null,
           buckets: dreaminaSummary.buckets || [],
           source: dreaminaCtx.source,
@@ -6639,12 +6981,21 @@ export class McpStdioBridgeServer {
         };
       } else if (pid === 'higgsfield') {
         const hfBalErr = hfServer ? this.mcpBalanceErrors.get(hfServer.id) : undefined;
+        const expInfo = this.computePlatformExpiryInfo({
+          manualExpiresAt: meta.manualExpiresAt,
+          liveExpiresAt: null,
+          resetDay: meta.resetDay ?? null,
+          nowMs: now,
+        });
         platforms[pid] = {
           platformId: pid,
           connected: Boolean(hfServer),
-          credits: hfBal?.credits ?? null,
+          credits: hfBal?.credits ?? meta.manualBudgetCredits ?? null,
           plan: hfPlan || null,
           supportsUnlimited: hfSupportsUnlimited,
+          expiresAt: expInfo.expiresAt,
+          nextResetAt: expInfo.nextResetAt,
+          daysRemaining: expInfo.daysRemaining,
           account:
             hfBal?.account ||
             hfServer?.account?.email ||
@@ -6658,10 +7009,43 @@ export class McpStdioBridgeServer {
           manualExpiresAt: meta.manualExpiresAt ?? null,
         };
       } else if (pid === 'elevenlabs') {
+        const expInfo = this.computePlatformExpiryInfo({
+          manualExpiresAt: meta.manualExpiresAt,
+          liveExpiresAt: elevenLabsQuota.nextResetUnix ?? null,
+          resetDay: meta.resetDay ?? null,
+          nowMs: now,
+        });
         platforms[pid] = {
           platformId: pid,
           ...elevenLabsQuota,
           unit: 'characters',
+          expiresAt: expInfo.expiresAt,
+          nextResetAt: expInfo.nextResetAt,
+          daysRemaining: expInfo.daysRemaining,
+          resetDay: meta.resetDay ?? null,
+          manualBudgetCredits: meta.manualBudgetCredits ?? null,
+          manualExpiresAt: meta.manualExpiresAt ?? null,
+        };
+      } else if (pid === 'kling') {
+        const connected =
+          klingQuota.connected ||
+          visibleServers.some((s) => s.platformId === 'kling' && s.status === 'connected');
+        const expInfo = this.computePlatformExpiryInfo({
+          manualExpiresAt: meta.manualExpiresAt,
+          liveExpiresAt: klingQuota.expiresAt,
+          resetDay: meta.resetDay ?? null,
+          nowMs: now,
+        });
+        platforms[pid] = {
+          platformId: pid,
+          connected,
+          credits: klingQuota.remainingUnits ?? meta.manualBudgetCredits ?? null,
+          limit: klingQuota.totalUnits ?? null,
+          plan: klingQuota.remainingUnits !== null ? 'Resource Pack Live' : null,
+          buckets: klingQuota.buckets,
+          expiresAt: expInfo.expiresAt,
+          nextResetAt: expInfo.nextResetAt,
+          daysRemaining: expInfo.daysRemaining,
           resetDay: meta.resetDay ?? null,
           manualBudgetCredits: meta.manualBudgetCredits ?? null,
           manualExpiresAt: meta.manualExpiresAt ?? null,
@@ -6680,20 +7064,64 @@ export class McpStdioBridgeServer {
           hasShared ||
           (user.role === 'owner' && Boolean(envK.apiKey || envK.accessKey)) ||
           visibleServers.some((s) => s.platformId === pid && s.status === 'connected');
+        const expInfo = this.computePlatformExpiryInfo({
+          manualExpiresAt: meta.manualExpiresAt,
+          liveExpiresAt: null,
+          resetDay: meta.resetDay ?? null,
+          nowMs: now,
+        });
         platforms[pid] = {
           platformId: pid,
           connected,
           credits: meta.manualBudgetCredits ?? null,
+          expiresAt: expInfo.expiresAt,
+          nextResetAt: expInfo.nextResetAt,
+          daysRemaining: expInfo.daysRemaining,
           resetDay: meta.resetDay ?? null,
           manualBudgetCredits: meta.manualBudgetCredits ?? null,
           manualExpiresAt: meta.manualExpiresAt ?? null,
         };
       }
+
+      const platObj = platforms[pid];
+      const platDays = typeof platObj.daysRemaining === 'number' ? platObj.daysRemaining : null;
+      const platExp =
+        (typeof platObj.expiresAt === 'string' && platObj.expiresAt) ||
+        (typeof platObj.nextResetAt === 'string' && platObj.nextResetAt) ||
+        '';
+      const hasExplicitExpiry = Boolean(
+        meta.manualExpiresAt ||
+          (pid === 'elevenlabs' && elevenLabsQuota.nextResetUnix) ||
+          (pid === 'dreamina' && dreaminaSummary.vipLevelExpiresAt && !bucketAlertPlatforms.has('dreamina'))
+      );
+      if (
+        (Boolean(platObj.connected) || Boolean(meta.manualExpiresAt)) &&
+        platDays !== null &&
+        platDays <= 14 &&
+        platExp &&
+        (!bucketAlertPlatforms.has(pid) || Boolean(meta.manualExpiresAt)) &&
+        (hasExplicitExpiry || typeof meta.resetDay === 'number')
+      ) {
+        const numericBal =
+          typeof platObj.credits === 'number'
+            ? platObj.credits
+            : typeof platObj.remainingCharacters === 'number'
+              ? platObj.remainingCharacters
+              : Number(meta.manualBudgetCredits || 0);
+        expiringSoonAlerts.push({
+          platformId: pid,
+          label: `${pid} ${meta.manualExpiresAt ? 'credits expire' : 'renews'} (${platDays}d left)`,
+          credits: numericBal,
+          expiresAt: platExp,
+          daysRemaining: platDays,
+        });
+      }
     }
 
     const totalPoolCredits =
       (typeof dreaminaSummary.credits === 'number' ? dreaminaSummary.credits : 0) +
-      (typeof hfBal?.credits === 'number' ? hfBal.credits : 0);
+      (typeof hfBal?.credits === 'number' ? hfBal.credits : 0) +
+      (typeof klingQuota.remainingUnits === 'number' ? klingQuota.remainingUnits : 0);
 
     const sharedPools =
       user.role === 'owner'
@@ -7900,7 +8328,11 @@ export class McpStdioBridgeServer {
       };
     } else {
       const bridgeActive = this.isBridgeSessionRecentlyActive(normalizeBridgeTarget(platformId));
-      const hasOwnConnection = Boolean(hasExplicitCreds || hasOwnVault || ownMcp);
+      const ownDreaminaConnected =
+        platformId === 'dreamina' && this.dreaminaMcpEngine.hasProfileConnected(user.id);
+      const hasOwnConnection = Boolean(
+        hasExplicitCreds || hasOwnVault || ownMcp || ownDreaminaConnected
+      );
       const grant = user.sharedGrants[platformId];
       const grantEnabled = Boolean(grant?.enabled);
       const capReached = Boolean(grantEnabled && grant?.capCredits !== null && (grant?.usedCredits ?? 0) >= (grant?.capCredits ?? 0));
@@ -7910,8 +8342,11 @@ export class McpStdioBridgeServer {
       const ownerVaultKeys = this.extractPlatformKeysFromByok(ownerByok, platformId);
       const envKeys = this.getEnvKeysForPlatform(platformId);
       const ownerMcp = this.findMcpServerForUser(user, platformId, explicitMcpServerId || undefined, 'shared');
+      const ownerDreaminaConnected =
+        platformId === 'dreamina' && this.dreaminaMcpEngine.hasProfileConnected('default');
       const ownerHasCreds = Boolean(
         ownerMcp ||
+          ownerDreaminaConnected ||
           ownerVaultKeys.apiKey ||
           ownerVaultKeys.accessKey ||
           ownerVaultKeys.baseUrl ||
@@ -8016,16 +8451,13 @@ export class McpStdioBridgeServer {
       prompt,
     });
 
-    let preCredits: number | undefined;
-    if (
-      effectiveMcpServer &&
-      effectiveMcpServer.tools.some((t) => t.name === 'balance')
-    ) {
-      const preBal = await this.getMcpBalanceWithCache(effectiveMcpServer.id, true).catch(() => null);
-      if (typeof preBal?.credits === 'number' && Number.isFinite(preBal.credits)) {
-        preCredits = preBal.credits;
-      }
-    }
+    const preSnap = await this.snapshotLivePlatformBalance({
+      user,
+      platformId,
+      effectiveCreditSource,
+      effectiveMcpServer,
+      effectiveKeys,
+    });
 
     const enrichedParams: Record<string, unknown> = {
       ...params,
@@ -8067,30 +8499,82 @@ export class McpStdioBridgeServer {
       throw new BridgeHttpError(502, msg, platformId);
     }
 
-    let creditsUsed =
-      typeof result.estimatedCredits === 'number' && Number.isFinite(result.estimatedCredits)
-        ? result.estimatedCredits
-        : est.credits;
+    const rawModelParamsObj =
+      typeof settings.modelParams === 'object' && settings.modelParams !== null
+        ? (settings.modelParams as Record<string, unknown>)
+        : typeof params.modelParams === 'object' && params.modelParams !== null
+          ? (params.modelParams as Record<string, unknown>)
+          : {};
+    const usedUnlimitedMode = Boolean(
+      settings.use_unlim ?? params.use_unlim ?? rawModelParamsObj.use_unlim
+    );
+
+    let postSnap = preSnap
+      ? await this.snapshotLivePlatformBalance({
+          user,
+          platformId,
+          effectiveCreditSource,
+          effectiveMcpServer,
+          effectiveKeys,
+        })
+      : null;
+
     if (
-      preCredits !== undefined &&
-      effectiveMcpServer &&
-      effectiveMcpServer.tools.some((t) => t.name === 'balance')
+      preSnap &&
+      postSnap &&
+      postSnap.balance === preSnap.balance &&
+      !usedUnlimitedMode &&
+      (platformId === 'higgsfield' || platformId === 'dreamina' || platformId === 'kling')
     ) {
-      const postBal = await this.getMcpBalanceWithCache(effectiveMcpServer.id, true).catch(() => null);
-      if (typeof postBal?.credits === 'number' && Number.isFinite(postBal.credits)) {
-        const delta = Math.round((preCredits - postBal.credits) * 100) / 100;
-        if (delta > 0 && delta < 5000) {
-          creditsUsed = delta;
+      await new Promise((r) => setTimeout(r, 1200));
+      postSnap = await this.snapshotLivePlatformBalance({
+        user,
+        platformId,
+        effectiveCreditSource,
+        effectiveMcpServer,
+        effectiveKeys,
+      });
+    }
+
+    let creditsUsed: number;
+    let costSource: 'measured' | 'provider_quote' | 'calibrated' | 'estimated';
+    const creditUnit: 'credits' | 'characters' = preSnap?.unit || est.unit;
+
+    if (preSnap && postSnap && Number.isFinite(postSnap.balance)) {
+      const delta = Math.round((preSnap.balance - postSnap.balance) * 100) / 100;
+      if (delta > 0 && delta < 200_000) {
+        creditsUsed = delta;
+        costSource = 'measured';
+        if (creditUnit === 'credits') {
           const perUnit = kind === 'image' && batchCount > 1 ? delta / batchCount : delta;
           this.authStore.updateCalibratedRate(est.modelKey, perUnit);
-        } else if (
-          delta === 0 &&
-          platformId === 'higgsfield' &&
-          typeof result.estimatedCredits !== 'number'
-        ) {
-          creditsUsed = 0;
         }
+      } else if (
+        delta === 0 &&
+        (usedUnlimitedMode ||
+          (platformId === 'higgsfield' && typeof result.estimatedCredits !== 'number'))
+      ) {
+        creditsUsed = 0;
+        costSource = 'measured';
+      } else if (
+        typeof result.estimatedCredits === 'number' &&
+        Number.isFinite(result.estimatedCredits)
+      ) {
+        creditsUsed = result.estimatedCredits;
+        costSource = 'provider_quote';
+      } else {
+        creditsUsed = est.credits;
+        costSource = est.source === 'calibrated' ? 'calibrated' : 'estimated';
       }
+    } else if (
+      typeof result.estimatedCredits === 'number' &&
+      Number.isFinite(result.estimatedCredits)
+    ) {
+      creditsUsed = result.estimatedCredits;
+      costSource = 'provider_quote';
+    } else {
+      creditsUsed = est.credits;
+      costSource = est.source === 'calibrated' ? 'calibrated' : 'estimated';
     }
 
     this.authStore.recordCreditUsage({
@@ -8100,6 +8584,10 @@ export class McpStdioBridgeServer {
       modality: kind,
       creditsUsed,
       creditSource: effectiveCreditSource,
+      costSource,
+      preBalance: preSnap?.balance,
+      postBalance: postSnap?.balance,
+      unit: creditUnit,
       nodeId: typeof params.nodeId === 'string' ? params.nodeId : undefined,
     });
     this.creditsSummaryCache.delete(user.id);
@@ -8109,6 +8597,10 @@ export class McpStdioBridgeServer {
       ...result,
       creditSourceUsed: effectiveCreditSource,
       creditsUsed,
+      creditCostSource: costSource,
+      creditUnit,
+      ...(preSnap ? { preBalance: preSnap.balance } : {}),
+      ...(postSnap ? { postBalance: postSnap.balance } : {}),
     };
   }
 
@@ -9468,7 +9960,10 @@ export class McpStdioBridgeServer {
               platformId
             );
           }
-          const client = new sdk.FalClient({ apiKey });
+          const client = new sdk.FalClient({
+            apiKey,
+            ...(baseUrl ? { queueBaseUrl: baseUrl, syncBaseUrl: baseUrl } : {}),
+          });
           if (kind === 'video') {
             const out = await client.generateOpenWeightVideo({
               endpointOrModelId: modelId || 'fal-ai/kling-video/v2/master/image-to-video',
@@ -9534,7 +10029,7 @@ export class McpStdioBridgeServer {
               platformId
             );
           }
-          const client = new sdk.ReplicateClient({ apiToken: apiKey });
+          const client = new sdk.ReplicateClient({ apiToken: apiKey, baseUrl });
           if (kind === 'video') {
             const out = await client.generateOpenWeightVideo({
               endpointOrModelId: modelId || 'kwaivgi/kling-v2.0',
@@ -11659,6 +12154,28 @@ export class McpStdioBridgeServer {
         String(params.prefix || params.outputPrefix || 'slice')
           .replace(/[^a-zA-Z0-9_-]+/g, '_')
           .replace(/^_+|_+$/g, '') || 'slice';
+      const batchStamp = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const trimGutters = params.trimGutters !== false;
+      const trimFrac = trimGutters ? 0.008 : 0;
+
+      const cameraAngles9 = [
+        'Shot 01 · Extreme Wide',
+        'Shot 02 · Wide Master',
+        'Shot 03 · Medium Two-Shot',
+        'Shot 04 · Over-the-Shoulder',
+        'Shot 05 · Medium Close-Up',
+        'Shot 06 · Close-Up Detail',
+        'Shot 07 · Low-Angle Hero',
+        'Shot 08 · High-Angle Overhead',
+        'Shot 09 · Backlit Profile',
+      ];
+      const cameraAngles4 = [
+        'Angle 01 · Front Wide',
+        'Angle 02 · Three-Quarter Medium',
+        'Angle 03 · Close-Up Hero',
+        'Angle 04 · Reverse / Profile',
+      ];
+      const angleLabels = is2x2 ? cameraAngles4 : cameraAngles9;
 
       const splitLabels = Array.from({ length: total }, (_, i) => `[s${i + 1}]`).join('');
       const cropChains: string[] = [`[0:v]split=${total}${splitLabels}`];
@@ -11667,6 +12184,7 @@ export class McpStdioBridgeServer {
         index: number;
         row: number;
         col: number;
+        angleLabel: string;
         filename: string;
         fullPath: string;
       }> = [];
@@ -11675,13 +12193,34 @@ export class McpStdioBridgeServer {
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           const outLabel = `[o${idx}]`;
-          cropChains.push(
-            `[s${idx}]crop=iw/${cols}:ih/${rows}:${c}*(iw/${cols}):${r}*(ih/${rows})${outLabel}`
-          );
-          const filename = `${prefix}_${idx}.png`;
+          const wExpr =
+            trimFrac > 0
+              ? `max(2\\,trunc(((iw/${cols})*${(1 - 2 * trimFrac).toFixed(4)})/2)*2)`
+              : `iw/${cols}`;
+          const hExpr =
+            trimFrac > 0
+              ? `max(2\\,trunc(((ih/${rows})*${(1 - 2 * trimFrac).toFixed(4)})/2)*2)`
+              : `ih/${rows}`;
+          const xExpr =
+            trimFrac > 0
+              ? `trunc((${c}*(iw/${cols})+(iw/${cols})*${trimFrac.toFixed(4)})/2)*2`
+              : `${c}*(iw/${cols})`;
+          const yExpr =
+            trimFrac > 0
+              ? `trunc((${r}*(ih/${rows})+(ih/${rows})*${trimFrac.toFixed(4)})/2)*2`
+              : `${r}*(ih/${rows})`;
+          cropChains.push(`[s${idx}]crop=${wExpr}:${hExpr}:${xExpr}:${yExpr}${outLabel}`);
+          const filename = `${prefix}_${batchStamp}_${idx}.png`;
           const fullPath = path.join(this.mediaDir, filename);
           mapArgs.push('-map', outLabel, '-frames:v', '1', fullPath);
-          outputFiles.push({ index: idx, row: r, col: c, filename, fullPath });
+          outputFiles.push({
+            index: idx,
+            row: r,
+            col: c,
+            angleLabel: angleLabels[idx - 1] || `Slice ${idx}`,
+            filename,
+            fullPath,
+          });
           idx++;
         }
       }
@@ -11704,14 +12243,26 @@ export class McpStdioBridgeServer {
       for (const item of outputFiles) {
         this.mirrorToDistMedia(item.filename, item.fullPath);
         const relUrl = `/media/${item.filename}`;
-        const absUrl = `${this.getPublicBaseUrl()}${relUrl}`;
-        const bytes = fs.existsSync(item.fullPath) ? fs.statSync(item.fullPath).size : 0;
+        let r2Url: string | undefined;
+        let bytes = 0;
+        if (fs.existsSync(item.fullPath)) {
+          const sliceBuf = fs.readFileSync(item.fullPath);
+          bytes = sliceBuf.length;
+          r2Url = await this.mirrorBufferToR2AndIndex(
+            item.filename,
+            sliceBuf,
+            'image/png',
+            'ffmpeg-slicer'
+          );
+        }
+        const absUrl = r2Url || `${this.getPublicBaseUrl()}${relUrl}`;
         slices.push(relUrl);
         fullUrls.push(absUrl);
         panels.push({
           index: item.index,
           row: item.row,
           col: item.col,
+          cameraAngle: item.angleLabel,
           imageUrl: relUrl,
           fullUrl: absUrl,
           bytes,
@@ -11741,6 +12292,119 @@ export class McpStdioBridgeServer {
         }
       }
     }
+  }
+
+  public async sliceCanvasNodeToGrid(
+    params: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const projectId = String(params.projectId || 'canvas_default').trim() || 'canvas_default';
+    const nodeId = String(params.nodeId || '').trim();
+    if (!nodeId) {
+      throw new BridgeHttpError(400, 'nodeId is required to slice a canvas contact sheet node.');
+    }
+    const proj = this.getProject(projectId);
+    if (!proj) {
+      throw new BridgeHttpError(404, `Canvas "${projectId}" not found.`);
+    }
+    const curState = ((proj.state || { nodes: [], edges: [] }) as Record<string, unknown>);
+    const curNodes = Array.isArray(curState.nodes)
+      ? ([...curState.nodes] as Array<Record<string, unknown>>)
+      : [];
+    const curEdges = Array.isArray(curState.edges)
+      ? ([...curState.edges] as Array<Record<string, unknown>>)
+      : [];
+    const parentNode = curNodes.find((n) => String(n.id) === nodeId);
+    if (!parentNode) {
+      throw new BridgeHttpError(404, `Node "${nodeId}" not found on canvas "${projectId}".`);
+    }
+    const sourceImage = String(parentNode.imageUrl || '').trim();
+    if (!sourceImage) {
+      throw new BridgeHttpError(
+        400,
+        `Node "${nodeId}" has no imageUrl to slice. Generate or upload an image first.`
+      );
+    }
+
+    const gridRaw = String(params.grid || '3x3').toLowerCase();
+    const is2x2 = gridRaw.includes('2x2') || gridRaw.includes('4');
+    const rows = is2x2 ? 2 : 3;
+    const cols = is2x2 ? 2 : 3;
+
+    const sliceOut = await this.sliceGrid({
+      imageUrl: sourceImage,
+      grid: `${cols}x${rows}`,
+      prefix: 'slice9',
+      trimGutters: params.trimGutters !== false,
+    });
+    const panels = Array.isArray(sliceOut.panels)
+      ? (sliceOut.panels as Array<Record<string, unknown>>)
+      : [];
+
+    const cardW = 280;
+    const cardH = 158;
+    const startX = (Number(parentNode.x) || 120) + (Number(parentNode.width) || 480) + 120;
+    const startY = Math.max(80, (Number(parentNode.y) || 120) - 40);
+    const basePrompt = String(parentNode.prompt || parentNode.title || 'Storyboard shot').trim();
+    const spawnedIds: string[] = [];
+    const nowTs = Date.now();
+
+    panels.forEach((p, idx) => {
+      const r = Number(p.row ?? Math.floor(idx / cols));
+      const c = Number(p.col ?? idx % cols);
+      const childId = `node_slice_${nowTs}_${idx + 1}`;
+      const relUrl = String(p.imageUrl || '');
+      const angleLabel = String(p.cameraAngle || `Shot 0${idx + 1}`);
+      spawnedIds.push(childId);
+      curNodes.push({
+        id: childId,
+        kind: 'image',
+        title: angleLabel,
+        prompt: `${basePrompt} — [${angleLabel}]`,
+        x: startX + c * (cardW + 44),
+        y: startY + r * (cardH + 64),
+        width: cardW,
+        height: cardH,
+        aspectRatio: String(parentNode.aspectRatio || '16:9'),
+        resolution: '2K',
+        status: 'ready',
+        imageUrl: relUrl,
+        cameraAngle: angleLabel,
+        elementHandles: Array.isArray(parentNode.elementHandles) ? parentNode.elementHandles : [],
+        layers: [],
+        seed: (Number(parentNode.seed) || 1000) + idx * 97,
+        providerUsed: 'FFmpeg 9-Grid Slicer',
+        createdAt: nowTs + idx,
+      });
+      curEdges.push({
+        id: `edge_slice_${nodeId}_${childId}`,
+        sourceId: nodeId,
+        targetId: childId,
+        kind: 'grid-slice',
+      });
+    });
+
+    const saved = this.saveProject({
+      id: proj.id,
+      name: proj.name,
+      state: {
+        ...curState,
+        nodes: curNodes,
+        edges: curEdges,
+      },
+      isSharedWithTeam: proj.isSharedWithTeam,
+      source: 'mcp',
+    });
+
+    return {
+      ok: true,
+      projectId: saved.id,
+      parentNodeId: nodeId,
+      grid: `${cols}x${rows}`,
+      spawnedCount: spawnedIds.length,
+      spawnedNodeIds: spawnedIds,
+      slices: sliceOut.slices,
+      fullUrls: sliceOut.fullUrls,
+    };
   }
 
   public async extractLastFrame(params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -13024,6 +13688,18 @@ export class McpStdioBridgeServer {
       return;
     }
 
+    if (pathname === '/api/team/members' && req.method === 'GET') {
+      if (user.role !== 'owner') {
+        this.sendJson(res, 403, { ok: false, error: 'Only workspace owners can list team members.' });
+        return;
+      }
+      this.sendJson(res, 200, {
+        ok: true,
+        teamMembers: this.authStore.listTeamMembersForOwner(),
+      });
+      return;
+    }
+
     if (pathname === '/api/team/invites' && req.method === 'POST') {
       if (user.role !== 'owner') {
         this.sendJson(res, 403, { ok: false, error: 'Only workspace owners can manage team invites.' });
@@ -13930,6 +14606,10 @@ export class McpStdioBridgeServer {
           this.sendJson(res, 200, await this.sliceGrid(bodyObj));
           return;
         }
+        if (pathname === '/api/canvas/slice-9grid') {
+          this.sendJson(res, 200, await this.sliceCanvasNodeToGrid(bodyObj));
+          return;
+        }
         if (pathname === '/api/extract-last-frame') {
           this.sendJson(res, 200, await this.extractLastFrame(bodyObj));
           return;
@@ -14303,7 +14983,9 @@ export class McpStdioBridgeServer {
           return wrapStructured(
             this.renameProject({
               projectId: String(args.projectId || args.id || 'canvas_default'),
-              name: String(args.name || ''),
+              name: typeof args.name === 'string' ? args.name : undefined,
+              isSharedWithTeam:
+                typeof args.isSharedWithTeam === 'boolean' ? args.isSharedWithTeam : undefined,
             })
           );
         case 'canvas_upsert_nodes':
@@ -14314,6 +14996,8 @@ export class McpStdioBridgeServer {
           return wrapStructured(this.organizeCanvasLayout(args));
         case 'canvas_generate_node':
           return wrapStructured(await this.generateCanvasNodeAndSave(args));
+        case 'canvas_slice_9grid':
+          return wrapStructured(await this.sliceCanvasNodeToGrid(args));
         case 'credits_summary':
           return wrapStructured(
             await this.getCreditsSummary({ forceRefresh: Boolean(args.forceRefresh) })

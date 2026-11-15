@@ -312,6 +312,9 @@ export interface CanvasNode {
   resolution: ResolutionTier;
   quality?: string;
   durationSec?: number;
+  lastCreditsUsed?: number;
+  creditCostSource?: 'measured' | 'provider_quote' | 'calibrated' | 'estimated';
+  creditUnit?: 'credits' | 'characters';
   modelParams?: Record<string, string | number | boolean>;
   cameraAngle?: string;
   cameraMotion?: string;
@@ -667,12 +670,18 @@ export interface CreditUsageLedgerItem {
   id: string;
   userId: string;
   userName?: string;
+  userDisplayName?: string;
   platformId: string;
   modelId: string;
-  creditSource?: 'own' | 'shared';
+  modality?: string;
+  creditSource?: 'own' | 'shared' | 'owner';
+  costSource?: 'measured' | 'provider_quote' | 'calibrated' | 'estimated';
+  preBalance?: number;
+  postBalance?: number;
+  unit?: 'credits' | 'characters';
   creditsUsed: number;
   estimatedUsd?: number | null;
-  timestamp: number;
+  timestamp: number | string;
   status?: string;
 }
 
@@ -713,7 +722,12 @@ export interface PlatformCreditSummary {
   vipLevelExpiresAt?: string;
   tokenExpiresAt?: string;
   expiresAt?: string;
+  rawExpiresAt?: string | null;
   nextResetAt?: string;
+  daysRemaining?: number | null;
+  resetDay?: number | null;
+  manualBudgetCredits?: number | null;
+  manualExpiresAt?: string | null;
   supportsUnlimited?: boolean;
   buckets?: CreditExpiryBucket[];
   billingMeta?: BillingMetaEntry;
@@ -736,6 +750,7 @@ export interface SharedPoolSummary {
 
 export interface CreditExpiryAlert {
   platformId: string;
+  label?: string;
   credits: number;
   expiresAt: string;
   daysRemaining: number;

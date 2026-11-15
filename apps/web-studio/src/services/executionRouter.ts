@@ -808,6 +808,12 @@ export interface GenerateNodeBackendResult {
   waveform?: number[];
   outputs?: string[];
   jobId?: string;
+  creditsUsed?: number;
+  creditSourceUsed?: 'own' | 'shared' | 'owner';
+  creditCostSource?: 'measured' | 'provider_quote' | 'calibrated' | 'estimated';
+  creditUnit?: 'credits' | 'characters';
+  preBalance?: number;
+  postBalance?: number;
   error?: string;
 }
 
@@ -876,6 +882,20 @@ function parseCompletedNodePayload(
       : undefined,
     outputs: outputs.length > 0 ? outputs : primaryMedia ? [primaryMedia] : [],
     jobId: json.jobId as string | undefined,
+    creditsUsed:
+      typeof json.creditsUsed === 'number' && Number.isFinite(json.creditsUsed)
+        ? json.creditsUsed
+        : undefined,
+    creditSourceUsed: json.creditSourceUsed as 'own' | 'shared' | 'owner' | undefined,
+    creditCostSource: json.creditCostSource as
+      | 'measured'
+      | 'provider_quote'
+      | 'calibrated'
+      | 'estimated'
+      | undefined,
+    creditUnit: json.creditUnit as 'credits' | 'characters' | undefined,
+    preBalance: typeof json.preBalance === 'number' ? json.preBalance : undefined,
+    postBalance: typeof json.postBalance === 'number' ? json.postBalance : undefined,
   };
 }
 
@@ -3516,7 +3536,13 @@ export async function fetchCreditsSummaryViaBackend(
           p.vipLevelExpiresAt as string | undefined
         ),
         expiresAt: formatFriendlyDateLabel(p.expiresAt as string | undefined),
+        rawExpiresAt: typeof p.expiresAt === 'string' ? p.expiresAt : null,
         nextResetAt,
+        daysRemaining: typeof p.daysRemaining === 'number' ? p.daysRemaining : null,
+        resetDay,
+        manualBudgetCredits:
+          typeof p.manualBudgetCredits === 'number' ? p.manualBudgetCredits : null,
+        manualExpiresAt: typeof p.manualExpiresAt === 'string' ? p.manualExpiresAt : null,
         supportsUnlimited: Boolean(p.supportsUnlimited),
         buckets,
         account: typeof p.account === 'string' ? p.account : undefined,
@@ -3577,6 +3603,7 @@ export async function fetchCreditsSummaryViaBackend(
       const days = Number(al.daysRemaining ?? 0);
       return {
         platformId: String(al.platformId || 'dreamina'),
+        label: typeof al.label === 'string' ? al.label : undefined,
         credits: Number(al.credits || 0),
         expiresAt:
           formatFriendlyDateLabel(al.expiresAt as string | undefined) ||

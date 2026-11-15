@@ -63,6 +63,24 @@ export interface KlingImageResult {
   rawResponse: Record<string, unknown>;
 }
 
+export interface KlingResourcePackBucket {
+  packName: string;
+  remainingUnits: number;
+  totalUnits: number;
+  expiresAt?: string;
+  daysRemaining?: number;
+  status?: string;
+}
+
+export interface KlingAccountCostsSummary {
+  ok: boolean;
+  remainingUnits: number | null;
+  totalUnits: number | null;
+  expiresAt: string | null;
+  daysRemaining: number | null;
+  packs: KlingResourcePackBucket[];
+}
+
 export class KlingApiError extends Error {
   public readonly statusCode?: number;
   public readonly errorBody?: unknown;
@@ -132,14 +150,19 @@ export async function signKlingJwtHs256(
 }
 
 const KLING_VIDEO_MODEL_MAP: Record<string, string> = {
-  'kling-4.0': 'kling-v2-master',
+  'kling-4.0': 'kling-v2-1-master',
   'kling-3.0-master': 'kling-v2-master',
+  'kling-2.1-master': 'kling-v2-1-master',
+  'kling-v2-1-master': 'kling-v2-1-master',
+  'kling-v2-master': 'kling-v2-master',
   'kling-2.6-pro': 'kling-v1-6',
+  'kling-1.6-pro': 'kling-v1-6',
   'kling-elements': 'kling-v1-6',
 };
 
 const KLING_IMAGE_MODEL_MAP: Record<string, string> = {
   'kolors-2.0': 'kling-v2',
+  'kling-v2': 'kling-v2',
   'kling-image-o1': 'kling-v1-5',
 };
 
@@ -189,19 +212,119 @@ export class KlingClient {
     return this.bearerToken || '';
   }
 
+  public async getAccountCosts(signal?: AbortSignal): Promise<KlingAccountCostsSummary> {
+    const nowMs = Date.now();
+    const startMs = nowMs - 90 * 86_400_000;
+    const endMs = nowMs + 365 * 86_400_000;
+    const resp = await this.requestJson(
+      `${this.baseUrl}/account/costs?start_time=${startMs}&end_time=${endMs}`,
+      'GET',
+      undefined,
+      signal
+    );
+    const dataObj =
+      typeof resp.data === 'object' && resp.data !== null
+        ? (resp.data as Record<string, unknown>)
+        : resp;
+    const rawPacks = Array.isArray(dataObj.resource_pack_subscribe_infos)
+      ? (dataObj.resource_pack_subscribe_infos as Array<Record<string, unknown>>)
+      : Array.isArray(resp.resource_pack_subscribe_infos)
+        ? (resp.resource_pack_subscribe_infos as Array<Record<string, unknown>>)
+        : [];
+
+    let remainingSum = 0;
+    let totalSum = 0;
+    let hasNumericPack = false;
+    let earliestExpMs: number | null = null;
+    const packs: KlingResourcePackBucket[] = [];
+
+    for (const p of rawPacks) {
+      const rem = Number(p.remaining_quantity);
+      const tot = Number(p.total_quantity);
+      const status = typeof p.status === 'string' ? p.status : undefined;
+      if (status && /expired|refunded/i.test(status) && !(rem > 0)) {
+        continue;
+      }
+      const rawEnd = p.invalid_time ?? p.expire_time ?? p.end_time;
+      let expMs: number | null = null;
+      if (typeof rawEnd === 'number' && Number.isFinite(rawEnd) && rawEnd > 0) {
+        expMs = rawEnd > 1e12 ? rawEnd : rawEnd * 1000;
+      } else if (typeof rawEnd === 'string' && rawEnd.trim()) {
+        const asNum = Number(rawEnd.trim());
+        expMs =
+          Number.isFinite(asNum) && asNum > 0
+            ? asNum > 1e12
+              ? asNum
+              : asNum * 1000
+            : Date.parse(rawEnd.trim());
+      }
+      const validExpMs = expMs !== null && Number.isFinite(expMs) ? expMs : null;
+      const daysRem =
+        validExpMs !== null ? Math.max(0, Math.ceil((validExpMs - nowMs) / 86_400_000)) : undefined;
+
+      if (Number.isFinite(rem)) {
+        hasNumericPack = true;
+        remainingSum += Math.max(0, rem);
+      }
+      if (Number.isFinite(tot)) {
+        totalSum += Math.max(0, tot);
+      }
+      if (validExpMs !== null && rem > 0) {
+        if (earliestExpMs === null || validExpMs < earliestExpMs) {
+          earliestExpMs = validExpMs;
+        }
+      }
+      packs.push({
+        packName: String(p.resource_pack_name || p.pack_name || 'Kling Resource Pack'),
+        remainingUnits: Number.isFinite(rem) ? Math.round(rem * 100) / 100 : 0,
+        totalUnits: Number.isFinite(tot) ? Math.round(tot * 100) / 100 : 0,
+        ...(validExpMs !== null ? { expiresAt: new Date(validExpMs).toISOString() } : {}),
+        ...(typeof daysRem === 'number' ? { daysRemaining: daysRem } : {}),
+        ...(status ? { status } : {}),
+      });
+    }
+
+    return {
+      ok: true,
+      remainingUnits: hasNumericPack ? Math.round(remainingSum * 100) / 100 : null,
+      totalUnits: hasNumericPack && totalSum > 0 ? Math.round(totalSum * 100) / 100 : null,
+      expiresAt: earliestExpMs !== null ? new Date(earliestExpMs).toISOString() : null,
+      daysRemaining:
+        earliestExpMs !== null
+          ? Math.max(0, Math.ceil((earliestExpMs - nowMs) / 86_400_000))
+          : null,
+      packs,
+    };
+  }
+
   public async verifyAccount(
     signal?: AbortSignal
-  ): Promise<{ ok: boolean; authMode: 'jwt' | 'bearer'; models: string[] }> {
+  ): Promise<{
+    ok: boolean;
+    authMode: 'jwt' | 'bearer';
+    models: string[];
+    remainingUnits?: number | null;
+    expiresAt?: string | null;
+  }> {
     await this.requestJson(
       `${this.baseUrl}/v1/videos/text2video?pageNum=1&pageSize=1`,
       'GET',
       undefined,
       signal
     );
+    const costs = await this.getAccountCosts(signal).catch(() => null);
     return {
       ok: true,
       authMode: this.accessKey && this.secretKey ? 'jwt' : 'bearer',
-      models: ['kling-4.0', 'kling-3.0-master', 'kling-2.6-pro', 'kling-elements', 'kolors-2.0'],
+      models: [
+        'kling-4.0',
+        'kling-3.0-master',
+        'kling-2.1-master',
+        'kling-2.6-pro',
+        'kling-elements',
+        'kolors-2.0',
+      ],
+      ...(costs ? { remainingUnits: costs.remainingUnits, expiresAt: costs.expiresAt } : {}),
     };
   }
 
