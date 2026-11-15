@@ -7390,7 +7390,19 @@ export class McpStdioBridgeServer {
       timeoutMs: 20_000,
     });
     const addObj = readStructured(addNodeOut);
-    const flowNodeId = String(addObj.node_id || '').trim();
+    const addNodeIds = Array.isArray(addObj.node_ids)
+      ? (addObj.node_ids as unknown[]).map((x) => String(x)).filter(Boolean)
+      : [];
+    const createdNodes = Array.isArray(addObj.created_nodes)
+      ? (addObj.created_nodes as Array<Record<string, unknown>>)
+      : [];
+    const flowNodeId = String(
+      addObj.node_id ||
+        addNodeIds[0] ||
+        createdNodes[0]?.id ||
+        createdNodes[0]?.node_id ||
+        ''
+    ).trim();
     if (!flowNodeId) {
       throw new BridgeHttpError(
         400,
@@ -7413,7 +7425,7 @@ export class McpStdioBridgeServer {
     };
 
     try {
-      const runOut = await this.executeExternalMcpToolCall({
+      const runOut = await this.externalMcpHost.callTool({
         serverId,
         toolName: 'creative_run_flow_nodes',
         arguments: {
@@ -7423,7 +7435,6 @@ export class McpStdioBridgeServer {
           ...(estimateOnly ? { estimate_only: true } : {}),
         },
         timeoutMs: 30_000,
-        _internalSkipCreditCheck: Boolean(estimateOnly),
       });
       const runObj = readStructured(runOut);
 
@@ -7435,6 +7446,13 @@ export class McpStdioBridgeServer {
         const blockingErrors = estNodes.flatMap((n) =>
           Array.isArray(n.blocking_errors) ? (n.blocking_errors as unknown[]).map(String) : []
         );
+        if (
+          runOut.rawResult &&
+          typeof runOut.rawResult === 'object' &&
+          (runOut.rawResult as Record<string, unknown>).isError === true
+        ) {
+          blockingErrors.push(String(runOut.textSummary || 'MCP estimate returned isError'));
+        }
         if (runObj.has_blocking_errors === true || blockingErrors.length > 0) {
           throw new BridgeHttpError(
             400,
@@ -7457,13 +7475,22 @@ export class McpStdioBridgeServer {
         };
       }
 
+      const runResults = Array.isArray(runObj.results)
+        ? (runObj.results as Array<Record<string, unknown>>)
+        : [];
       const rawSessionIds = Array.isArray(runObj.session_ids)
         ? (runObj.session_ids as unknown[]).map((s) => String(s)).filter(Boolean)
         : typeof runObj.session_id === 'string' && runObj.session_id
           ? [runObj.session_id]
-          : [];
+          : runResults
+              .map((r) => (typeof r.session_id === 'string' ? r.session_id : ''))
+              .filter(Boolean);
       if (rawSessionIds.length === 0) {
-        const rawErr = String(runObj.error || runOut.textSummary || '').trim();
+        const resultErr = runResults
+          .map((r) => (typeof r.error === 'string' ? r.error : ''))
+          .filter(Boolean)
+          .join('; ');
+        const rawErr = String(resultErr || runObj.error || runOut.textSummary || '').trim();
         throw new BridgeHttpError(
           /free generations are busy/i.test(rawErr) ? 429 : 502,
           rawErr || 'ElevenLabs MCP run returned no session_ids.',
@@ -7473,6 +7500,7 @@ export class McpStdioBridgeServer {
 
       let generationIds: string[] = [];
       let directSignedUrl = '';
+      let durationSecs: number | undefined;
       const maxPollMs = nodeType === 'music' ? 160_000 : 90_000;
       const pollStart = Date.now();
       while (Date.now() - pollStart < maxPollMs) {
@@ -7484,6 +7512,39 @@ export class McpStdioBridgeServer {
           timeoutMs: 20_000,
         });
         const stObj = readStructured(stOut);
+        const mediaItems = Array.isArray(stObj.media)
+          ? (stObj.media as Array<Record<string, unknown>>)
+          : [];
+        for (const mItem of mediaItems) {
+          if (typeof mItem.generation_id === 'string' && mItem.generation_id) {
+            generationIds.push(mItem.generation_id);
+          }
+          if (typeof mItem.duration_secs === 'number' && Number.isFinite(mItem.duration_secs)) {
+            durationSecs = mItem.duration_secs;
+          }
+          const mUrl = mItem.master_url ?? mItem.url ?? mItem.content_url;
+          if (typeof mUrl === 'string' && /^https?:\/\//i.test(mUrl)) {
+            directSignedUrl = mUrl;
+          }
+        }
+        const genItems = Array.isArray(stObj.generations)
+          ? (stObj.generations as Array<Record<string, unknown>>)
+          : [];
+        const genErrors: string[] = [];
+        for (const g of genItems) {
+          const gid = typeof g.id === 'string' ? g.id : typeof g.generation_id === 'string' ? g.generation_id : '';
+          if (gid) generationIds.push(gid);
+          if (typeof g.duration_secs === 'number' && Number.isFinite(g.duration_secs)) {
+            durationSecs = g.duration_secs;
+          }
+          const cUrl = g.content_url ?? g.master_url ?? g.full_res_url ?? g.audio_url ?? g.url;
+          if (typeof cUrl === 'string' && /^https?:\/\//i.test(cUrl)) {
+            directSignedUrl = cUrl;
+          }
+          if (typeof g.error === 'string' && g.error.trim()) {
+            genErrors.push(g.error.trim());
+          }
+        }
         const sessions = Array.isArray(stObj.sessions)
           ? (stObj.sessions as Array<Record<string, unknown>>)
           : [];
@@ -7497,10 +7558,11 @@ export class McpStdioBridgeServer {
             directSignedUrl = candUrl;
           }
         }
-        if (stObj.has_failures && !stObj.all_completed && !directSignedUrl && generationIds.length === 0) {
+        if (stObj.has_failures && !directSignedUrl) {
+          const errDetail = genErrors.join('; ') || JSON.stringify(stObj).slice(0, 300);
           throw new BridgeHttpError(
-            502,
-            `ElevenLabs MCP generation failed (${mcpModelId}): ${JSON.stringify(stObj).slice(0, 300)}`,
+            /free generations are busy/i.test(errDetail) ? 429 : 502,
+            `ElevenLabs MCP generation failed (${mcpModelId}): ${errDetail}`,
             'elevenlabs'
           );
         }
@@ -7579,6 +7641,7 @@ export class McpStdioBridgeServer {
         mediaUrl: saved.mediaUrl,
         fullUrl: saved.fullUrl,
         audioUrl: saved.mediaUrl,
+        ...(durationSecs !== undefined ? { durationSec: durationSecs } : {}),
         outputs: [saved.mediaUrl],
       };
     } catch (err) {
