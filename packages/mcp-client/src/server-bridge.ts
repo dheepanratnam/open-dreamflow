@@ -7579,7 +7579,6 @@ export class McpStdioBridgeServer {
         mediaUrl: saved.mediaUrl,
         fullUrl: saved.fullUrl,
         audioUrl: saved.mediaUrl,
-        waveform: saved.waveform,
         outputs: [saved.mediaUrl],
       };
     } catch (err) {
