@@ -17,7 +17,11 @@ import type {
   CameraTransitionCurve,
   ResolutionTier,
 } from '../types/studio';
-import { estimateZeroMarkupCostUsd } from '../services/executionRouter';
+import {
+  downloadSingleMediaAsset,
+  estimateZeroMarkupCostUsd,
+  normalizeBackendMediaUrl,
+} from '../services/executionRouter';
 import { SmartMediaImage } from './SmartMedia';
 import { renderShotDataUrl } from '../utils/proceduralMedia';
 
@@ -353,8 +357,8 @@ export const ShareableAppView: React.FC = () => {
               <div className="aspect-video rounded-[10px] overflow-hidden bg-[#121212] border border-white/[0.08]">
                 <video
                   key={masterRenderUrl || 'empty-master'}
-                  src={masterRenderUrl || undefined}
-                  poster={beats[0]?.imageUrl}
+                  src={normalizeBackendMediaUrl(masterRenderUrl || undefined, true)}
+                  poster={normalizeBackendMediaUrl(beats[0]?.imageUrl, true)}
                   controls
                   autoPlay
                   loop
@@ -391,14 +395,20 @@ export const ShareableAppView: React.FC = () => {
               </button>
 
               {masterRenderUrl && (
-                <a
-                  href={masterRenderUrl}
-                  download="open-dreamflow-app-film.mp4"
+                <button
+                  type="button"
+                  onClick={() =>
+                    void downloadSingleMediaAsset({
+                      src: masterRenderUrl,
+                      title: `${filmTitle || 'open-dreamflow'}-app-film`,
+                      fallbackExt: 'mp4',
+                    })
+                  }
                   className="w-full h-9 rounded-[9px] bg-[#252525] hover:bg-[#303030] text-[12px] text-white/90 flex items-center justify-center gap-1.5"
                 >
                   <Download className="w-3.5 h-3.5" strokeWidth={1.5} />
                   <span>Download Master .mp4</span>
-                </a>
+                </button>
               )}
 
               {appRenderLog.length > 0 && (

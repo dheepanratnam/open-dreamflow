@@ -8,6 +8,7 @@ import {
   ChevronDown,
   Clapperboard,
   Copy,
+  Download,
   Eraser,
   Film,
   GitBranch,
@@ -41,7 +42,10 @@ import type {
   PlatformModelDefinition,
   ResolutionTier,
 } from '../types/studio';
-import { fetchCreditQuoteViaBackend } from '../services/executionRouter';
+import {
+  collectDownloadableMediaItemsFromNodes,
+  fetchCreditQuoteViaBackend,
+} from '../services/executionRouter';
 import {
   ELEVENLABS_VOICES,
   getModelsForPlatformAndModality,
@@ -212,6 +216,9 @@ export const ContextualNodeOverlay: React.FC = () => {
   const extractLastFrameToNextShot = useStudioStore((s) => s.extractLastFrameToNextShot);
   const sendNodeToTimeline = useStudioStore((s) => s.sendNodeToTimeline);
   const openProviderModal = useStudioStore((s) => s.openProviderModal);
+  const openLightbox = useStudioStore((s) => s.openLightbox);
+  const downloadNodeMedia = useStudioStore((s) => s.downloadNodeMedia);
+  const downloadSelectedNodesMedia = useStudioStore((s) => s.downloadSelectedNodesMedia);
 
   const [openMenu, setOpenMenu] = useState<
     | null
@@ -629,9 +636,10 @@ export const ContextualNodeOverlay: React.FC = () => {
                   type="button"
                   onClick={() => openInlineEditor('outpaint', selectedNode.id)}
                   className="h-7 px-2 rounded-[7px] hover:bg-white/[0.08] text-white/80 flex items-center gap-1"
+                  title="Outpaint / Expand canvas frame"
                 >
                   <Maximize2 className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
-                  <span>Expand</span>
+                  <span>Outpaint</span>
                 </button>
 
                 <button
@@ -716,6 +724,45 @@ export const ContextualNodeOverlay: React.FC = () => {
                 <Film className="w-3.5 h-3.5 text-white/65" strokeWidth={1.5} />
                 <span>Send to Timeline (A1)</span>
               </button>
+              <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
+            </>
+          )}
+
+          {hasMedia && (
+            <>
+              {selectedNode.kind !== 'audio' && (
+                <button
+                  type="button"
+                  data-testid="quickbar-fullscreen-btn"
+                  onClick={() => openLightbox(selectedNode.id)}
+                  className="h-7 px-2.5 rounded-[7px] hover:bg-white/[0.1] text-white/90 flex items-center gap-1.5"
+                  title="Open in full screen cinema view"
+                >
+                  <Maximize2 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                  <span>Full Screen</span>
+                </button>
+              )}
+              <button
+                type="button"
+                data-testid="quickbar-download-btn"
+                onClick={() => void downloadNodeMedia(selectedNode.id)}
+                className="h-7 px-2.5 rounded-[7px] hover:bg-white/[0.1] text-white/90 flex items-center gap-1.5"
+                title="Download original media file"
+              >
+                <Download className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                <span>Download</span>
+              </button>
+              {selectedNode.generatedOutputs && selectedNode.generatedOutputs.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => void downloadSelectedNodesMedia([selectedNode.id])}
+                  className="h-7 px-2 rounded-[7px] bg-[#20D5EC]/12 hover:bg-[#20D5EC]/22 border border-[#20D5EC]/35 text-[#7ceeff] font-medium flex items-center gap-1"
+                  title={`Download all ${selectedNode.generatedOutputs.length} variations as ZIP`}
+                >
+                  <Download className="w-3 h-3" strokeWidth={1.7} />
+                  <span>All ({selectedNode.generatedOutputs.length})</span>
+                </button>
+              )}
               <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
             </>
           )}
@@ -2185,6 +2232,7 @@ const MultiReferenceSelectionBar: React.FC = () => {
   );
   const duplicateNodes = useStudioStore((s) => s.duplicateNodes);
   const deleteSelectedNodes = useStudioStore((s) => s.deleteSelectedNodes);
+  const downloadSelectedNodesMedia = useStudioStore((s) => s.downloadSelectedNodesMedia);
 
   const selNodes = useMemo(
     () =>
@@ -2192,6 +2240,11 @@ const MultiReferenceSelectionBar: React.FC = () => {
         .map((id) => nodes.find((n) => n.id === id))
         .filter((n): n is NonNullable<typeof n> => Boolean(n)),
     [nodes, selectedNodeIds]
+  );
+
+  const downloadableSelCount = useMemo(
+    () => collectDownloadableMediaItemsFromNodes(selNodes, true).length,
+    [selNodes]
   );
 
   const refChips = useMemo(() => {
@@ -2449,6 +2502,18 @@ const MultiReferenceSelectionBar: React.FC = () => {
           <span>→ Reference to Audio</span>
         </button>
         <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
+        {downloadableSelCount > 0 && (
+          <button
+            type="button"
+            data-testid="multibar-download-zip-btn"
+            onClick={() => void downloadSelectedNodesMedia(selNodes.map((n) => n.id))}
+            className="h-7 px-2.5 rounded-[7px] bg-[#20D5EC]/15 hover:bg-[#20D5EC] border border-[#20D5EC]/40 text-[#7ceeff] hover:text-[#0b0d10] font-semibold flex items-center gap-1.5 transition-colors"
+            title={`Download all ${downloadableSelCount} selected files as a ZIP archive`}
+          >
+            <Download className="w-3.5 h-3.5" strokeWidth={1.75} />
+            <span>Download All ({downloadableSelCount})</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={() => duplicateNodes()}

@@ -6,6 +6,7 @@ import type {
   BridgeIncomingEvent,
   BrowserPlatformTarget,
   BYOKCredentials,
+  CanvasNode,
   CloudAssetItem,
   ConnectionTransport,
   ConnectionsStatusSnapshot,
@@ -296,6 +297,272 @@ export function stripDataUrlPrefix(dataUrl: string): { mimeType: string; base64:
     return { mimeType: 'image/png', base64: dataUrl };
   }
   return { mimeType: match[1], base64: match[2] };
+}
+
+function parseContentDispositionFilename(cdHeader: string | null): string | null {
+  if (!cdHeader) return null;
+  const utf8Match = /filename\*=UTF-8''([^;\s]+)/i.exec(cdHeader);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      // fall through
+    }
+  }
+  const plainMatch = /filename="?([^";]+)"?/i.exec(cdHeader);
+  return plainMatch?.[1]?.trim() || null;
+}
+
+function sanitizeClientDownloadStem(rawTitle?: string, fallback = 'open-dreamflow-asset'): string {
+  const cleaned = String(rawTitle || '')
+    .trim()
+    .replace(/\.(png|jpe?g|webp|avif|gif|mp4|mov|webm|mp3|wav|ogg)$/i, '')
+    .replace(/[^a-zA-Z0-9._ -]+/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 84);
+  return cleaned || fallback;
+}
+
+function triggerBrowserAnchorDownload(href: string, filename: string): void {
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = filename;
+  a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  window.setTimeout(() => {
+    try {
+      document.body.removeChild(a);
+    } catch {
+      // ignore
+    }
+  }, 250);
+}
+
+export function buildBackendAttachmentDownloadUrl(src: string, title?: string): string {
+  const cleanStem = sanitizeClientDownloadStem(title);
+  const tok = getStoredAuthToken();
+  const params = new URLSearchParams({
+    src,
+    filename: cleanStem,
+  });
+  if (tok) {
+    params.set('token', tok);
+  }
+  return `${LOCAL_MCP_BASE}/api/media/download?${params.toString()}`;
+}
+
+export async function downloadSingleMediaAsset(params: {
+  src?: string;
+  title?: string;
+  fallbackExt?: 'png' | 'mp4' | 'mp3' | 'webm';
+}): Promise<{ ok: boolean; filename?: string; error?: string }> {
+  const rawSrc = String(params.src || '').trim();
+  if (!rawSrc) {
+    return { ok: false, error: 'No downloadable media URL on this item yet.' };
+  }
+
+  const stem = sanitizeClientDownloadStem(params.title);
+
+  // 1. In-memory blob: or data: URLs
+  if (rawSrc.startsWith('blob:')) {
+    const ext = params.fallbackExt || 'mp4';
+    const filename = `${stem}.${ext}`;
+    triggerBrowserAnchorDownload(rawSrc, filename);
+    return { ok: true, filename };
+  }
+
+  if (rawSrc.startsWith('data:')) {
+    try {
+      const res = await fetch(rawSrc);
+      const blob = await res.blob();
+      const mime = (blob.type || 'image/png').toLowerCase();
+      const ext = mime.includes('mp4')
+        ? 'mp4'
+        : mime.includes('webm')
+        ? 'webm'
+        : mime.includes('mpeg') || mime.includes('mp3')
+        ? 'mp3'
+        : mime.includes('wav')
+        ? 'wav'
+        : mime.includes('jpeg') || mime.includes('jpg')
+        ? 'jpg'
+        : 'png';
+      const filename = `${stem}.${ext}`;
+      const objUrl = URL.createObjectURL(blob);
+      triggerBrowserAnchorDownload(objUrl, filename);
+      window.setTimeout(() => URL.revokeObjectURL(objUrl), 15_000);
+      return { ok: true, filename };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'Failed to decode data URL for download.',
+      };
+    }
+  }
+
+  // 2. Server-verified attachment download (`/api/media/download` -> real magic-byte MIME & extension)
+  const dlUrl = buildBackendAttachmentDownloadUrl(rawSrc, stem);
+  try {
+    const headRes = await authFetch(dlUrl, { method: 'HEAD' });
+    if (!headRes.ok) {
+      return {
+        ok: false,
+        error: `Media file unavailable on server (HTTP ${headRes.status}).`,
+      };
+    }
+    const serverFilename =
+      parseContentDispositionFilename(headRes.headers.get('content-disposition')) ||
+      `${stem}.${params.fallbackExt || 'png'}`;
+    triggerBrowserAnchorDownload(dlUrl, serverFilename);
+    return { ok: true, filename: serverFilename };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Network error starting media download.',
+    };
+  }
+}
+
+export function collectDownloadableMediaItemsFromNodes(
+  nodes: CanvasNode[],
+  expandBatchVariations = true
+): Array<{ src: string; title: string; nodeId: string }> {
+  const out: Array<{ src: string; title: string; nodeId: string }> = [];
+  for (const node of nodes) {
+    if (node.kind === 'video') {
+      if (node.videoUrl) {
+        out.push({ src: node.videoUrl, title: node.title || 'video', nodeId: node.id });
+      }
+      continue;
+    }
+    if (node.kind === 'audio') {
+      if (node.audioUrl) {
+        out.push({ src: node.audioUrl, title: node.title || 'audio', nodeId: node.id });
+      }
+      continue;
+    }
+    if (
+      expandBatchVariations &&
+      Array.isArray(node.generatedOutputs) &&
+      node.generatedOutputs.length > 1
+    ) {
+      node.generatedOutputs.forEach((outUrl, idx) => {
+        if (outUrl) {
+          out.push({
+            src: outUrl,
+            title: `${node.title || 'image'}-v${idx + 1}`,
+            nodeId: node.id,
+          });
+        }
+      });
+      continue;
+    }
+    const primary = node.imageUrl || node.videoUrl || node.audioUrl;
+    if (primary) {
+      out.push({ src: primary, title: node.title || 'asset', nodeId: node.id });
+    }
+  }
+  return out;
+}
+
+export async function downloadMediaGroupArchive(params: {
+  items: Array<{ src: string; title: string }>;
+  archiveName?: string;
+}): Promise<{ ok: boolean; count: number; filename?: string; error?: string }> {
+  if (!params.items || params.items.length === 0) {
+    return { ok: false, count: 0, error: 'No ready media files found in selection.' };
+  }
+
+  if (params.items.length === 1) {
+    const single = await downloadSingleMediaAsset({
+      src: params.items[0].src,
+      title: params.items[0].title,
+    });
+    return {
+      ok: single.ok,
+      count: single.ok ? 1 : 0,
+      filename: single.filename,
+      error: single.error,
+    };
+  }
+
+  // Ensure any data: URLs are persisted to /media/ first so the server ZIP includes them seamlessly
+  const resolvedItems: Array<{ src: string; title: string }> = [];
+  for (const item of params.items) {
+    if (item.src.startsWith('data:')) {
+      try {
+        const up = await authFetch(`${LOCAL_MCP_BASE}/api/upload-media`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dataUrl: item.src,
+            filename: `${sanitizeClientDownloadStem(item.title)}.png`,
+          }),
+        });
+        const upData = (await up.json().catch(() => ({}))) as { mediaUrl?: string };
+        if (up.ok && upData.mediaUrl) {
+          resolvedItems.push({ src: upData.mediaUrl, title: item.title });
+          continue;
+        }
+      } catch {
+        // skip failed dataUrl upload
+      }
+    } else if (!item.src.startsWith('blob:')) {
+      resolvedItems.push(item);
+    }
+  }
+
+  if (resolvedItems.length === 0) {
+    return { ok: false, count: 0, error: 'No server-backed media files available to package.' };
+  }
+
+  const archiveStem = sanitizeClientDownloadStem(
+    params.archiveName,
+    `open-dreamflow-${resolvedItems.length}-files`
+  );
+
+  try {
+    const res = await authFetch(`${LOCAL_MCP_BASE}/api/media/download-zip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: resolvedItems,
+        archiveName: archiveStem,
+      }),
+    });
+
+    if (!res.ok) {
+      const errJson = (await res.json().catch(() => ({}))) as { error?: string };
+      return {
+        ok: false,
+        count: 0,
+        error: errJson.error || `Group ZIP download failed (HTTP ${res.status}).`,
+      };
+    }
+
+    const zipFilename =
+      parseContentDispositionFilename(res.headers.get('content-disposition')) ||
+      `${archiveStem}.zip`;
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    triggerBrowserAnchorDownload(objUrl, zipFilename);
+    window.setTimeout(() => URL.revokeObjectURL(objUrl), 30_000);
+    return {
+      ok: true,
+      count: resolvedItems.length,
+      filename: zipFilename,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      count: 0,
+      error: err instanceof Error ? err.message : 'Network error creating group ZIP download.',
+    };
+  }
 }
 
 export function estimateZeroMarkupCostUsd(

@@ -119,6 +119,9 @@ import {
   loginViaBackend,
   logoutViaBackend,
   normalizeBackendMediaUrl,
+  collectDownloadableMediaItemsFromNodes,
+  downloadMediaGroupArchive,
+  downloadSingleMediaAsset,
   outpaintViaBackend,
   pingChromeBridge,
   probeLiveMcpBackend,
@@ -401,6 +404,8 @@ export interface StudioState {
   directorStepLog: string[];
   toastMessage: string | null;
   toastKind: 'ok' | 'error';
+  lightboxNodeId: string | null;
+  lightboxMediaUrl: string | null;
 
   panX: number;
   panY: number;
@@ -463,6 +468,10 @@ export interface StudioState {
   closeProviderModal: () => void;
   setDirectorModalOpen: (open: boolean) => void;
   showToast: (msg: string, kind?: 'ok' | 'error') => void;
+  openLightbox: (nodeId: string | null, mediaUrl?: string | null) => void;
+  closeLightbox: () => void;
+  downloadNodeMedia: (nodeId: string, overrideUrl?: string) => Promise<void>;
+  downloadSelectedNodesMedia: (explicitNodeIds?: string[]) => Promise<void>;
   setViewport: (panX: number, panY: number, zoom: number) => void;
   toggleSnapToGrid: () => void;
   resetViewport: () => void;
@@ -823,6 +832,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   teamCreditsModalTab: 'credits',
   projectCache: {},
   activeProjectSharedWithTeam: false,
+  lightboxNodeId: null,
+  lightboxMediaUrl: null,
   assetsCatalog: [],
   assetsLoading: false,
   assetsSourceFilter: 'all',
@@ -940,6 +951,76 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     set({ panX, panY, zoom: Math.min(2.5, Math.max(0.2, zoom)) }),
   toggleSnapToGrid: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
   resetViewport: () => set({ panX: 84, panY: 54, zoom: 0.68 }),
+
+  openLightbox: (nodeId, mediaUrl = null) =>
+    set({ lightboxNodeId: nodeId, lightboxMediaUrl: mediaUrl ?? null }),
+  closeLightbox: () => set({ lightboxNodeId: null, lightboxMediaUrl: null }),
+
+  downloadNodeMedia: async (nodeId, overrideUrl) => {
+    const node = get().nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    const targetSrc =
+      overrideUrl ||
+      (node.kind === 'video'
+        ? node.videoUrl
+        : node.kind === 'audio'
+        ? node.audioUrl
+        : node.imageUrl || node.videoUrl || node.audioUrl);
+    if (!targetSrc) {
+      get().showToast('No downloadable media ready on this node yet.', 'error');
+      return;
+    }
+    const fallbackExt =
+      node.kind === 'video' ? 'mp4' : node.kind === 'audio' ? 'mp3' : 'png';
+    const res = await downloadSingleMediaAsset({
+      src: targetSrc,
+      title: node.title || node.id,
+      fallbackExt,
+    });
+    if (!res.ok) {
+      get().showToast(res.error || 'Download failed.', 'error');
+      return;
+    }
+    get().showToast(`Downloading ${res.filename || node.title}`);
+  },
+
+  downloadSelectedNodesMedia: async (explicitNodeIds) => {
+    const state = get();
+    const targetIds =
+      explicitNodeIds && explicitNodeIds.length > 0
+        ? explicitNodeIds
+        : state.selectedNodeIds;
+    const targetNodes = targetIds
+      .map((id) => state.nodes.find((n) => n.id === id))
+      .filter((n): n is CanvasNode => Boolean(n));
+    const items = collectDownloadableMediaItemsFromNodes(targetNodes, true);
+    if (items.length === 0) {
+      state.showToast('No ready media files found in the selected nodes.', 'error');
+      return;
+    }
+    if (items.length === 1) {
+      const single = await downloadSingleMediaAsset({
+        src: items[0].src,
+        title: items[0].title,
+      });
+      if (!single.ok) {
+        state.showToast(single.error || 'Download failed.', 'error');
+        return;
+      }
+      state.showToast(`Downloading ${single.filename || items[0].title}`);
+      return;
+    }
+    state.showToast(`Packaging ${items.length} files into ZIP…`);
+    const zipRes = await downloadMediaGroupArchive({
+      items,
+      archiveName: `${state.projectTitle || 'DreamFlow'}-${items.length}-files`,
+    });
+    if (!zipRes.ok) {
+      state.showToast(zipRes.error || 'Group ZIP download failed.', 'error');
+      return;
+    }
+    state.showToast(`Downloaded ${zipRes.count} files (${zipRes.filename})`);
+  },
 
   fitAllNodesInViewport: (vpWidth = window.innerWidth, vpHeight = window.innerHeight) => {
     const { nodes } = get();
@@ -4571,14 +4652,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             isRenderingMasterMp4: false,
           });
 
-          const a = document.createElement('a');
-          a.href = compiled.masterUrl;
-          a.download = `${projectTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-master.mp4`;
-          a.target = '_blank';
-          a.rel = 'noopener noreferrer';
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
+          void downloadSingleMediaAsset({
+            src: compiled.masterUrl,
+            title: `${projectTitle}-master`,
+            fallbackExt: 'mp4',
+          });
 
           get().showToast('Master .mp4 compiled & ready');
           return compiled.masterUrl;

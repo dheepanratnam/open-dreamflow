@@ -39,9 +39,10 @@ import { useStudioStore } from '../store/useStudioStore';
 import { createDefaultWaveform } from '../utils/proceduralMedia';
 import {
   SmartMediaImage,
-  SmartMediaVideo,
+  VideoNodeCardPlayer,
   resolvePlayableAudioUrl,
 } from './SmartMedia';
+import { collectDownloadableMediaItemsFromNodes } from '../services/executionRouter';
 import { TimelineCanvasNode } from './TimelineCanvasNode';
 import { PlatformBrandIcon } from './PlatformBrandIcon';
 
@@ -200,6 +201,9 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
   const undo = useStudioStore((s) => s.undo);
   const redo = useStudioStore((s) => s.redo);
   const showToast = useStudioStore((s) => s.showToast);
+  const openLightbox = useStudioStore((s) => s.openLightbox);
+  const downloadNodeMedia = useStudioStore((s) => s.downloadNodeMedia);
+  const downloadSelectedNodesMedia = useStudioStore((s) => s.downloadSelectedNodesMedia);
 
   const boardRef = useRef<HTMLDivElement | null>(null);
   const fileUploadRef = useRef<HTMLInputElement | null>(null);
@@ -212,8 +216,6 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [renamingNodeId, setRenamingNodeId] = useState<string | null>(null);
   const [editingHandleNodeId, setEditingHandleNodeId] = useState<string | null>(null);
-  const [unmutedNodeIds, setUnmutedNodeIds] = useState<Record<string, boolean>>({});
-  const [pausedNodeIds, setPausedNodeIds] = useState<Record<string, boolean>>({});
 
   const [marquee, setMarquee] = useState<{
     startX: number;
@@ -764,20 +766,17 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
     });
   };
 
-  const handleDownloadNodeMedia = (node: CanvasNode) => {
-    const href = node.videoUrl || node.imageUrl || node.audioUrl;
-    if (!href) {
-      showToast('No downloadable media URL on this node yet.');
-      return;
-    }
-    const a = document.createElement('a');
-    a.href = href;
-    const ext = node.videoUrl ? 'mp4' : node.audioUrl ? 'mp3' : 'png';
-    a.download = `${node.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.${ext}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const handleDownloadNodeMedia = (node: CanvasNode, overrideUrl?: string) => {
+    void downloadNodeMedia(node.id, overrideUrl);
   };
+
+  const selectedDownloadableCount = useMemo(() => {
+    if (selectedNodeIds.length < 2) return 0;
+    const sel = selectedNodeIds
+      .map((id) => nodeMap.get(id))
+      .filter((n): n is CanvasNode => Boolean(n));
+    return collectDownloadableMediaItemsFromNodes(sel, true).length;
+  }, [selectedNodeIds, nodeMap]);
 
   const gridSpacing = Math.max(12, Math.round(20 * zoom));
   const contextNode = contextMenu?.nodeId
@@ -971,11 +970,29 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
             }}
             className="absolute rounded-[18px] border border-[#20D5EC]/45 bg-[#20D5EC]/[0.025] pointer-events-none z-[5]"
           >
-            <div className="absolute -top-7 left-1 px-2.5 py-0.5 rounded-full bg-[#132227]/95 border border-[#20D5EC]/40 text-[11px] font-medium text-[#7ceeff] flex items-center gap-1.5 shadow-lg">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC] animate-pulse" />
-              <span>
-                {selectionGroupBounds.nodes.length} References Selected · Ready to Connect
-              </span>
+            <div className="absolute -top-7 left-1 flex items-center gap-1.5">
+              <div className="px-2.5 py-0.5 rounded-full bg-[#132227]/95 border border-[#20D5EC]/40 text-[11px] font-medium text-[#7ceeff] flex items-center gap-1.5 shadow-lg">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC] animate-pulse" />
+                <span>
+                  {selectionGroupBounds.nodes.length} References Selected · Ready to Connect
+                </span>
+              </div>
+              {selectedDownloadableCount > 0 && (
+                <button
+                  type="button"
+                  data-testid="canvas-group-download-btn"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void downloadSelectedNodesMedia(selectionGroupBounds.nodeIds);
+                  }}
+                  className="pointer-events-auto px-2.5 py-0.5 rounded-full bg-[#102026]/95 hover:bg-[#20D5EC] border border-[#20D5EC]/50 text-[11px] font-semibold text-[#7ceeff] hover:text-[#0b0d10] flex items-center gap-1 shadow-lg transition-colors"
+                  title={`Download all ${selectedDownloadableCount} selected files as ZIP`}
+                >
+                  <Download className="w-3 h-3" strokeWidth={1.75} />
+                  <span>Download {selectedDownloadableCount} (ZIP)</span>
+                </button>
+              )}
             </div>
             <button
               type="button"
@@ -1006,8 +1023,6 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
           const isHovered = hoveredNodeId === node.id;
           const showPorts = isSelected || isHovered || wireDraft?.sourceNodeId === node.id;
           const KindIcon = getNodeKindIcon(node.kind);
-          const isUnmuted = Boolean(unmutedNodeIds[node.id]);
-          const isPaused = Boolean(pausedNodeIds[node.id]);
           const platformBadge = getPlatformBadgeLabel(
             node.platformId,
             node.modelId,
@@ -1201,72 +1216,13 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                 {node.kind === 'video' && (
                   <div className="relative w-full h-full bg-[#141414]">
                     {node.videoUrl ? (
-                      <>
-                        <SmartMediaVideo
-                          videoUrl={node.videoUrl}
-                          posterUrl={node.imageUrl || readyUpstreamImages[0]?.imageUrl}
-                          playing={!isPaused}
-                          muted={!isUnmuted}
-                          fallbackPrompt={node.prompt}
-                          fallbackSeed={node.seed}
-                          fallbackTheme={node.videoTheme}
-                          fallbackDurationSec={node.durationSec || 5}
-                          aspectRatio={node.aspectRatio}
-                          className="w-full h-full object-cover"
-                        />
-
-                        {/* Subtle Hover Audio & Play Micro-Controls */}
-                        <div
-                          onPointerDown={(e) => e.stopPropagation()}
-                          className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setPausedNodeIds((p) => ({
-                                ...p,
-                                [node.id]: !p[node.id],
-                              }))
-                            }
-                            className="w-7 h-7 rounded-full bg-black/65 hover:bg-black/85 backdrop-blur-md flex items-center justify-center text-white/90"
-                            title={isPaused ? 'Play video' : 'Pause video'}
-                          >
-                            {isPaused ? (
-                              <Play className="w-3.5 h-3.5 ml-0.5" strokeWidth={1.75} />
-                            ) : (
-                              <Pause className="w-3.5 h-3.5" strokeWidth={1.75} />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setUnmutedNodeIds((m) => ({
-                                ...m,
-                                [node.id]: !m[node.id],
-                              }))
-                            }
-                            className="w-7 h-7 rounded-full bg-black/65 hover:bg-black/85 backdrop-blur-md flex items-center justify-center text-white/90"
-                            title={isUnmuted ? 'Mute clip audio' : 'Unmute clip audio'}
-                          >
-                            {isUnmuted ? (
-                              <Volume2
-                                className="w-3.5 h-3.5 text-[#20D5EC]"
-                                strokeWidth={1.75}
-                              />
-                            ) : (
-                              <VolumeX
-                                className="w-3.5 h-3.5 text-white/75"
-                                strokeWidth={1.75}
-                              />
-                            )}
-                          </button>
-                        </div>
-
-                        {/* Dreamina Minimal Bottom-Right Duration Pill */}
-                        <div className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-[6px] bg-black/65 backdrop-blur-md tabular-nums text-[11px] tabular-nums text-white/90 pointer-events-none">
-                          {formatDurationPill(node.durationSec)}
-                        </div>
-                      </>
+                      <VideoNodeCardPlayer
+                        node={node}
+                        posterUrl={node.imageUrl || readyUpstreamImages[0]?.imageUrl}
+                        isSelected={isSelected}
+                        onOpenFullscreen={() => openLightbox(node.id)}
+                        onDownload={() => handleDownloadNodeMedia(node)}
+                      />
                     ) : readyUpstreamImages.length > 0 ? (
                       <div className="relative w-full h-full bg-[#191919] flex flex-col items-center justify-center">
                         <SmartMediaImage
@@ -1384,33 +1340,79 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                                   <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/75 border border-white/15 tabular-nums text-[10px] font-semibold text-white">
                                     #{idx + 1}
                                   </span>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      splitBatchNodeToIndividualNodes(node.id, idx);
-                                    }}
-                                    title={`Pop out variation #${idx + 1} as Node`}
-                                    className="opacity-0 group-hover/tile:opacity-100 transition-opacity absolute top-1.5 right-1.5 w-6 h-6 rounded-[6px] bg-black/80 hover:bg-[#20D5EC] text-white hover:text-[#0b0d10] border border-white/15 flex items-center justify-center"
-                                  >
-                                    <ArrowUpRight className="w-3.5 h-3.5" />
-                                  </button>
+                                  <div className="opacity-0 group-hover/tile:opacity-100 transition-opacity absolute top-1.5 right-1.5 flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        openLightbox(node.id, outUrl);
+                                      }}
+                                      title={`Full screen variation #${idx + 1}`}
+                                      className="w-6 h-6 rounded-[6px] bg-black/80 hover:bg-white/25 text-white border border-white/15 flex items-center justify-center"
+                                    >
+                                      <Maximize2 className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        splitBatchNodeToIndividualNodes(node.id, idx);
+                                      }}
+                                      title={`Pop out variation #${idx + 1} as Node`}
+                                      className="w-6 h-6 rounded-[6px] bg-black/80 hover:bg-[#20D5EC] text-white hover:text-[#0b0d10] border border-white/15 flex items-center justify-center"
+                                    >
+                                      <ArrowUpRight className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
                                 </div>
                               );
                             })}
                           </div>
                         ) : (
-                          <SmartMediaImage
-                            src={node.imageUrl}
-                            alt={node.title}
-                            aspectRatio={node.aspectRatio}
-                            fallbackPrompt={node.prompt}
-                            fallbackSeed={node.seed}
-                            isContactSheet={node.kind === 'contact-sheet'}
-                            className={`w-full h-full ${
-                              node.isTransparentCutout ? 'object-contain' : 'object-cover'
-                            }`}
-                          />
+                          <div
+                            onDoubleClick={(e) => {
+                              e.stopPropagation();
+                              openLightbox(node.id);
+                            }}
+                            className="relative w-full h-full"
+                          >
+                            <SmartMediaImage
+                              src={node.imageUrl}
+                              alt={node.title}
+                              aspectRatio={node.aspectRatio}
+                              fallbackPrompt={node.prompt}
+                              fallbackSeed={node.seed}
+                              isContactSheet={node.kind === 'contact-sheet'}
+                              className={`w-full h-full ${
+                                node.isTransparentCutout ? 'object-contain' : 'object-cover'
+                              }`}
+                            />
+                            {/* Hover Quick Actions: Download + Full Screen */}
+                            <div
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute top-2.5 right-2.5 z-10 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <button
+                                type="button"
+                                data-image-download={node.id}
+                                onClick={() => handleDownloadNodeMedia(node)}
+                                className="w-7 h-7 rounded-full bg-black/70 hover:bg-black/90 border border-white/[0.12] backdrop-blur-md flex items-center justify-center text-white/90 transition-colors"
+                                title="Download PNG"
+                              >
+                                <Download className="w-3.5 h-3.5" strokeWidth={1.75} />
+                              </button>
+                              <button
+                                type="button"
+                                data-image-fullscreen={node.id}
+                                onClick={() => openLightbox(node.id)}
+                                className="w-7 h-7 rounded-full bg-black/70 hover:bg-black/90 border border-white/[0.12] backdrop-blur-md flex items-center justify-center text-white/90 transition-colors"
+                                title="Full screen view"
+                              >
+                                <Maximize2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+                              </button>
+                            </div>
+                          </div>
                         )}
 
                         {node.generatedOutputs && node.generatedOutputs.length > 1 && (
@@ -2226,6 +2228,58 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   </button>
                 )}
 
+                {((contextNode.kind === 'video' && Boolean(contextNode.videoUrl)) ||
+                  ((contextNode.kind === 'image' ||
+                    contextNode.kind === 'contact-sheet' ||
+                    contextNode.kind === 'element') &&
+                    Boolean(contextNode.imageUrl))) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      openLightbox(contextNode.id);
+                      setContextMenu(null);
+                    }}
+                    className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/95 font-medium flex items-center gap-2"
+                  >
+                    <Maximize2 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                    <span>Full Screen View</span>
+                  </button>
+                )}
+
+                {selectedNodeIds.length >= 2 &&
+                  selectedNodeIds.includes(contextNode.id) &&
+                  selectedDownloadableCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void downloadSelectedNodesMedia(selectedNodeIds);
+                        setContextMenu(null);
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] bg-[#20D5EC]/12 hover:bg-[#20D5EC]/22 text-[#7ceeff] font-medium flex items-center gap-2"
+                    >
+                      <Download className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.75} />
+                      <span>Download Group ({selectedDownloadableCount} files · ZIP)</span>
+                    </button>
+                  )}
+
+                {contextNode.generatedOutputs &&
+                  contextNode.generatedOutputs.length > 1 &&
+                  selectedNodeIds.length < 2 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void downloadSelectedNodesMedia([contextNode.id]);
+                        setContextMenu(null);
+                      }}
+                      className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-[#7ceeff] flex items-center gap-2"
+                    >
+                      <Download className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
+                      <span>
+                        Download All {contextNode.generatedOutputs.length} Variations (ZIP)
+                      </span>
+                    </button>
+                  )}
+
                 <button
                   type="button"
                   onClick={() => {
@@ -2235,7 +2289,11 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                   className="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.08] text-white/90 flex items-center gap-2"
                 >
                   <Download className="w-3.5 h-3.5 text-white/60" strokeWidth={1.5} />
-                  <span>Download</span>
+                  <span>
+                    {selectedNodeIds.length >= 2 && selectedNodeIds.includes(contextNode.id)
+                      ? 'Download This Item Only'
+                      : 'Download'}
+                  </span>
                 </button>
 
                 <div className="my-1 h-px bg-white/[0.07]" />

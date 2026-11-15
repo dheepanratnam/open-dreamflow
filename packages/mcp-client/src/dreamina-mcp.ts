@@ -2937,6 +2937,114 @@ export class DreaminaMcpEngine {
     }
   }
 
+  private async persistNormalizedMediaFile(
+    source: { filePath?: string; buffer?: Buffer },
+    modality: 'image' | 'video' | 'audio'
+  ): Promise<string> {
+    const mediaDir = this.getMediaDir();
+    fs.mkdirSync(mediaDir, { recursive: true, mode: 0o755 });
+    const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    if (modality !== 'image') {
+      const origExt = source.filePath ? path.extname(source.filePath).toLowerCase() : '';
+      const ext =
+        origExt || (modality === 'video' ? '.mp4' : '.mp3');
+      const fileName = `dreamina_mcp_${stamp}${ext}`;
+      const finalPath = path.join(mediaDir, fileName);
+      if (source.filePath) {
+        fs.copyFileSync(source.filePath, finalPath);
+      } else if (source.buffer) {
+        fs.writeFileSync(finalPath, source.buffer);
+      }
+      fs.chmodSync(finalPath, 0o644);
+      return `/media/${fileName}`;
+    }
+
+    // Image modality: inspect magic bytes so WebP / AVIF / JPEG are never saved with a mismatched .png header
+    const headBuf = source.buffer
+      ? source.buffer.subarray(0, 32)
+      : (() => {
+          const fd = fs.openSync(source.filePath!, 'r');
+          const b = Buffer.alloc(32);
+          const n = fs.readSync(fd, b, 0, 32, 0);
+          fs.closeSync(fd);
+          return b.subarray(0, n);
+        })();
+
+    const isPng =
+      headBuf.length >= 8 &&
+      headBuf[0] === 0x89 &&
+      headBuf[1] === 0x50 &&
+      headBuf[2] === 0x4e &&
+      headBuf[3] === 0x47;
+    const isJpeg =
+      headBuf.length >= 3 &&
+      headBuf[0] === 0xff &&
+      headBuf[1] === 0xd8 &&
+      headBuf[2] === 0xff;
+    const isGif =
+      headBuf.length >= 4 && headBuf.subarray(0, 4).toString('ascii') === 'GIF8';
+
+    if (isPng) {
+      const fileName = `dreamina_mcp_${stamp}.png`;
+      const finalPath = path.join(mediaDir, fileName);
+      if (source.filePath) fs.copyFileSync(source.filePath, finalPath);
+      else if (source.buffer) fs.writeFileSync(finalPath, source.buffer);
+      fs.chmodSync(finalPath, 0o644);
+      return `/media/${fileName}`;
+    }
+
+    if (isGif) {
+      const fileName = `dreamina_mcp_${stamp}.gif`;
+      const finalPath = path.join(mediaDir, fileName);
+      if (source.filePath) fs.copyFileSync(source.filePath, finalPath);
+      else if (source.buffer) fs.writeFileSync(finalPath, source.buffer);
+      fs.chmodSync(finalPath, 0o644);
+      return `/media/${fileName}`;
+    }
+
+    // For WebP / AVIF / HEIC or JPEG: transcode to universal 8-bit PNG via ffmpeg (fallback to .jpg if JPEG & no ffmpeg)
+    let tmpInput = source.filePath || '';
+    let cleanupTmpInput = false;
+    if (!tmpInput && source.buffer) {
+      tmpInput = path.join(os.tmpdir(), `drm_img_in_${stamp}.bin`);
+      fs.writeFileSync(tmpInput, source.buffer);
+      cleanupTmpInput = true;
+    }
+
+    const pngName = `dreamina_mcp_${stamp}.png`;
+    const pngPath = path.join(mediaDir, pngName);
+    try {
+      await execFileAsync(
+        'ffmpeg',
+        ['-y', '-i', tmpInput, '-frames:v', '1', pngPath],
+        { timeout: 30_000 }
+      );
+      if (fs.existsSync(pngPath) && fs.statSync(pngPath).size > 0) {
+        fs.chmodSync(pngPath, 0o644);
+        return `/media/${pngName}`;
+      }
+    } catch {
+      // Fall back to true extension if ffmpeg unavailable
+    } finally {
+      if (cleanupTmpInput && tmpInput && fs.existsSync(tmpInput)) {
+        try {
+          fs.unlinkSync(tmpInput);
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const trueExt = isJpeg ? '.jpg' : '.webp';
+    const fallbackName = `dreamina_mcp_${stamp}${trueExt}`;
+    const fallbackPath = path.join(mediaDir, fallbackName);
+    if (source.filePath) fs.copyFileSync(source.filePath, fallbackPath);
+    else if (source.buffer) fs.writeFileSync(fallbackPath, source.buffer);
+    fs.chmodSync(fallbackPath, 0o644);
+    return `/media/${fallbackName}`;
+  }
+
   private async downloadResourceToMediaDir(
     projectId: string,
     resourceId: string,
@@ -2946,8 +3054,6 @@ export class DreaminaMcpEngine {
     fs.mkdirSync(mediaDir, { recursive: true, mode: 0o755 });
 
     const tmpOutDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dreamina_dl_'));
-    const fallbackExt =
-      modality === 'video' ? '.mp4' : modality === 'audio' ? '.mp3' : '.png';
 
     try {
       const dlRes = await this.runCliJson(
@@ -2984,12 +3090,7 @@ export class DreaminaMcpEngine {
         throw new Error(`dreamina-canvas resource download did not produce a file for ${resourceId}.`);
       }
 
-      const detectedExt = path.extname(downloadedPath) || fallbackExt;
-      const fileName = `dreamina_mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${detectedExt}`;
-      const finalPath = path.join(mediaDir, fileName);
-      fs.copyFileSync(downloadedPath, finalPath);
-      fs.chmodSync(finalPath, 0o644);
-      return `/media/${fileName}`;
+      return await this.persistNormalizedMediaFile({ filePath: downloadedPath }, modality);
     } finally {
       try {
         fs.rmSync(tmpOutDir, { recursive: true, force: true });
@@ -3180,19 +3281,7 @@ export class DreaminaMcpEngine {
         const res = await fetch(remoteUrl, { signal: AbortSignal.timeout(45_000) });
         if (!res.ok) continue;
         const buf = Buffer.from(await res.arrayBuffer());
-        const ext =
-          params.modality === 'video'
-            ? '.mp4'
-            : params.modality === 'audio'
-              ? '.mp3'
-              : '.png';
-        const fileName = `dreamina_mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
-        const mediaDir = this.getMediaDir();
-        fs.mkdirSync(mediaDir, { recursive: true, mode: 0o755 });
-        const finalPath = path.join(mediaDir, fileName);
-        fs.writeFileSync(finalPath, buf);
-        fs.chmodSync(finalPath, 0o644);
-        outputs.push(`/media/${fileName}`);
+        outputs.push(await this.persistNormalizedMediaFile({ buffer: buf }, params.modality));
       }
     }
 
@@ -3240,18 +3329,11 @@ export class DreaminaMcpEngine {
     }
 
     if (outputs.length === 0 && directUrls.length > 0) {
-      const ext = modality === 'video' ? '.mp4' : modality === 'audio' ? '.mp3' : '.png';
-      const mediaDir = this.getMediaDir();
-      fs.mkdirSync(mediaDir, { recursive: true, mode: 0o755 });
       for (const remoteUrl of directUrls.slice(0, maxOutputs)) {
         const res = await fetch(remoteUrl, { signal: AbortSignal.timeout(45_000) });
         if (!res.ok) continue;
         const buf = Buffer.from(await res.arrayBuffer());
-        const fileName = `dreamina_mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
-        const finalPath = path.join(mediaDir, fileName);
-        fs.writeFileSync(finalPath, buf);
-        fs.chmodSync(finalPath, 0o644);
-        outputs.push(`/media/${fileName}`);
+        outputs.push(await this.persistNormalizedMediaFile({ buffer: buf }, modality));
       }
     }
 

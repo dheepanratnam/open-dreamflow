@@ -23,6 +23,10 @@ import { useStudioStore } from '../store/useStudioStore';
 import { createDefaultWaveform } from '../utils/proceduralMedia';
 import { SmartMediaImage, resolvePlayableAudioUrl } from './SmartMedia';
 import {
+  downloadSingleMediaAsset,
+  normalizeBackendMediaUrl,
+} from '../services/executionRouter';
+import {
   compileTimelineToWebm,
   downloadTextFile,
   generateFcpxmlDocument,
@@ -676,8 +680,8 @@ export const FullscreenTimelineModal: React.FC = () => {
         <div className="relative max-w-[920px] w-full aspect-video rounded-[12px] overflow-hidden bg-[#141414] border border-white/[0.1] shadow-[0_24px_60px_rgba(0,0,0,0.75)]">
           <video
             key={previewVideoSrc || 'no-video'}
-            src={previewVideoSrc}
-            poster={activeClip?.thumbnailUrl || undefined}
+            src={normalizeBackendMediaUrl(previewVideoSrc, true)}
+            poster={normalizeBackendMediaUrl(activeClip?.thumbnailUrl || undefined, true)}
             autoPlay
             loop
             playsInline
@@ -686,14 +690,20 @@ export const FullscreenTimelineModal: React.FC = () => {
             className="w-full h-full object-cover"
           />
           {masterRenderUrl && (
-            <a
-              href={masterRenderUrl}
-              download="open-dreamflow-master.mp4"
+            <button
+              type="button"
+              onClick={() =>
+                void downloadSingleMediaAsset({
+                  src: masterRenderUrl,
+                  title: 'open-dreamflow-master',
+                  fallbackExt: 'mp4',
+                })
+              }
               className="absolute top-3 right-3 h-7 px-2.5 rounded-[7px] bg-[#191919]/90 hover:bg-[#252525] border border-white/[0.12] text-[11px] text-white/90 flex items-center gap-1.5 backdrop-blur-md"
             >
               <Download className="w-3 h-3" strokeWidth={1.5} />
               <span>Download Rendered MP4</span>
-            </a>
+            </button>
           )}
         </div>
       </div>

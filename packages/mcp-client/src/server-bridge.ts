@@ -45,6 +45,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import * as zlib from 'node:zlib';
 import {
   spawn,
   spawnSync,
@@ -332,6 +333,181 @@ export class BridgeHttpError extends Error {
     this.statusCode = statusCode;
     this.platformId = platformId;
   }
+}
+
+interface DetectedMediaMagic {
+  valid: boolean;
+  ext?: string;
+  mime?: string;
+  kind?: 'image' | 'video' | 'audio';
+  reason?: string;
+}
+
+function detectMediaMagicFormat(headBuf: Buffer): DetectedMediaMagic {
+  if (!headBuf || headBuf.length === 0) {
+    return { valid: false, reason: 'Empty file (0 bytes)' };
+  }
+  const textSample = headBuf.subarray(0, 48).toString('utf8').trimStart().toLowerCase();
+  if (
+    textSample.startsWith('<!doctype') ||
+    textSample.startsWith('<html') ||
+    textSample.startsWith('{"ok":false')
+  ) {
+    return { valid: false, reason: 'HTML or JSON error document instead of binary media' };
+  }
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    headBuf.length >= 8 &&
+    headBuf[0] === 0x89 &&
+    headBuf[1] === 0x50 &&
+    headBuf[2] === 0x4e &&
+    headBuf[3] === 0x47
+  ) {
+    return { valid: true, ext: '.png', mime: 'image/png', kind: 'image' };
+  }
+
+  // JPEG: FF D8 FF
+  if (headBuf.length >= 3 && headBuf[0] === 0xff && headBuf[1] === 0xd8 && headBuf[2] === 0xff) {
+    return { valid: true, ext: '.jpg', mime: 'image/jpeg', kind: 'image' };
+  }
+
+  // GIF: GIF87a / GIF89a
+  if (headBuf.length >= 6 && headBuf.subarray(0, 4).toString('ascii') === 'GIF8') {
+    return { valid: true, ext: '.gif', mime: 'image/gif', kind: 'image' };
+  }
+
+  // RIFF container: WEBP / WAVE / AVI
+  if (headBuf.length >= 12 && headBuf.subarray(0, 4).toString('ascii') === 'RIFF') {
+    const subType = headBuf.subarray(8, 12).toString('ascii');
+    if (subType === 'WEBP') {
+      return { valid: true, ext: '.webp', mime: 'image/webp', kind: 'image' };
+    }
+    if (subType === 'WAVE') {
+      return { valid: true, ext: '.wav', mime: 'audio/wav', kind: 'audio' };
+    }
+    if (subType === 'AVI ') {
+      return { valid: true, ext: '.avi', mime: 'video/x-msvideo', kind: 'video' };
+    }
+  }
+
+  // ISO Base Media File Format (ftyp): MP4 / MOV / AVIF / HEIC
+  if (headBuf.length >= 12 && headBuf.subarray(4, 8).toString('ascii') === 'ftyp') {
+    const brand = headBuf.subarray(8, 12).toString('ascii');
+    if (['avif', 'avis', 'heic', 'heix', 'mif1', 'msf1'].includes(brand)) {
+      return { valid: true, ext: '.avif', mime: 'image/avif', kind: 'image' };
+    }
+    if (brand === 'qt  ') {
+      return { valid: true, ext: '.mov', mime: 'video/quicktime', kind: 'video' };
+    }
+    return { valid: true, ext: '.mp4', mime: 'video/mp4', kind: 'video' };
+  }
+
+  // WebM / Matroska: 1A 45 DF A3
+  if (
+    headBuf.length >= 4 &&
+    headBuf[0] === 0x1a &&
+    headBuf[1] === 0x45 &&
+    headBuf[2] === 0xdf &&
+    headBuf[3] === 0xa3
+  ) {
+    return { valid: true, ext: '.webm', mime: 'video/webm', kind: 'video' };
+  }
+
+  // MP3: ID3 or MPEG frame sync
+  if (
+    (headBuf.length >= 3 && headBuf.subarray(0, 3).toString('ascii') === 'ID3') ||
+    (headBuf.length >= 2 && headBuf[0] === 0xff && (headBuf[1] & 0xe0) === 0xe0)
+  ) {
+    return { valid: true, ext: '.mp3', mime: 'audio/mpeg', kind: 'audio' };
+  }
+
+  // OGG: OggS
+  if (headBuf.length >= 4 && headBuf.subarray(0, 4).toString('ascii') === 'OggS') {
+    return { valid: true, ext: '.ogg', mime: 'audio/ogg', kind: 'audio' };
+  }
+
+  // FLAC: fLaC
+  if (headBuf.length >= 4 && headBuf.subarray(0, 4).toString('ascii') === 'fLaC') {
+    return { valid: true, ext: '.flac', mime: 'audio/flac', kind: 'audio' };
+  }
+
+  return { valid: true };
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function updateCrc32Chunk(crc: number, chunk: Buffer): number {
+  const nativeCrc32 = (zlib as unknown as { crc32?: (data: Buffer, value?: number) => number }).crc32;
+  if (typeof nativeCrc32 === 'function') {
+    return nativeCrc32(chunk, crc) >>> 0;
+  }
+  let c = (crc ^ 0xffffffff) >>> 0;
+  for (let i = 0; i < chunk.length; i++) {
+    c = CRC32_TABLE[(c ^ chunk[i]) & 0xff] ^ (c >>> 8);
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+async function computeFileCrc32AndSize(filePath: string): Promise<{ crc: number; size: number }> {
+  return await new Promise((resolve, reject) => {
+    let crc = 0;
+    let size = 0;
+    const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
+    stream.on('data', (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      crc = updateCrc32Chunk(crc, buf);
+      size += buf.length;
+    });
+    stream.on('end', () => resolve({ crc: crc >>> 0, size }));
+    stream.on('error', reject);
+  });
+}
+
+function sanitizeDownloadStem(rawTitle: string | undefined, fallbackStem: string): string {
+  const stripped = String(rawTitle || '')
+    .trim()
+    .replace(/\.(png|jpe?g|webp|avif|gif|mp4|mov|webm|mp3|wav|ogg|flac)$/i, '')
+    .replace(/[<>:"/\\|?*\x00-\x1F]+/g, ' ')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 96);
+  return stripped || fallbackStem;
+}
+
+function buildAttachmentContentDisposition(filenameWithExt: string): string {
+  const asciiFallback = filenameWithExt
+    .replace(/[^\x20-\x7E]/g, '_')
+    .replace(/["\\]/g, '_');
+  const utf8Encoded = encodeURIComponent(filenameWithExt).replace(
+    /['()*]/g,
+    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${utf8Encoded}`;
+}
+
+function toDosDateTime(date = new Date()): { dosTime: number; dosDate: number } {
+  const year = Math.max(1980, date.getFullYear());
+  const dosTime =
+    ((date.getHours() & 0x1f) << 11) |
+    ((date.getMinutes() & 0x3f) << 5) |
+    ((Math.floor(date.getSeconds() / 2)) & 0x1f);
+  const dosDate =
+    (((year - 1980) & 0x7f) << 9) |
+    (((date.getMonth() + 1) & 0x0f) << 5) |
+    (date.getDate() & 0x1f);
+  return { dosTime, dosDate };
 }
 
 /**
@@ -6602,7 +6778,8 @@ export class McpStdioBridgeServer {
             } catch {
               continue;
             }
-            if (!st.isFile()) continue;
+            if (!st.isFile() || st.size === 0) continue;
+            if (/\.compat\.png$/i.test(filename)) continue;
             const { modality, platform } = classifyFile(filename);
             if (source === 'higgsfield' && platform !== 'higgsfield') continue;
             seenFilenames.add(filename);
@@ -6630,7 +6807,7 @@ export class McpStdioBridgeServer {
         const r2Objects = await listR2Objects('media/', 300).catch(() => []);
         for (const obj of r2Objects) {
           const filename = path.basename(obj.key);
-          if (!filename || /^real_/i.test(filename) || seenFilenames.has(filename)) continue;
+          if (!filename || !obj.size || /^real_/i.test(filename) || /\.compat\.png$/i.test(filename) || seenFilenames.has(filename)) continue;
           const { modality, platform } = classifyFile(filename);
           const meta = idx[filename];
           items.push({
@@ -12041,11 +12218,379 @@ export class McpStdioBridgeServer {
     fs.createReadStream(foundPath).pipe(res);
   }
 
+  private async resolveDownloadableMediaFile(
+    srcRaw: string,
+    preferredTitle?: string
+  ): Promise<{
+    filePath: string;
+    ext: string;
+    mime: string;
+    size: number;
+    downloadFilename: string;
+  }> {
+    const trimmed = String(srcRaw || '').trim();
+    if (!trimmed) {
+      throw new BridgeHttpError(400, 'Missing media src parameter.');
+    }
+
+    let localBaseName = '';
+
+    // 1. Dreamina cloud resource URL (`/api/assets/dreamina-resource?...`)
+    if (trimmed.includes('/api/assets/dreamina-resource')) {
+      const parsed = new URL(trimmed, 'http://localhost');
+      const projectId = String(parsed.searchParams.get('projectId') || '').trim();
+      const resourceId = String(parsed.searchParams.get('resourceId') || '').trim();
+      const modality = String(parsed.searchParams.get('modality') || 'image').trim();
+      if (!projectId || !resourceId) {
+        throw new BridgeHttpError(400, 'Missing projectId or resourceId in Dreamina asset URL.');
+      }
+      const dl = await this.downloadDreaminaAssetResource({ projectId, resourceId, modality });
+      localBaseName = dl.filename;
+    } else if (trimmed.includes('/media/')) {
+      // 2. `/media/<file>` or `http(s)://.../media/<file>`
+      const afterMedia = trimmed.slice(trimmed.lastIndexOf('/media/') + '/media/'.length);
+      const withoutQuery = afterMedia.split(/[?#]/)[0] || '';
+      localBaseName = path.basename(decodeURIComponent(withoutQuery));
+    } else if (/^https?:\/\//i.test(trimmed)) {
+      // 3. External remote CDN URL -> cache into mediaDir by URL hash
+      const urlHash = crypto.createHash('sha1').update(trimmed).digest('hex').slice(0, 16);
+      const parsedUrl = new URL(trimmed);
+      const urlExt = path.extname(parsedUrl.pathname).toLowerCase() || '.bin';
+      localBaseName = `remote_dl_${urlHash}${urlExt}`;
+      const cachedRemotePath = path.resolve(this.mediaDir, localBaseName);
+      if (!fs.existsSync(cachedRemotePath) || fs.statSync(cachedRemotePath).size === 0) {
+        const resp = await fetch(trimmed, { signal: AbortSignal.timeout(45_000) });
+        if (!resp.ok) {
+          throw new BridgeHttpError(404, `Remote media fetch failed with HTTP ${resp.status}.`);
+        }
+        const buf = Buffer.from(await resp.arrayBuffer());
+        fs.mkdirSync(this.mediaDir, { recursive: true });
+        fs.writeFileSync(cachedRemotePath, buf);
+      }
+    } else {
+      localBaseName = path.basename(decodeURIComponent(trimmed.split(/[?#]/)[0] || ''));
+    }
+
+    const mediaRoot = path.resolve(this.mediaDir);
+    const primaryTargetPath = path.resolve(mediaRoot, localBaseName);
+    if (!localBaseName || !primaryTargetPath.startsWith(mediaRoot)) {
+      throw new BridgeHttpError(400, 'Invalid media filename.');
+    }
+
+    if (!fs.existsSync(primaryTargetPath) || !fs.statSync(primaryTargetPath).isFile()) {
+      if (isR2Configured()) {
+        const dl = await downloadObjectFromR2(`media/${localBaseName}`);
+        if (dl.ok && dl.body && dl.body.byteLength > 0) {
+          fs.mkdirSync(this.mediaDir, { recursive: true });
+          fs.writeFileSync(primaryTargetPath, dl.body);
+        } else {
+          throw new BridgeHttpError(404, `Media file not found: ${localBaseName}`);
+        }
+      } else {
+        throw new BridgeHttpError(404, `Media file not found: ${localBaseName}`);
+      }
+    }
+
+    let finalPath = this.preferResidentMediaPath(primaryTargetPath);
+    let stat = fs.statSync(finalPath);
+    if (stat.size === 0) {
+      throw new BridgeHttpError(422, `Media file is empty (0 bytes): ${localBaseName}`);
+    }
+
+    const fd = fs.openSync(finalPath, 'r');
+    const headBuf = Buffer.alloc(64);
+    const bytesRead = fs.readSync(fd, headBuf, 0, 64, 0);
+    fs.closeSync(fd);
+
+    const magic = detectMediaMagicFormat(headBuf.subarray(0, bytesRead));
+    if (!magic.valid) {
+      throw new BridgeHttpError(
+        422,
+        `Media file is corrupted or incompatible (${magic.reason || 'invalid header'}): ${localBaseName}`
+      );
+    }
+
+    const diskExt = path.extname(localBaseName).toLowerCase();
+    let finalExt = magic.ext || diskExt || '.bin';
+    let finalMime = magic.mime || MIME_BY_EXT[finalExt] || 'application/octet-stream';
+
+    // Universal compatibility: transcode WebP/AVIF (or JPEG stored under .png) into genuine 8-bit PNG
+    if (
+      magic.kind === 'image' &&
+      (magic.ext === '.webp' ||
+        magic.ext === '.avif' ||
+        (diskExt === '.png' && magic.ext !== '.png'))
+    ) {
+      const stem = localBaseName.replace(/\.[^.]+$/, '');
+      const compatPngPath = path.resolve(mediaRoot, `${stem}.compat.png`);
+      if (!fs.existsSync(compatPngPath) || fs.statSync(compatPngPath).size === 0) {
+        const ffRes = spawnSync(
+          'ffmpeg',
+          ['-y', '-i', finalPath, '-frames:v', '1', compatPngPath],
+          { timeout: 30_000 }
+        );
+        if (ffRes.status === 0 && fs.existsSync(compatPngPath) && fs.statSync(compatPngPath).size > 0) {
+          finalPath = compatPngPath;
+          stat = fs.statSync(finalPath);
+          finalExt = '.png';
+          finalMime = 'image/png';
+        }
+      } else {
+        finalPath = compatPngPath;
+        stat = fs.statSync(finalPath);
+        finalExt = '.png';
+        finalMime = 'image/png';
+      }
+    }
+
+    const fallbackStem = localBaseName.replace(/\.[^.]+$/, '') || 'open-dreamflow-asset';
+    const cleanStem = sanitizeDownloadStem(preferredTitle, fallbackStem);
+    const downloadFilename = `${cleanStem}${finalExt}`;
+
+    return {
+      filePath: finalPath,
+      ext: finalExt,
+      mime: finalMime,
+      size: stat.size,
+      downloadFilename,
+    };
+  }
+
+  private async serveAttachmentMediaDownload(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    srcRaw: string,
+    filenameRaw?: string
+  ): Promise<void> {
+    const resolved = await this.resolveDownloadableMediaFile(srcRaw, filenameRaw);
+    res.writeHead(200, {
+      'Content-Type': resolved.mime,
+      'Content-Length': resolved.size,
+      'Content-Disposition': buildAttachmentContentDisposition(resolved.downloadFilename),
+      'Cache-Control': 'no-store',
+    });
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    fs.createReadStream(resolved.filePath).pipe(res);
+  }
+
+  private async serveMediaZipArchive(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    const rawItems: Array<{ src: string; title?: string }> = [];
+
+    if (Array.isArray(payload.items)) {
+      for (const raw of payload.items) {
+        if (!raw || typeof raw !== 'object') continue;
+        const obj = raw as Record<string, unknown>;
+        const src = String(obj.src || obj.url || obj.mediaUrl || '').trim();
+        const title = String(obj.title || obj.filename || obj.name || '').trim();
+        if (src) rawItems.push({ src, title });
+      }
+    }
+
+    // Optional projectId + nodeIds lookup for CLI / MCP / direct group download
+    const projectId = String(payload.projectId || '').trim();
+    if (rawItems.length === 0 && projectId) {
+      const projRecord = this.getProject(projectId);
+      if (!projRecord) {
+        throw new BridgeHttpError(404, `Project not found: ${projectId}`);
+      }
+      const stateObj = (projRecord.state || {}) as Record<string, unknown>;
+      const nodes = Array.isArray(stateObj.nodes)
+        ? (stateObj.nodes as Array<Record<string, unknown>>)
+        : [];
+      const filterIds = Array.isArray(payload.nodeIds)
+        ? new Set((payload.nodeIds as unknown[]).map((v) => String(v)))
+        : null;
+      for (const n of nodes) {
+        const nid = String(n.id || '');
+        if (filterIds && filterIds.size > 0 && !filterIds.has(nid)) continue;
+        const kind = String(n.kind || 'image');
+        const title = String(n.title || nid || 'asset');
+        if (kind === 'video' && typeof n.videoUrl === 'string' && n.videoUrl) {
+          rawItems.push({ src: n.videoUrl, title });
+        } else if (kind === 'audio' && typeof n.audioUrl === 'string' && n.audioUrl) {
+          rawItems.push({ src: n.audioUrl, title });
+        } else if (Array.isArray(n.generatedOutputs) && n.generatedOutputs.length > 1) {
+          (n.generatedOutputs as unknown[]).forEach((outUrl, idx) => {
+            if (typeof outUrl === 'string' && outUrl) {
+              rawItems.push({ src: outUrl, title: `${title}-v${idx + 1}` });
+            }
+          });
+        } else if (typeof n.imageUrl === 'string' && n.imageUrl) {
+          rawItems.push({ src: n.imageUrl, title });
+        } else if (typeof n.videoUrl === 'string' && n.videoUrl) {
+          rawItems.push({ src: n.videoUrl, title });
+        }
+      }
+    }
+
+    if (rawItems.length === 0) {
+      throw new BridgeHttpError(400, 'No downloadable media items provided for ZIP archive.');
+    }
+
+    interface ZipPreparedEntry {
+      filePath: string;
+      entryNameBuf: Buffer;
+      crc: number;
+      size: number;
+      localHeaderOffset: number;
+    }
+
+    const usedNames = new Set<string>();
+    const prepared: ZipPreparedEntry[] = [];
+    let runningOffset = 0;
+
+    for (let i = 0; i < rawItems.length; i++) {
+      const item = rawItems[i];
+      const resolved = await this.resolveDownloadableMediaFile(
+        item.src,
+        item.title || `item-${i + 1}`
+      );
+      const { crc, size } = await computeFileCrc32AndSize(resolved.filePath);
+
+      const prefix = String(i + 1).padStart(2, '0');
+      const baseStem = resolved.downloadFilename.slice(
+        0,
+        resolved.downloadFilename.length - resolved.ext.length
+      );
+      let candidateName = `${prefix}-${baseStem}${resolved.ext}`;
+      let dup = 2;
+      while (usedNames.has(candidateName.toLowerCase())) {
+        candidateName = `${prefix}-${baseStem}-${dup}${resolved.ext}`;
+        dup++;
+      }
+      usedNames.add(candidateName.toLowerCase());
+
+      const entryNameBuf = Buffer.from(candidateName, 'utf8');
+      prepared.push({
+        filePath: resolved.filePath,
+        entryNameBuf,
+        crc,
+        size,
+        localHeaderOffset: runningOffset,
+      });
+      runningOffset += 30 + entryNameBuf.length + size;
+    }
+
+    const centralDirOffset = runningOffset;
+    const { dosTime, dosDate } = toDosDateTime();
+    const centralChunks: Buffer[] = [];
+    for (const entry of prepared) {
+      const cd = Buffer.alloc(46 + entry.entryNameBuf.length);
+      cd.writeUInt32LE(0x02014b50, 0); // Central directory signature
+      cd.writeUInt16LE(20, 4); // Version made by
+      cd.writeUInt16LE(20, 6); // Version needed to extract (2.0)
+      cd.writeUInt16LE(0x0800, 8); // Bit 11 = UTF-8 filename
+      cd.writeUInt16LE(0, 10); // Compression method 0 = STORE
+      cd.writeUInt16LE(dosTime, 12);
+      cd.writeUInt16LE(dosDate, 14);
+      cd.writeUInt32LE(entry.crc >>> 0, 16);
+      cd.writeUInt32LE(entry.size >>> 0, 20);
+      cd.writeUInt32LE(entry.size >>> 0, 24);
+      cd.writeUInt16LE(entry.entryNameBuf.length, 28);
+      cd.writeUInt16LE(0, 30); // Extra len
+      cd.writeUInt16LE(0, 32); // Comment len
+      cd.writeUInt16LE(0, 34); // Disk start
+      cd.writeUInt16LE(0, 36); // Internal attrs
+      cd.writeUInt32LE(0, 38); // External attrs
+      cd.writeUInt32LE(entry.localHeaderOffset >>> 0, 42);
+      entry.entryNameBuf.copy(cd, 46);
+      centralChunks.push(cd);
+    }
+
+    const centralDirBuf = Buffer.concat(centralChunks);
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0);
+    eocd.writeUInt16LE(0, 4);
+    eocd.writeUInt16LE(0, 6);
+    eocd.writeUInt16LE(prepared.length, 8);
+    eocd.writeUInt16LE(prepared.length, 10);
+    eocd.writeUInt32LE(centralDirBuf.length >>> 0, 12);
+    eocd.writeUInt32LE(centralDirOffset >>> 0, 16);
+    eocd.writeUInt16LE(0, 20);
+
+    const totalZipSize = centralDirOffset + centralDirBuf.length + eocd.length;
+    const archiveStem = sanitizeDownloadStem(
+      typeof payload.archiveName === 'string' ? payload.archiveName : undefined,
+      `open-dreamflow-${prepared.length}-files`
+    );
+    const zipFilename = `${archiveStem}.zip`;
+
+    res.writeHead(200, {
+      'Content-Type': 'application/zip',
+      'Content-Length': totalZipSize,
+      'Content-Disposition': buildAttachmentContentDisposition(zipFilename),
+      'Cache-Control': 'no-store',
+    });
+
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+
+    for (const entry of prepared) {
+      const localHdr = Buffer.alloc(30 + entry.entryNameBuf.length);
+      localHdr.writeUInt32LE(0x04034b50, 0);
+      localHdr.writeUInt16LE(20, 4);
+      localHdr.writeUInt16LE(0x0800, 6);
+      localHdr.writeUInt16LE(0, 8);
+      localHdr.writeUInt16LE(dosTime, 10);
+      localHdr.writeUInt16LE(dosDate, 12);
+      localHdr.writeUInt32LE(entry.crc >>> 0, 14);
+      localHdr.writeUInt32LE(entry.size >>> 0, 18);
+      localHdr.writeUInt32LE(entry.size >>> 0, 22);
+      localHdr.writeUInt16LE(entry.entryNameBuf.length, 26);
+      localHdr.writeUInt16LE(0, 28);
+      entry.entryNameBuf.copy(localHdr, 30);
+      res.write(localHdr);
+
+      await new Promise<void>((resolve, reject) => {
+        const rs = fs.createReadStream(entry.filePath, { highWaterMark: 64 * 1024 });
+        rs.on('data', (chunk) => {
+          if (!res.write(chunk)) {
+            rs.pause();
+            res.once('drain', () => rs.resume());
+          }
+        });
+        rs.on('end', () => resolve());
+        rs.on('error', reject);
+      });
+    }
+
+    res.write(centralDirBuf);
+    res.write(eocd);
+    res.end();
+  }
+
   private async serveStaticMedia(
     req: http.IncomingMessage,
     res: http.ServerResponse,
     pathname: string
   ): Promise<void> {
+    const fullReqUrl = new URL(req.url || pathname, `http://${req.headers.host || 'localhost'}`);
+    if (fullReqUrl.searchParams.get('download') === '1') {
+      try {
+        await this.serveAttachmentMediaDownload(
+          req,
+          res,
+          pathname,
+          fullReqUrl.searchParams.get('filename') || undefined
+        );
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+        this.sendJson(res, status, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
     const relRequested = decodeURIComponent(pathname.replace(/^(?:\/media\/+)+/, ''));
     const safeBase = path.basename(relRequested);
     const primaryTargetPath = path.resolve(this.mediaDir, safeBase);
@@ -12662,6 +13207,75 @@ export class McpStdioBridgeServer {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
         });
+      }
+      return;
+    }
+
+    if (
+      pathname === '/api/media/download' &&
+      (req.method === 'GET' || req.method === 'HEAD')
+    ) {
+      try {
+        const src = String(reqUrl.searchParams.get('src') || reqUrl.searchParams.get('url') || '').trim();
+        const filename =
+          String(reqUrl.searchParams.get('filename') || reqUrl.searchParams.get('name') || '').trim() ||
+          undefined;
+        await this.serveAttachmentMediaDownload(req, res, src, filename);
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+        if (req.method === 'HEAD') {
+          res.writeHead(status);
+          res.end();
+        } else {
+          this.sendJson(res, status, {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      return;
+    }
+
+    if (
+      pathname === '/api/media/download-zip' &&
+      (req.method === 'POST' || req.method === 'GET' || req.method === 'HEAD')
+    ) {
+      try {
+        let payload: Record<string, unknown> = {};
+        if (req.method === 'POST') {
+          payload = (await this.readJsonBody(req)) || {};
+        } else {
+          const projectId = String(reqUrl.searchParams.get('projectId') || '').trim();
+          const nodesRaw = String(reqUrl.searchParams.get('nodeIds') || '').trim();
+          const itemsRaw = String(reqUrl.searchParams.get('items') || '').trim();
+          const archiveName = String(reqUrl.searchParams.get('archiveName') || '').trim();
+          if (itemsRaw) {
+            try {
+              payload.items = JSON.parse(itemsRaw);
+            } catch {
+              // ignore invalid JSON
+            }
+          }
+          if (projectId) payload.projectId = projectId;
+          if (nodesRaw) {
+            payload.nodeIds = nodesRaw
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean);
+          }
+          if (archiveName) payload.archiveName = archiveName;
+        }
+        await this.serveMediaZipArchive(req, res, payload);
+      } catch (err) {
+        const status = err instanceof BridgeHttpError ? err.statusCode : 500;
+        if (!res.headersSent) {
+          this.sendJson(res, status, {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        } else {
+          res.end();
+        }
       }
       return;
     }

@@ -12,6 +12,7 @@ import {
 import { ProviderModal } from './components/ProviderModal';
 import { AuthGateModal } from './components/AuthGateModal';
 import { TeamCreditsModal } from './components/TeamCreditsModal';
+import { MediaLightboxModal } from './components/MediaLightboxModal';
 import { MultiframeChain } from './components/MultiframeChain';
 import { ShareableAppView } from './components/ShareableAppView';
 import { getBridgeWsUrl } from './services/executionRouter';
@@ -241,6 +242,9 @@ export const App: React.FC = () => {
 
       {/* Stage 11 Credit Intelligence & Team Sharing Modal */}
       <TeamCreditsModal />
+
+      {/* Full-Screen Cinema Media Lightbox Player & Image Viewer */}
+      <MediaLightboxModal />
 
       {/* Subtle Matte Toast Notification */}
       {toastMessage && (

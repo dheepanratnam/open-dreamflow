@@ -51,6 +51,9 @@ Canvas Subcommands:
   open-dreamflow canvas generate --project canvas_default --platform higgsfield --model gpt_image_2_6 --prompt "..."
   open-dreamflow canvas credits [--refresh]
   open-dreamflow canvas sync-rates
+  open-dreamflow canvas media-audit [--project canvas_default]
+  open-dreamflow canvas download --src /media/... --out ./shot.png [--name "Shot 01"]
+  open-dreamflow canvas download-zip [--project canvas_default] [--nodes id1,id2] --out ./group.zip
 `);
 }
 
@@ -238,6 +241,101 @@ async function runCanvasCommand(subArgs) {
     case 'sync-rates':
       out = await invokeTool('credits_sync_rates', { force: true });
       break;
+    case 'media-audit': {
+      const projOut = await invokeTool('canvas_get', { projectId });
+      const nodes = projOut?.project?.state?.nodes || [];
+      const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+      const results = [];
+      for (const n of nodes) {
+        const mediaSrc =
+          n.kind === 'video'
+            ? n.videoUrl
+            : n.kind === 'audio'
+            ? n.audioUrl
+            : n.imageUrl || n.videoUrl;
+        if (!mediaSrc) continue;
+        const dlUrl = `${baseUrl}/api/media/download?src=${encodeURIComponent(mediaSrc)}&filename=${encodeURIComponent(n.title || n.id)}`;
+        const headRes = await fetch(dlUrl, { method: 'HEAD', headers: authHeaders });
+        results.push({
+          nodeId: n.id,
+          kind: n.kind,
+          title: n.title,
+          src: mediaSrc,
+          status: headRes.status,
+          ok: headRes.ok,
+          contentType: headRes.headers.get('content-type'),
+          bytes: Number(headRes.headers.get('content-length') || 0),
+          contentDisposition: headRes.headers.get('content-disposition'),
+        });
+      }
+      out = {
+        ok: results.every((r) => r.ok && r.bytes > 0),
+        projectId,
+        checkedMediaNodes: results.length,
+        passedMediaNodes: results.filter((r) => r.ok && r.bytes > 0).length,
+        results,
+      };
+      break;
+    }
+    case 'download': {
+      const src = String(flags.src || flags._[1] || '').trim();
+      const outPath = String(flags.out || flags.o || '').trim();
+      if (!src || !outPath) {
+        throw new Error('Usage: open-dreamflow canvas download --src <url> --out <file> [--name <title>]');
+      }
+      const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+      const dlUrl = `${baseUrl}/api/media/download?src=${encodeURIComponent(src)}${flags.name ? `&filename=${encodeURIComponent(String(flags.name))}` : ''}`;
+      const res = await fetch(dlUrl, { headers: authHeaders });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Download failed (${res.status}): ${errText.slice(0, 240)}`);
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
+      fs.writeFileSync(outPath, buf);
+      out = {
+        ok: true,
+        outPath: path.resolve(outPath),
+        bytes: buf.length,
+        contentType: res.headers.get('content-type'),
+        contentDisposition: res.headers.get('content-disposition'),
+      };
+      break;
+    }
+    case 'download-zip': {
+      const outPath = String(flags.out || flags.o || '').trim();
+      if (!outPath) {
+        throw new Error('Usage: open-dreamflow canvas download-zip [--project canvas_default] [--nodes id1,id2] --out <file.zip>');
+      }
+      const nodeIds = typeof flags.nodes === 'string'
+        ? flags.nodes.split(',').map((s) => s.trim()).filter(Boolean)
+        : undefined;
+      const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+      const res = await fetch(`${baseUrl}/api/media/download-zip`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          projectId,
+          ...(nodeIds && nodeIds.length > 0 ? { nodeIds } : {}),
+          ...(typeof flags.name === 'string' ? { archiveName: flags.name } : {}),
+        }),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`ZIP download failed (${res.status}): ${errText.slice(0, 240)}`);
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
+      fs.writeFileSync(outPath, buf);
+      out = {
+        ok: true,
+        outPath: path.resolve(outPath),
+        bytes: buf.length,
+        contentType: res.headers.get('content-type'),
+        contentDisposition: res.headers.get('content-disposition'),
+      };
+      break;
+    }
     default:
       throw new Error(`Unknown canvas subcommand "${action}". Run 'open-dreamflow --help'.`);
   }
