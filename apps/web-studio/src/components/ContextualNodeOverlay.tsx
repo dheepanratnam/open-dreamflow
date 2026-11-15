@@ -473,11 +473,22 @@ export const ContextualNodeOverlay: React.FC = () => {
   const showResolutionPill =
     modality !== 'audio' &&
     (Boolean(activeModelDef?.resolutions?.length) || !activeModelDef?.parameters?.length);
-  const resolutionOptions = activeModelDef?.resolutions?.length
+  const totalImageRefCountEarly =
+    upstreamRefNodes.length + (selectedNode.referenceUrls?.length || 0);
+  const requiresKlingTailPro1080p =
+    modality === 'video' &&
+    effectivePlatformId === 'kling' &&
+    (activeModelDef?.id === 'kling-video-v2_6' || activeModelDef?.id === 'kling-video-v2_5') &&
+    selectedNode.referenceFrameMode === 'start-end' &&
+    totalImageRefCountEarly >= 2;
+  const rawResolutionOptions = activeModelDef?.resolutions?.length
     ? activeModelDef.resolutions
     : modality === 'video'
     ? VIDEO_RESOLUTIONS
     : IMAGE_RESOLUTIONS;
+  const resolutionOptions = requiresKlingTailPro1080p
+    ? rawResolutionOptions.filter((r) => r.toLowerCase() !== '720p')
+    : rawResolutionOptions;
   const activeDisplayResolution =
     resolutionOptions.find(
       (r) => r.toLowerCase() === String(selectedNode.resolution || '').toLowerCase()
@@ -871,13 +882,18 @@ export const ContextualNodeOverlay: React.FC = () => {
     } else if (nextParams.mode === 't2v' || nextParams.mode === 'text-to-video') {
       delete nextParams.mode;
     }
-    const forceMuteTailV26 =
+    const isKlingV2TailLock =
       effectivePlatformId === 'kling' &&
-      activeModelDef?.id === 'kling-video-v2_6' &&
+      (activeModelDef?.id === 'kling-video-v2_6' || activeModelDef?.id === 'kling-video-v2_5') &&
       target === 'start-end' &&
       totalImageRefCount >= 2;
+    const forceMuteTailV26 =
+      isKlingV2TailLock && activeModelDef?.id === 'kling-video-v2_6';
     updateNodeFields(selectedNode.id, {
       referenceFrameMode: target === 't2v' ? undefined : target,
+      ...(isKlingV2TailLock && String(selectedNode.resolution || '').toLowerCase() === '720p'
+        ? { resolution: '1080p' }
+        : {}),
       ...(forceMuteTailV26 ? { audioEnabled: false } : {}),
       modelParams: Object.keys(nextParams).length > 0 ? nextParams : undefined,
     });
@@ -967,10 +983,21 @@ export const ContextualNodeOverlay: React.FC = () => {
     detectAtMentionAtCaret(val, effectiveCaret);
   };
 
+  const dismissAtMenuCleanly = () => {
+    setAtAutocompleteOpen(false);
+    setAtCategory(null);
+    if (atQuery === '' && selectedNode.prompt.endsWith('@')) {
+      const cleaned = selectedNode.prompt.replace(/\s?@$/, '');
+      if (cleaned !== selectedNode.prompt) {
+        updateNodeFields(selectedNode.id, { prompt: cleaned });
+      }
+    }
+    setAtTokenRange(null);
+  };
+
   const openAtMenuFromToolbarButton = () => {
     if (atAutocompleteOpen) {
-      setAtAutocompleteOpen(false);
-      setAtCategory(null);
+      dismissAtMenuCleanly();
       return;
     }
     setOpenMenu(null);
@@ -2099,14 +2126,12 @@ export const ContextualNodeOverlay: React.FC = () => {
                     }
                     if (e.key === 'Escape') {
                       e.preventDefault();
-                      setAtAutocompleteOpen(false);
-                      setAtCategory(null);
+                      dismissAtMenuCleanly();
                       return;
                     }
                   } else if (atAutocompleteOpen && e.key === 'Escape') {
                     e.preventDefault();
-                    setAtCategory(null);
-                    setAtAutocompleteOpen(false);
+                    dismissAtMenuCleanly();
                     return;
                   }
                   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -3209,72 +3234,76 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </button>
               )}
 
-              {/* Compact Video DoP Camera Rig + Dynamic Audio Toggle */}
+              {/* Compact Video DoP Camera Rig (Higgsfield / DoP providers only) + Dynamic Audio Toggle */}
               {modality === 'video' && (
                 <>
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setOpenMenu(openMenu === 'camera' ? null : 'camera')
-                      }
-                      className={`h-8 px-2 rounded-[8px] border text-[11.5px] flex items-center gap-1 transition-colors max-w-[138px] ${
-                        selectedNode.cameraMotion &&
-                        selectedNode.cameraMotion !== 'Static Tripod'
-                          ? 'bg-[#252525] border-[#20D5EC]/40 text-white'
-                          : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/80'
-                      }`}
-                      title={`Camera Motion (DoP Rig): ${selectedNode.cameraMotion || 'Static Tripod'}`}
-                    >
-                      <Camera
-                        className={`w-3.5 h-3.5 shrink-0 ${
-                          selectedNode.cameraMotion &&
-                          selectedNode.cameraMotion !== 'Static Tripod'
-                            ? 'text-[#20D5EC]'
-                            : 'text-white/65'
-                        }`}
-                        strokeWidth={1.6}
-                      />
-                      {selectedNode.cameraMotion &&
-                        selectedNode.cameraMotion !== 'Static Tripod' && (
-                          <span className="truncate">{selectedNode.cameraMotion}</span>
+                  {effectivePlatformId !== 'kling' &&
+                    effectivePlatformId !== 'dreamina' && (
+                      <div className="relative">
+                        <button
+                          type="button"
+                          data-testid="video-dop-camera-pill"
+                          onClick={() =>
+                            setOpenMenu(openMenu === 'camera' ? null : 'camera')
+                          }
+                          className={`h-8 px-2 rounded-[8px] border text-[11.5px] flex items-center gap-1 transition-colors max-w-[138px] ${
+                            selectedNode.cameraMotion &&
+                            selectedNode.cameraMotion !== 'Static Tripod'
+                              ? 'bg-[#252525] border-[#20D5EC]/40 text-white'
+                              : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/80'
+                          }`}
+                          title={`Camera Motion (DoP Rig): ${selectedNode.cameraMotion || 'Static Tripod'}`}
+                        >
+                          <Camera
+                            className={`w-3.5 h-3.5 shrink-0 ${
+                              selectedNode.cameraMotion &&
+                              selectedNode.cameraMotion !== 'Static Tripod'
+                                ? 'text-[#20D5EC]'
+                                : 'text-white/65'
+                            }`}
+                            strokeWidth={1.6}
+                          />
+                          {selectedNode.cameraMotion &&
+                            selectedNode.cameraMotion !== 'Static Tripod' && (
+                              <span className="truncate">{selectedNode.cameraMotion}</span>
+                            )}
+                          <ChevronDown className="w-3 h-3 text-white/40 shrink-0" strokeWidth={1.6} />
+                        </button>
+                        {openMenu === 'camera' && (
+                          <div className="absolute bottom-full right-0 mb-1.5 w-[212px] p-1.5 rounded-[11px] dreamina-menu z-50 space-y-0.5">
+                            <div className="px-2 py-1 text-[10px] font-medium text-white/40 uppercase tracking-wider">
+                              Camera Motion (DoP Rig)
+                            </div>
+                            {DOP_CAMERA_MOTIONS.map((preset) => {
+                              const active =
+                                (selectedNode.cameraMotion || 'Static Tripod') === preset;
+                              return (
+                                <button
+                                  key={preset}
+                                  type="button"
+                                  onClick={() => {
+                                    updateNodeFields(selectedNode.id, {
+                                      cameraMotion: preset,
+                                    });
+                                    setOpenMenu(null);
+                                  }}
+                                  className={`w-full h-7 px-2.5 rounded-[7px] text-[11.5px] flex items-center justify-between text-left ${
+                                    active
+                                      ? 'bg-white/[0.1] text-white font-medium'
+                                      : 'hover:bg-white/[0.06] text-white/80'
+                                  }`}
+                                >
+                                  <span>{preset}</span>
+                                  {active && (
+                                    <Check className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={2} />
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
                         )}
-                      <ChevronDown className="w-3 h-3 text-white/40 shrink-0" strokeWidth={1.6} />
-                    </button>
-                    {openMenu === 'camera' && (
-                      <div className="absolute bottom-full right-0 mb-1.5 w-[212px] p-1.5 rounded-[11px] dreamina-menu z-50 space-y-0.5">
-                        <div className="px-2 py-1 text-[10px] font-medium text-white/40 uppercase tracking-wider">
-                          Camera Motion (DoP Rig)
-                        </div>
-                        {DOP_CAMERA_MOTIONS.map((preset) => {
-                          const active =
-                            (selectedNode.cameraMotion || 'Static Tripod') === preset;
-                          return (
-                            <button
-                              key={preset}
-                              type="button"
-                              onClick={() => {
-                                updateNodeFields(selectedNode.id, {
-                                  cameraMotion: preset,
-                                });
-                                setOpenMenu(null);
-                              }}
-                              className={`w-full h-7 px-2.5 rounded-[7px] text-[11.5px] flex items-center justify-between text-left ${
-                                active
-                                  ? 'bg-white/[0.1] text-white font-medium'
-                                  : 'hover:bg-white/[0.06] text-white/80'
-                              }`}
-                            >
-                              <span>{preset}</span>
-                              {active && (
-                                <Check className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={2} />
-                              )}
-                            </button>
-                          );
-                        })}
                       </div>
                     )}
-                  </div>
 
                   {showVideoAudioPill && (
                     <button

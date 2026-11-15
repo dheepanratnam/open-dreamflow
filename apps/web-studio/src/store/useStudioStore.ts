@@ -6259,7 +6259,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   },
 
   setNodePlatformAndModel: (nodeId, platformId, explicitModelId) => {
-    const { nodes, platformsCatalog, externalMcpServers } = get();
+    const { nodes, edges, platformsCatalog, externalMcpServers } = get();
     const target = nodes.find((n) => n.id === nodeId);
     if (!target) return;
     const modality = nodeKindToModality(target.kind) || 'image';
@@ -6420,13 +6420,31 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           : undefined
         : target.referenceFrameMode;
 
+    const upstreamImgCount = edges.filter((e) => {
+      if (e.targetId !== nodeId) return false;
+      const src = nodes.find((sn) => sn.id === e.sourceId);
+      return Boolean(src && src.kind !== 'video' && src.kind !== 'audio' && src.imageUrl);
+    }).length;
+    const totalImgRefs = upstreamImgCount + (target.referenceUrls?.length || 0);
+    if (
+      modality === 'video' &&
+      platformId === 'kling' &&
+      (resolvedModelId === 'kling-video-v2_6' || resolvedModelId === 'kling-video-v2_5') &&
+      nextReferenceFrameMode === 'start-end' &&
+      totalImgRefs >= 2 &&
+      String(nextResolution).toLowerCase() === '720p'
+    ) {
+      nextResolution = '1080p';
+    }
+
     const nextAudioEnabled =
       modality === 'video'
         ? chosenModel?.supportsAudio === false ||
           chosenModel?.supportsNativeAudio === false ||
           (platformId === 'kling' &&
             resolvedModelId === 'kling-video-v2_6' &&
-            String(nextResolution).toLowerCase() === '720p')
+            (String(nextResolution).toLowerCase() === '720p' ||
+              (nextReferenceFrameMode === 'start-end' && totalImgRefs >= 2)))
           ? false
           : target.audioEnabled
         : target.audioEnabled;
@@ -6450,6 +6468,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               quality: nextQuality,
               referenceFrameMode: nextReferenceFrameMode,
               audioEnabled: nextAudioEnabled,
+              ...(platformId === 'kling' || platformId === 'dreamina'
+                ? { cameraMotion: undefined }
+                : {}),
+              ...(platformId === 'kling' ? { negativePrompt: undefined } : {}),
               modelParams: Object.keys(nextModelParams).length > 0 ? nextModelParams : undefined,
               audioMode:
                 modality === 'audio' && resolvedModelId.includes('sound')
@@ -6861,6 +6883,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       node.kind === 'contact-sheet' && !/3x3|9-grid|contact sheet/i.test(basePrompt)
         ? `3x3 cinematic storyboard contact sheet grid (9 distinct panels: wide establishing, medium, close-up, low angle, over-the-shoulder, detail insert, tracking angle, high angle, final hero frame), consistent characters and lighting: ${basePrompt}`
         : modality === 'video' &&
+          platformId !== 'kling' &&
+          platformId !== 'dreamina' &&
           node.cameraMotion &&
           node.cameraMotion !== 'Static Tripod' &&
           !basePrompt.toLowerCase().includes(node.cameraMotion.toLowerCase())

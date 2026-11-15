@@ -153,6 +153,7 @@ export class ExternalMcpHost {
   private readonly registryPath: string;
   private readonly servers = new Map<string, LiveServerRuntime>();
   private readonly virtualServers = new Map<string, VirtualServerEntry>();
+  private readonly serverCallPacer = new Map<string, Promise<void>>();
   private nextRpcId = 1;
   private readonly quiet: boolean;
 
@@ -701,20 +702,67 @@ export class ExternalMcpHost {
       await this.connectRuntime(runtime);
     }
 
-    let rpcResponse = await this.sendRpc(
-      runtime,
-      'tools/call',
-      {
-        name: params.toolName,
-        arguments: params.arguments || {},
-      },
-      params.timeoutMs ?? 180_000
-    );
+    const isRateLimitText = (txt: string): boolean =>
+      /too many requests|handling too many requests|rate[ -]?limit|\b429\b|slow down and retry/i.test(
+        txt
+      );
 
-    let resultObj = ((rpcResponse.result as Record<string, unknown>) || rpcResponse) as Record<
-      string,
-      unknown
-    >;
+    const paceHttpCall = async (): Promise<void> => {
+      if (runtime.config.transport !== 'http') return;
+      const prev = this.serverCallPacer.get(params.serverId) || Promise.resolve();
+      let release!: () => void;
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      this.serverCallPacer.set(
+        params.serverId,
+        prev.catch(() => {}).then(() => gate)
+      );
+      await prev.catch(() => {});
+      setTimeout(release, 650).unref?.();
+    };
+
+    const callOnceWithRateRetry = async (): Promise<Record<string, unknown>> => {
+      const backoffScheduleMs = [2400, 4800, 8800, 14000];
+      for (let attempt = 0; attempt <= backoffScheduleMs.length; attempt++) {
+        await paceHttpCall();
+        try {
+          const resp = await this.sendRpc(
+            runtime,
+            'tools/call',
+            {
+              name: params.toolName,
+              arguments: params.arguments || {},
+            },
+            params.timeoutMs ?? 180_000
+          );
+          const resObj = ((resp.result as Record<string, unknown>) || resp) as Record<
+            string,
+            unknown
+          >;
+          if (resObj.isError === true) {
+            const errTxt = this.extractTextSummary(resObj) || '';
+            if (isRateLimitText(errTxt) && attempt < backoffScheduleMs.length) {
+              const jitter = Math.floor(Math.random() * 650);
+              await new Promise((r) => setTimeout(r, backoffScheduleMs[attempt] + jitter));
+              continue;
+            }
+          }
+          return resObj;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (isRateLimitText(msg) && attempt < backoffScheduleMs.length) {
+            const jitter = Math.floor(Math.random() * 650);
+            await new Promise((r) => setTimeout(r, backoffScheduleMs[attempt] + jitter));
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw new Error(`MCP tool "${params.toolName}" exceeded rate-limit retry attempts.`);
+    };
+
+    let resultObj = await callOnceWithRateRetry();
 
     if (resultObj.isError === true) {
       const errText =
@@ -725,19 +773,7 @@ export class ExternalMcpHost {
       ) {
         const refreshed = await this.refreshOAuthToken(runtime);
         if (refreshed) {
-          rpcResponse = await this.sendRpc(
-            runtime,
-            'tools/call',
-            {
-              name: params.toolName,
-              arguments: params.arguments || {},
-            },
-            params.timeoutMs ?? 180_000
-          );
-          resultObj = ((rpcResponse.result as Record<string, unknown>) || rpcResponse) as Record<
-            string,
-            unknown
-          >;
+          resultObj = await callOnceWithRateRetry();
         }
       }
       if (resultObj.isError === true) {

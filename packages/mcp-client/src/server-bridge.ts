@@ -10419,7 +10419,8 @@ export class McpStdioBridgeServer {
           const hasTailInput = klingInputs.some((i) => i.name === 'tail_image');
           const hasFirstInput = klingInputs.some((i) => i.name === 'first_image');
           const effectiveVidRes =
-            klingModelId === 'kling-video-v2_6' && hasTailInput
+            (klingModelId === 'kling-video-v2_6' || klingModelId === 'kling-video-v2_5') &&
+            hasTailInput
               ? '1080p'
               : String(resolution || '').trim().toLowerCase();
 
@@ -10657,7 +10658,15 @@ export class McpStdioBridgeServer {
       ): Promise<{ out: Record<string, unknown>; urls: string[] }> => {
         if (!statusTool) return { out: {}, urls: [] };
         const pollStart = Date.now();
-        const pollMaxMs = Number(params.timeoutMs) || (kind === 'video' ? 600_000 : 240_000);
+        const defaultPollCeiling =
+          candidateMcpServer.platformId === 'kling'
+            ? kind === 'video'
+              ? 720_000
+              : 480_000
+            : kind === 'video'
+              ? 600_000
+              : 240_000;
+        const pollMaxMs = Math.max(Number(params.timeoutMs) || 0, defaultPollCeiling);
         const statusProps = ((statusTool.inputSchema?.properties as Record<string, unknown>) || {}) as Record<
           string,
           unknown
@@ -10669,7 +10678,7 @@ export class McpStdioBridgeServer {
 
         while (Date.now() - pollStart < pollMaxMs) {
           if (pollAttempt > 0) {
-            await new Promise((r) => setTimeout(r, 2000));
+            await new Promise((r) => setTimeout(r, 2500));
           } else if (!usesSync) {
             await new Promise((r) => setTimeout(r, 1500));
           }
@@ -10705,14 +10714,28 @@ export class McpStdioBridgeServer {
             pollArgs = { [key]: jid };
           }
 
-          lastOut = await this.executeExternalMcpToolCall({
-            serverId: candidateMcpServer.id,
-            toolName: statusTool.name,
-            arguments: pollArgs,
-            timeoutMs: usesSync ? 60_000 : 30_000,
-            maxOutputs: maxPerJob,
-            _internalSkipCreditCheck: true,
-          });
+          try {
+            lastOut = await this.executeExternalMcpToolCall({
+              serverId: candidateMcpServer.id,
+              toolName: statusTool.name,
+              arguments: pollArgs,
+              timeoutMs: usesSync ? 60_000 : 30_000,
+              maxOutputs: maxPerJob,
+              _internalSkipCreditCheck: true,
+            });
+          } catch (pollErr) {
+            const pMsg = pollErr instanceof Error ? pollErr.message : String(pollErr);
+            if (
+              /too many requests|rate[ -]?limit|\b429\b|ECONNRESET|ETIMEDOUT|fetch failed|timeout/i.test(
+                pMsg
+              ) &&
+              Date.now() - pollStart < pollMaxMs
+            ) {
+              await new Promise((r) => setTimeout(r, 3000));
+              continue;
+            }
+            throw pollErr;
+          }
           const urls = collectOutUrls(lastOut);
           if (urls.length > 0) {
             return { out: lastOut, urls };
@@ -10898,6 +10921,8 @@ export class McpStdioBridgeServer {
               for (const u of pr.urls) {
                 if (!allUrls.includes(u)) allUrls.push(u);
               }
+            } else if (Object.keys(pr.out).length > 0 && allUrls.length === 0) {
+              lastNonEmptyOut = pr.out;
             }
           }
           return { firstOut: out, finalOut: lastNonEmptyOut, urls: allUrls, jobIds: jids };
