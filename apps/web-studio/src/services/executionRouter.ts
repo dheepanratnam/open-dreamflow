@@ -55,6 +55,9 @@ function resolveBackendOrigin(): string {
       window.location.hostname !== 'localhost' &&
       window.location.hostname !== '127.0.0.1'
     ) {
+      if (window.location.hostname.endsWith('.pages.dev')) {
+        return 'https://open-dreamflow-engine-production.up.railway.app';
+      }
       return window.location.origin;
     }
   }
