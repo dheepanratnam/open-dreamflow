@@ -522,7 +522,8 @@ export const ContextualNodeOverlay: React.FC = () => {
   const effectiveAudioSubMode: 'tts' | 'sfx' | 'music' =
     selectedNode.audioMode === 'music' ||
     rawMatchedAudioModel?.audioSubMode === 'music' ||
-    (selectedNode.modelId || '').startsWith('music_')
+    (selectedNode.modelId || '').startsWith('music_') ||
+    (selectedNode.modelId || '').startsWith('eleven_music_')
       ? 'music'
       : selectedNode.audioMode === 'sfx' ||
         rawMatchedAudioModel?.audioSubMode === 'sfx' ||
@@ -535,7 +536,11 @@ export const ContextualNodeOverlay: React.FC = () => {
       ? allPlatformModels.filter((m) => {
           const mSub =
             m.audioSubMode ||
-            (m.id.startsWith('music_') ? 'music' : m.id.includes('sound') ? 'sfx' : 'tts');
+            (m.id.startsWith('music_') || m.id.startsWith('eleven_music_')
+              ? 'music'
+              : m.id.includes('sound')
+              ? 'sfx'
+              : 'tts');
           return mSub === effectiveAudioSubMode;
         })
       : allPlatformModels;
@@ -897,9 +902,9 @@ export const ContextualNodeOverlay: React.FC = () => {
     if (effectivePlatformId === 'elevenlabs') {
       const targetModelId =
         nextMode === 'music'
-          ? 'music_v2_5'
+          ? 'eleven_music_v2_5'
           : nextMode === 'sfx'
-          ? 'eleven_text_to_sound_v3'
+          ? 'eleven_text_to_sound_v2'
           : 'eleven_v4';
       setNodePlatformAndModel(selectedNode.id, 'elevenlabs', targetModelId);
       updateNodeFields(selectedNode.id, {

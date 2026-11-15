@@ -5972,7 +5972,9 @@ export class McpStdioBridgeServer {
         ? 'balance'
         : srvSummary?.tools.some((t) => t.name === 'query_membership_and_credits')
           ? 'query_membership_and_credits'
-          : 'balance';
+          : srvSummary?.tools.some((t) => t.name === 'account_get_usage')
+            ? 'account_get_usage'
+            : 'balance';
       const res = await this.externalMcpHost.callTool({
         serverId,
         toolName: balanceToolName,
@@ -6025,6 +6027,15 @@ export class McpStdioBridgeServer {
         } else if (typeof rawCredits === 'string' && rawCredits.trim()) {
           const parsed = Number(rawCredits.replace(/,/g, ''));
           if (Number.isFinite(parsed)) credits = parsed;
+        } else if (
+          typeof structured.character_limit === 'number' &&
+          Number.isFinite(structured.character_limit)
+        ) {
+          const usedChars =
+            typeof structured.character_count === 'number' && Number.isFinite(structured.character_count)
+              ? structured.character_count
+              : 0;
+          credits = Math.max(0, structured.character_limit - usedChars);
         }
         const rawPlan =
           structured.membershipTypeDescription ??
@@ -6318,7 +6329,10 @@ export class McpStdioBridgeServer {
           (srv) =>
             srv.status === 'connected' &&
             srv.tools.some(
-              (t) => t.name === 'balance' || t.name === 'query_membership_and_credits'
+              (t) =>
+                t.name === 'balance' ||
+                t.name === 'query_membership_and_credits' ||
+                t.name === 'account_get_usage'
             )
         )
         .map(async (srv) => {
@@ -7166,6 +7180,421 @@ export class McpStdioBridgeServer {
     string,
     { fetchedAt: number; source: 'account' | 'public'; voices: Array<Record<string, unknown>> }
   >();
+  private elevenLabsScratchFlowByServer = new Map<string, string>();
+
+  private async executeElevenLabsOfficialMcpFlow(opts: {
+    serverId: string;
+    nodeId?: string;
+    modelId: string;
+    audioMode: string;
+    prompt: string;
+    voiceId?: string;
+    rawDurationRequested: number;
+    modelParams: Record<string, unknown>;
+    estimateOnly?: boolean;
+  }): Promise<Record<string, unknown>> {
+    const { serverId, nodeId, prompt, voiceId, rawDurationRequested, modelParams, estimateOnly } = opts;
+    const rawModel = (opts.modelId || 'eleven_v4').trim();
+    const isMusic =
+      rawModel.startsWith('music_') ||
+      rawModel.startsWith('eleven_music_') ||
+      opts.audioMode === 'music';
+    const isSfx =
+      !isMusic &&
+      (rawModel.startsWith('eleven_text_to_sound') ||
+        opts.audioMode === 'sfx' ||
+        opts.audioMode === 'sound');
+
+    const nodeType: 'tts' | 'sfx' | 'music' = isMusic ? 'music' : isSfx ? 'sfx' : 'tts';
+    const mcpModelId = isMusic
+      ? rawModel === 'music_v1' || rawModel === 'eleven_music_v1'
+        ? 'eleven_music_v1'
+        : rawModel === 'music_v2' || rawModel === 'eleven_music_v2'
+          ? 'eleven_music_v2'
+          : 'eleven_music_v2_5'
+      : isSfx
+        ? 'eleven_text_to_sound_v2'
+        : ['eleven_v4', 'eleven_v3', 'eleven_multilingual_v2', 'eleven_flash_v2_5', 'eleven_turbo_v2_5'].includes(
+              rawModel
+            )
+          ? rawModel
+          : 'eleven_v4';
+
+    const readStructured = (out: Record<string, unknown>): Record<string, unknown> => {
+      if (typeof out.structuredData === 'object' && out.structuredData !== null) {
+        return out.structuredData as Record<string, unknown>;
+      }
+      const raw = out.rawResult as Record<string, unknown> | undefined;
+      if (raw && typeof raw.structuredContent === 'object' && raw.structuredContent !== null) {
+        return raw.structuredContent as Record<string, unknown>;
+      }
+      const txt = String(out.textSummary || out.textContent || '').trim();
+      if (txt.startsWith('{')) {
+        try {
+          const p = JSON.parse(txt);
+          if (p && typeof p === 'object') return p as Record<string, unknown>;
+        } catch {
+          // ignore
+        }
+      }
+      return {};
+    };
+
+    let flowId = this.elevenLabsScratchFlowByServer.get(serverId) || '';
+    if (!flowId) {
+      try {
+        const listOut = await this.externalMcpHost.callTool({
+          serverId,
+          toolName: 'creative_list_flows',
+          arguments: { search: 'Open Dreamflow Bridge', page_size: 5 },
+          timeoutMs: 12_000,
+        });
+        const listObj = readStructured(listOut);
+        const existingFlows = Array.isArray(listObj.flows)
+          ? (listObj.flows as Array<Record<string, unknown>>)
+          : [];
+        const matched = existingFlows.find(
+          (f) => String(f.name || '').trim() === 'Open Dreamflow Bridge' && typeof f.flow_id === 'string'
+        );
+        if (matched && typeof matched.flow_id === 'string') {
+          flowId = matched.flow_id;
+        }
+      } catch {
+        // Fall through to create
+      }
+    }
+
+    if (!flowId) {
+      const createdOut = await this.externalMcpHost.callTool({
+        serverId,
+        toolName: 'creative_create_flow',
+        arguments: { name: 'Open Dreamflow Bridge' },
+        timeoutMs: 15_000,
+      });
+      const createdObj = readStructured(createdOut);
+      flowId = String(createdObj.flow_id || '').trim();
+      if (!flowId) {
+        throw new BridgeHttpError(
+          502,
+          `ElevenLabs MCP failed to allocate workspace flow: ${String(createdOut.textSummary || '').slice(0, 240)}`,
+          'elevenlabs'
+        );
+      }
+    }
+    this.elevenLabsScratchFlowByServer.set(serverId, flowId);
+
+    const mcpParams: Record<string, unknown> = {};
+    if (nodeType === 'tts') {
+      const lang =
+        typeof modelParams.language_code === 'string' &&
+        modelParams.language_code.trim() &&
+        modelParams.language_code.trim().toLowerCase() !== 'auto'
+          ? modelParams.language_code.trim()
+          : undefined;
+      if (lang) mcpParams.language_code = lang;
+
+      const voiceSettings: Record<string, unknown> = {};
+      if (modelParams.stability !== undefined && Number.isFinite(Number(modelParams.stability))) {
+        const rawStab = Math.max(0, Math.min(1, Number(modelParams.stability)));
+        voiceSettings.stability =
+          mcpModelId === 'eleven_v3'
+            ? rawStab < 0.25
+              ? 0.0
+              : rawStab > 0.75
+                ? 1.0
+                : 0.5
+            : rawStab;
+      }
+      if (
+        mcpModelId !== 'eleven_v3' &&
+        modelParams.similarity_boost !== undefined &&
+        Number.isFinite(Number(modelParams.similarity_boost))
+      ) {
+        const sim = Math.max(0, Math.min(1, Number(modelParams.similarity_boost)));
+        if (mcpModelId === 'eleven_v4') {
+          voiceSettings.similarity = sim;
+        } else {
+          voiceSettings.similarity_boost = sim;
+        }
+      }
+      if (
+        mcpModelId === 'eleven_multilingual_v2' &&
+        modelParams.style !== undefined &&
+        Number.isFinite(Number(modelParams.style)) &&
+        Number(modelParams.style) > 0
+      ) {
+        voiceSettings.style = Math.max(0, Math.min(1, Number(modelParams.style)));
+      }
+      if (
+        mcpModelId === 'eleven_multilingual_v2' &&
+        typeof modelParams.use_speaker_boost === 'boolean'
+      ) {
+        voiceSettings.use_speaker_boost = modelParams.use_speaker_boost;
+      }
+      if (
+        (mcpModelId === 'eleven_multilingual_v2' ||
+          mcpModelId === 'eleven_flash_v2_5' ||
+          mcpModelId === 'eleven_turbo_v2_5') &&
+        modelParams.speed !== undefined &&
+        Number.isFinite(Number(modelParams.speed))
+      ) {
+        voiceSettings.speed = Math.max(
+          0.7,
+          Math.min(1.2, Math.round(Number(modelParams.speed) * 100) / 100)
+        );
+      }
+      if (Object.keys(voiceSettings).length > 0) {
+        mcpParams.voice_settings = voiceSettings;
+      }
+    } else if (nodeType === 'sfx') {
+      if (Number.isFinite(rawDurationRequested) && rawDurationRequested > 0) {
+        mcpParams.duration_seconds = Math.max(0.5, Math.min(30, rawDurationRequested));
+      }
+      if (
+        modelParams.prompt_influence !== undefined &&
+        Number.isFinite(Number(modelParams.prompt_influence))
+      ) {
+        mcpParams.prompt_influence = Math.max(0, Math.min(1, Number(modelParams.prompt_influence)));
+      }
+      if (modelParams.loop !== undefined) {
+        mcpParams.loop =
+          modelParams.loop === true || String(modelParams.loop).toLowerCase() === 'true';
+      }
+    } else {
+      const dur =
+        Number.isFinite(rawDurationRequested) && rawDurationRequested >= 3
+          ? Math.max(3, Math.min(600, rawDurationRequested))
+          : 15;
+      mcpParams.duration_seconds = dur;
+      const forceInst =
+        modelParams.force_instrumental === true ||
+        modelParams.instrumental === true ||
+        String(modelParams.force_instrumental ?? modelParams.instrumental ?? '').toLowerCase() ===
+          'true';
+      mcpParams.instrumental = forceInst;
+      mcpParams.lyrics_type = forceInst ? 'instrumental' : 'auto';
+    }
+
+    const effectiveVoiceId = (voiceId || 'JBFqnCBsd6RMkjVDRZzb').trim();
+    const addNodeOut = await this.externalMcpHost.callTool({
+      serverId,
+      toolName: 'creative_add_flow_node',
+      arguments: {
+        flow_id: flowId,
+        node_type: nodeType,
+        model_id: mcpModelId,
+        prompt,
+        ...(nodeType === 'tts' ? { voice_id: effectiveVoiceId } : {}),
+        ...(Object.keys(mcpParams).length > 0 ? { model_parameters: mcpParams } : {}),
+      },
+      timeoutMs: 20_000,
+    });
+    const addObj = readStructured(addNodeOut);
+    const flowNodeId = String(addObj.node_id || '').trim();
+    if (!flowNodeId) {
+      throw new BridgeHttpError(
+        400,
+        `ElevenLabs MCP node setup rejected (${mcpModelId}): ${String(addNodeOut.textSummary || addObj.error || 'unknown error').slice(0, 320)}`,
+        'elevenlabs'
+      );
+    }
+
+    const cleanupTempNode = async () => {
+      try {
+        await this.externalMcpHost.callTool({
+          serverId,
+          toolName: 'creative_delete_flow_nodes',
+          arguments: { flow_id: flowId, node_ids: [flowNodeId] },
+          timeoutMs: 8_000,
+        });
+      } catch {
+        // Non-fatal cleanup
+      }
+    };
+
+    try {
+      const runOut = await this.executeExternalMcpToolCall({
+        serverId,
+        toolName: 'creative_run_flow_nodes',
+        arguments: {
+          flow_id: flowId,
+          node_ids: [flowNodeId],
+          generations_count: 1,
+          ...(estimateOnly ? { estimate_only: true } : {}),
+        },
+        timeoutMs: 30_000,
+        _internalSkipCreditCheck: Boolean(estimateOnly),
+      });
+      const runObj = readStructured(runOut);
+
+      if (estimateOnly) {
+        await cleanupTempNode();
+        const estNodes = Array.isArray(runObj.nodes)
+          ? (runObj.nodes as Array<Record<string, unknown>>)
+          : [];
+        const blockingErrors = estNodes.flatMap((n) =>
+          Array.isArray(n.blocking_errors) ? (n.blocking_errors as unknown[]).map(String) : []
+        );
+        if (runObj.has_blocking_errors === true || blockingErrors.length > 0) {
+          throw new BridgeHttpError(
+            400,
+            `ElevenLabs MCP validation failed (${mcpModelId}): ${blockingErrors.join('; ') || JSON.stringify(runObj).slice(0, 280)}`,
+            'elevenlabs'
+          );
+        }
+        return {
+          ok: true,
+          status: 'ESTIMATED',
+          nodeId,
+          flowNodeId,
+          kind: 'audio',
+          platformId: 'elevenlabs',
+          modelId: mcpModelId,
+          transportUsed: 'mcp',
+          providerUsed: 'elevenlabs-mcp',
+          estimate: runObj.total_cost || runObj.estimate || runObj,
+          estimateDetail: runObj,
+        };
+      }
+
+      const rawSessionIds = Array.isArray(runObj.session_ids)
+        ? (runObj.session_ids as unknown[]).map((s) => String(s)).filter(Boolean)
+        : typeof runObj.session_id === 'string' && runObj.session_id
+          ? [runObj.session_id]
+          : [];
+      if (rawSessionIds.length === 0) {
+        const rawErr = String(runObj.error || runOut.textSummary || '').trim();
+        throw new BridgeHttpError(
+          /free generations are busy/i.test(rawErr) ? 429 : 502,
+          rawErr || 'ElevenLabs MCP run returned no session_ids.',
+          'elevenlabs'
+        );
+      }
+
+      let generationIds: string[] = [];
+      let directSignedUrl = '';
+      const maxPollMs = nodeType === 'music' ? 160_000 : 90_000;
+      const pollStart = Date.now();
+      while (Date.now() - pollStart < maxPollMs) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const stOut = await this.externalMcpHost.callTool({
+          serverId,
+          toolName: 'creative_get_flow_run_status',
+          arguments: { flow_id: flowId, session_ids: rawSessionIds },
+          timeoutMs: 20_000,
+        });
+        const stObj = readStructured(stOut);
+        const sessions = Array.isArray(stObj.sessions)
+          ? (stObj.sessions as Array<Record<string, unknown>>)
+          : [];
+        for (const sess of sessions) {
+          if (typeof sess.generation_id === 'string' && sess.generation_id) {
+            generationIds.push(sess.generation_id);
+          }
+          const candUrl =
+            sess.full_res_url ?? sess.audio_url ?? sess.media_url ?? sess.url ?? sess.download_url;
+          if (typeof candUrl === 'string' && /^https?:\/\//i.test(candUrl)) {
+            directSignedUrl = candUrl;
+          }
+        }
+        if (stObj.has_failures && !stObj.all_completed && !directSignedUrl && generationIds.length === 0) {
+          throw new BridgeHttpError(
+            502,
+            `ElevenLabs MCP generation failed (${mcpModelId}): ${JSON.stringify(stObj).slice(0, 300)}`,
+            'elevenlabs'
+          );
+        }
+        if (stObj.all_completed || directSignedUrl) {
+          break;
+        }
+      }
+
+      if (!directSignedUrl) {
+        if (generationIds.length === 0) {
+          const nodeInfoOut = await this.externalMcpHost.callTool({
+            serverId,
+            toolName: 'creative_get_flow_node',
+            arguments: { flow_id: flowId, node_id: flowNodeId, generations_limit: 2 },
+            timeoutMs: 15_000,
+          });
+          const nodeInfoObj = readStructured(nodeInfoOut);
+          const gens = Array.isArray(nodeInfoObj.generations)
+            ? (nodeInfoObj.generations as Array<Record<string, unknown>>)
+            : [];
+          for (const g of gens) {
+            if (typeof g.generation_id === 'string' && g.generation_id) {
+              generationIds.push(g.generation_id);
+            }
+            const u = g.full_res_url ?? g.audio_url ?? g.url;
+            if (typeof u === 'string' && /^https?:\/\//i.test(u)) {
+              directSignedUrl = u;
+            }
+          }
+        }
+        if (!directSignedUrl && generationIds.length > 0) {
+          const gensOut = await this.externalMcpHost.callTool({
+            serverId,
+            toolName: 'creative_get_generations',
+            arguments: { flow_id: flowId, generation_ids: generationIds.slice(0, 4) },
+            timeoutMs: 20_000,
+          });
+          const gensObj = readStructured(gensOut);
+          const list = Array.isArray(gensObj.generations)
+            ? (gensObj.generations as Array<Record<string, unknown>>)
+            : [];
+          for (const item of list) {
+            const u = item.full_res_url ?? item.audio_url ?? item.media_url ?? item.url;
+            if (typeof u === 'string' && /^https?:\/\//i.test(u)) {
+              directSignedUrl = u;
+              break;
+            }
+          }
+          if (!directSignedUrl) {
+            const m = /https?:\/\/[^\s"'<>]+/i.exec(JSON.stringify(gensObj));
+            if (m) directSignedUrl = m[0];
+          }
+        }
+      }
+
+      await cleanupTempNode();
+
+      if (!directSignedUrl) {
+        throw new BridgeHttpError(
+          504,
+          `ElevenLabs MCP completed without returning a downloadable audio URL for ${mcpModelId}.`,
+          'elevenlabs'
+        );
+      }
+
+      const saved = await this.ingestExternalMediaToDisk(directSignedUrl, 'elevenlabs_live');
+      return {
+        ok: true,
+        status: 'COMPLETED',
+        nodeId,
+        kind: 'audio',
+        platformId: 'elevenlabs',
+        modelId: mcpModelId,
+        transportUsed: 'mcp',
+        providerUsed: 'elevenlabs-mcp',
+        mediaUrl: saved.mediaUrl,
+        fullUrl: saved.fullUrl,
+        audioUrl: saved.mediaUrl,
+        waveform: saved.waveform,
+        outputs: [saved.mediaUrl],
+      };
+    } catch (err) {
+      await cleanupTempNode();
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      if (/free generations are busy/i.test(rawMsg)) {
+        throw new BridgeHttpError(
+          429,
+          'ElevenLabs Free-tier Creative queue is busy right now (nothing was charged). Retry in a minute, paste an ElevenLabs API Key (xi-api-key) in Connections · Credits to bypass the Free-tier queue, or upgrade your ElevenLabs plan.',
+          'elevenlabs'
+        );
+      }
+      throw err;
+    }
+  }
 
   private async resolveElevenLabsAuthForUser(
     user: StoredUserRecord,
@@ -7335,12 +7764,22 @@ export class McpStdioBridgeServer {
           explicitBaseUrl: effectiveKeys.baseUrl,
           explicitMcpServerId: effectiveMcpServer?.id,
         });
-        if (elAuth.apiKey || elAuth.oauthAccessToken) {
+        if (elAuth.apiKey) {
           const sub = await this.runElevenLabsWithOAuthRetry(elAuth, (client) =>
             client.getSubscription(AbortSignal.timeout(5_000))
           );
           if (typeof sub.remainingCharacters === 'number' && Number.isFinite(sub.remainingCharacters)) {
             return { balance: sub.remainingCharacters, unit: 'characters' };
+          }
+        }
+        const elMcpSrv = this.findMcpServerForUser(user, 'elevenlabs', undefined, 'auto');
+        if (
+          elMcpSrv &&
+          elMcpSrv.tools.some((t) => t.name === 'account_get_usage' || t.name === 'balance')
+        ) {
+          const mcpBal = await this.getMcpBalanceWithCache(elMcpSrv.id, true);
+          if (typeof mcpBal?.credits === 'number' && Number.isFinite(mcpBal.credits)) {
+            return { balance: mcpBal.credits, unit: 'characters' };
           }
         }
       } catch {
@@ -7430,7 +7869,7 @@ export class McpStdioBridgeServer {
         visibleServers.some((s) => s.platformId === 'elevenlabs' && s.status === 'connected'),
       account: elAuth.accountLabel,
     };
-    if (elAuth.apiKey || elAuth.oauthAccessToken) {
+    if (elAuth.apiKey) {
       try {
         const sub = await this.runElevenLabsWithOAuthRetry(elAuth, (client) =>
           client.getSubscription(AbortSignal.timeout(5_000))
@@ -7446,6 +7885,23 @@ export class McpStdioBridgeServer {
         };
       } catch {
         // Non-fatal fallback if scope does not include user_read
+      }
+    }
+    if (elevenLabsQuota.remainingCharacters === undefined) {
+      const elMcpSrv = this.findMcpServerForUser(user, 'elevenlabs', undefined, 'auto');
+      if (
+        elMcpSrv &&
+        elMcpSrv.tools.some((t) => t.name === 'account_get_usage' || t.name === 'balance')
+      ) {
+        const elMcpBal = await this.getMcpBalanceWithCache(elMcpSrv.id, forceRefresh);
+        if (elMcpBal && typeof elMcpBal.credits === 'number') {
+          elevenLabsQuota = {
+            connected: true,
+            remainingCharacters: elMcpBal.credits,
+            tier: elMcpBal.plan || elevenLabsQuota.tier,
+            account: elMcpBal.account || elevenLabsQuota.account,
+          };
+        }
       }
     }
 
@@ -8051,9 +8507,11 @@ export class McpStdioBridgeServer {
       typeof toolArgs.params === 'object' &&
       toolArgs.params !== null &&
       (toolArgs.params as Record<string, unknown>).get_cost === true;
+    const isEstimateOnlyPreflight = toolArgs.estimate_only === true;
     const isReadOnlyTool =
       isGetCostPreflight ||
-      /^(balance|query_membership_and_credits|who_am_i|query_tasks|element_list|element_get|motion_library_list|show_plans_and_credits|job_status|models_explore|dreamina_models_explore|list_models|status|health|get_job|check_job|assets|jobs|quote)$/i.test(
+      isEstimateOnlyPreflight ||
+      /^(balance|query_membership_and_credits|account_get_usage|who_am_i|query_tasks|element_list|element_get|motion_library_list|show_plans_and_credits|job_status|models_explore|dreamina_models_explore|list_models|status|health|get_job|check_job|assets|jobs|quote|creative_list_voices|creative_get_flow_node_types|creative_get_model_schema|creative_get_model_guide|creative_get_flow|creative_get_flow_node|creative_get_flow_run_status|creative_show_flow_results|creative_get_generations|creative_list_flows|creative_create_flow|creative_add_flow_node|creative_update_node|creative_update_flow_nodes|creative_delete_flow_nodes|creative_get_available_assets|creative_list_brand_kits|get_more_tools)$/i.test(
         toolName
       );
     let resolvedCreditSource: 'own' | 'shared' | 'owner' = user.role === 'owner' ? 'owner' : 'own';
@@ -9954,9 +10412,7 @@ export class McpStdioBridgeServer {
             explicitMcpServerId: mcpServerId || ctx.resolvedMcpServerId || undefined,
           })
         : null;
-    const hasElevenLabsDirectAuth = Boolean(
-      elDirectAuth && (elDirectAuth.apiKey || elDirectAuth.oauthAccessToken)
-    );
+    const hasElevenLabsDirectAuth = Boolean(elDirectAuth && elDirectAuth.apiKey);
 
     const bypassMcpForElevenLabsDirectRest =
       platformId === 'elevenlabs' && !mcpToolName && hasElevenLabsDirectAuth;
@@ -9985,6 +10441,26 @@ export class McpStdioBridgeServer {
         ...rawSettingsModelParams,
         ...rawTopModelParams,
       };
+
+      if (
+        candidateMcpServer.platformId === 'elevenlabs' &&
+        !mcpToolName &&
+        candidateMcpServer.tools.some((t) => t.name === 'creative_add_flow_node')
+      ) {
+        const estimateOnlyFlag =
+          params.estimateOnly === true || settings.estimateOnly === true;
+        return await this.executeElevenLabsOfficialMcpFlow({
+          serverId: candidateMcpServer.id,
+          nodeId,
+          modelId,
+          audioMode,
+          prompt,
+          voiceId,
+          rawDurationRequested,
+          modelParams: mergedModelParams,
+          estimateOnly: estimateOnlyFlag,
+        });
+      }
       const quality = String(
         settings.quality ?? params.quality ?? mergedModelParams.quality ?? ''
       ).trim();
@@ -16410,7 +16886,69 @@ export class McpStdioBridgeServer {
         let source: 'account' | 'public' = 'public';
         let voicesList: Array<Record<string, unknown>> = [];
 
-        if (elAuth.apiKey || elAuth.oauthAccessToken) {
+        const elMcpSrv = this.findMcpServerForUser(user, 'elevenlabs', undefined, 'auto');
+        if (
+          elMcpSrv &&
+          elMcpSrv.status === 'connected' &&
+          elMcpSrv.tools.some((t) => t.name === 'creative_list_voices')
+        ) {
+          try {
+            const mcpVoicesOut = await this.externalMcpHost.callTool({
+              serverId: elMcpSrv.id,
+              toolName: 'creative_list_voices',
+              arguments: {},
+              timeoutMs: 10_000,
+            });
+            const rawStruct =
+              (mcpVoicesOut.rawResult?.structuredContent as Record<string, unknown> | undefined) ||
+              (() => {
+                const t = String(mcpVoicesOut.textSummary || '').trim();
+                if (t.startsWith('{')) {
+                  try {
+                    return JSON.parse(t) as Record<string, unknown>;
+                  } catch {
+                    return undefined;
+                  }
+                }
+                return undefined;
+              })();
+            const rawVoices = Array.isArray(rawStruct?.voices)
+              ? (rawStruct!.voices as Array<Record<string, unknown>>)
+              : [];
+            if (rawVoices.length > 0) {
+              voicesList = rawVoices
+                .filter((v) => typeof v.voice_id === 'string' && v.voice_id.trim())
+                .map((v) => {
+                  const fullName = String(v.name || 'Voice').trim();
+                  const dashIdx = fullName.indexOf(' - ');
+                  const shortName = dashIdx > 0 ? fullName.slice(0, dashIdx).trim() : fullName;
+                  const subtitle = dashIdx > 0 ? fullName.slice(dashIdx + 3).trim() : '';
+                  const labels =
+                    typeof v.labels === 'object' && v.labels !== null
+                      ? (v.labels as Record<string, string>)
+                      : {};
+                  return {
+                    id: String(v.voice_id).trim(),
+                    name: fullName,
+                    shortName,
+                    subtitle,
+                    category: String(v.category || 'premade'),
+                    accent: String(labels.accent || ''),
+                    gender: String(labels.gender || ''),
+                    age: String(labels.age || ''),
+                    useCase: String(labels.use_case || ''),
+                    description: String(v.description || subtitle || ''),
+                    previewUrl: String(v.preview_url || ''),
+                  };
+                });
+              source = 'account';
+            }
+          } catch {
+            // Fall through to REST / public voices
+          }
+        }
+
+        if (voicesList.length === 0 && (elAuth.apiKey || elAuth.oauthAccessToken)) {
           try {
             const list = await this.runElevenLabsWithOAuthRetry(elAuth, (client) =>
               client.listVoices(AbortSignal.timeout(8_000))

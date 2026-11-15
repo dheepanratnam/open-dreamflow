@@ -462,7 +462,13 @@ export class ElevenLabsClient {
       throw new ElevenLabsApiError('Prompt is required for ElevenLabs music generation.');
     }
 
-    const modelId = req.modelId === 'music_v2' ? 'music_v2' : 'music_v2_5';
+    const rawM = String(req.modelId || '').trim();
+    const modelId =
+      rawM === 'music_v1' || rawM === 'eleven_music_v1'
+        ? 'music_v1'
+        : rawM === 'music_v2' || rawM === 'eleven_music_v2'
+          ? 'music_v2'
+          : 'music_v2_5';
     const outputFormat =
       req.outputFormat && req.outputFormat !== 'auto' ? req.outputFormat : 'mp3_44100_128';
     const musicLengthMs =
