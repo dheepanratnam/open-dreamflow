@@ -1060,6 +1060,15 @@ export const ContextualNodeOverlay: React.FC = () => {
               {modality !== 'audio' &&
                 upstreamRefNodes.map((up, upIdx) => {
                   const chipHandle = deriveUiHandleForNode(up, upIdx + 1);
+                  const cleanChipSubtitle = up.title
+                    .replace(
+                      new RegExp(
+                        `^${chipHandle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[·•:\\-]?\\s*`,
+                        'i'
+                      ),
+                      ''
+                    )
+                    .trim();
                   const isTagged = selectedNode.prompt
                     .toLowerCase()
                     .includes(chipHandle.toLowerCase());
@@ -1087,7 +1096,11 @@ export const ContextualNodeOverlay: React.FC = () => {
                       <span className="tabular-nums text-[10.5px] font-semibold text-[#20D5EC]">
                         {chipHandle}
                       </span>
-                      <span className="truncate max-w-[96px] text-white/75">{up.title}</span>
+                      {cleanChipSubtitle && (
+                        <span className="truncate max-w-[96px] text-white/75">
+                          {cleanChipSubtitle}
+                        </span>
+                      )}
                       {!up.imageUrl && (
                         <span className="text-[10px] text-[#20D5EC]">Pending</span>
                       )}

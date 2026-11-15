@@ -2754,8 +2754,9 @@ export async function discoverMcpTools(
       };
     } else {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1800);
-      const res = await fetch(serverUrl, {
+      const timer = setTimeout(() => controller.abort(), 3500);
+      const doFetch = serverUrl.startsWith(LOCAL_MCP_BASE) ? authFetch : fetch;
+      const res = await doFetch(serverUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rpcPayload),
@@ -2919,7 +2920,8 @@ async function callMcpServerTool(
     params: { name: toolName, arguments: args },
   };
   if (httpTarget.startsWith('http://') || httpTarget.startsWith('https://')) {
-    const res = await fetch(httpTarget, {
+    const doFetch = httpTarget.startsWith(LOCAL_MCP_BASE) ? authFetch : fetch;
+    const res = await doFetch(httpTarget, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(rpc),
