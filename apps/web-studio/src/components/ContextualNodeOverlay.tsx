@@ -268,6 +268,7 @@ export const ContextualNodeOverlay: React.FC = () => {
     | 'advanced'
     | 'plus-upload'
     | 'plus-assets'
+    | 'video-ref-mode'
   >(null);
   const [modelSearch, setModelSearch] = useState('');
   const [modelFamilyFilter, setModelFamilyFilter] = useState<string>('All');
@@ -389,7 +390,7 @@ export const ContextualNodeOverlay: React.FC = () => {
   );
   const quickBarTop = Math.max(58, nodeTopScreen - 56);
 
-  const popoverWidth = Math.min(composerExpanded ? 760 : 696, window.innerWidth - 72);
+  const popoverWidth = Math.min(composerExpanded ? 880 : 856, window.innerWidth - 88);
   const popoverLeft = Math.max(
     64,
     Math.min(window.innerWidth - popoverWidth - 20, centerScreenX - popoverWidth / 2)
@@ -397,6 +398,11 @@ export const ContextualNodeOverlay: React.FC = () => {
   const popoverTop = Math.min(
     window.innerHeight - (composerExpanded ? 410 : 332),
     Math.max(68, nodeBottomScreen + 18)
+  );
+  const atMenuAnchorY = popoverTop + (composerExpanded ? 104 : 92);
+  const atMenuSafeBottom = Math.max(
+    16,
+    Math.min(window.innerHeight - atMenuAnchorY, window.innerHeight - 58 - 356)
   );
 
   // Wired upstream & downstream inspection
@@ -2062,18 +2068,23 @@ export const ContextualNodeOverlay: React.FC = () => {
               />
             </div>
 
-            {/* Dreamina Two-Section Floating @ Mention & "Add reference" Menu */}
+            {/* Dreamina Two-Section Floating @ Mention & "Add reference" Menu (viewport-clamped) */}
             {atAutocompleteOpen && modality !== 'audio' && (
               <div
                 data-testid="dreamina-at-menu"
-                className="absolute bottom-full left-0 mb-2 w-[268px] p-2 rounded-[16px] bg-[#1e1e1e] border border-white/[0.09] shadow-[0_22px_54px_rgba(0,0,0,0.82)] z-50 text-[13px]"
+                style={{
+                  left: `${popoverLeft + 12}px`,
+                  bottom: `${atMenuSafeBottom}px`,
+                  maxHeight: 'calc(100vh - 72px)',
+                }}
+                className="fixed w-[268px] p-2 rounded-[16px] bg-[#1e1e1e] border border-white/[0.09] shadow-[0_22px_54px_rgba(0,0,0,0.86)] z-50 text-[13px] overflow-y-auto"
               >
                 {atCategory === null ? (
                   <>
-                    <div className="px-2 py-1 text-[11.5px] text-white/42 font-normal">
+                    <div className="px-2 py-0.5 text-[11.5px] text-white/45 font-normal">
                       Use &quot;@&quot; to mention
                     </div>
-                    <div className="max-h-[156px] overflow-y-auto space-y-0.5">
+                    <div className="max-h-[120px] overflow-y-auto space-y-0.5">
                       {filteredAtMentionItems.length > 0 ? (
                         filteredAtMentionItems.map((item, idx) => {
                           const isHighlighted = idx === atActiveIndex;
@@ -2085,7 +2096,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                               onClick={() =>
                                 insertHandleIntoPrompt(item.handle, item.nodeId)
                               }
-                              className={`w-full h-10 px-2 rounded-[10px] flex items-center gap-2.5 text-left transition-colors ${
+                              className={`w-full h-9 px-2 rounded-[9px] flex items-center gap-2.5 text-left transition-colors ${
                                 isHighlighted
                                   ? 'bg-white/[0.09] text-white'
                                   : 'hover:bg-white/[0.06] text-white/92'
@@ -2095,18 +2106,18 @@ export const ContextualNodeOverlay: React.FC = () => {
                                 <SmartMediaImage
                                   src={item.imageUrl}
                                   alt={item.label}
-                                  className="w-7 h-7 rounded-[7px] object-cover shrink-0"
+                                  className="w-6.5 h-6.5 w-[26px] h-[26px] rounded-[6px] object-cover shrink-0"
                                 />
                               ) : item.kind === 'video' ? (
-                                <span className="w-7 h-7 rounded-[7px] bg-white/[0.07] flex items-center justify-center shrink-0">
+                                <span className="w-[26px] h-[26px] rounded-[6px] bg-white/[0.07] flex items-center justify-center shrink-0">
                                   <Film className="w-3.5 h-3.5 text-[#20D5EC]" />
                                 </span>
                               ) : item.kind === 'audio' ? (
-                                <span className="w-7 h-7 rounded-[7px] bg-white/[0.07] flex items-center justify-center shrink-0">
+                                <span className="w-[26px] h-[26px] rounded-[6px] bg-white/[0.07] flex items-center justify-center shrink-0">
                                   <AudioLines className="w-3.5 h-3.5 text-[#20D5EC]" />
                                 </span>
                               ) : (
-                                <span className="w-7 h-7 rounded-[7px] bg-white/[0.07] flex items-center justify-center shrink-0">
+                                <span className="w-[26px] h-[26px] rounded-[6px] bg-white/[0.07] flex items-center justify-center shrink-0">
                                   <AtSign className="w-3.5 h-3.5 text-[#20D5EC]" />
                                 </span>
                               )}
@@ -2125,7 +2136,7 @@ export const ContextualNodeOverlay: React.FC = () => {
 
                     <div className="my-1.5 h-px bg-white/[0.08]" />
 
-                    <div className="px-2 py-1 text-[11.5px] text-white/42 font-normal">
+                    <div className="px-2 py-0.5 text-[11.5px] text-white/45 font-normal">
                       Add reference
                     </div>
                     <div className="space-y-0.5">
@@ -2173,7 +2184,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                               setAtCategory(cat.id);
                               void refreshAssetsCatalog('all', false);
                             }}
-                            className="w-full h-9 px-2 rounded-[9px] hover:bg-white/[0.07] text-white/92 flex items-center justify-between gap-2 transition-colors"
+                            className="w-full h-8 px-2 rounded-[9px] hover:bg-white/[0.07] text-white/92 flex items-center justify-between gap-2 transition-colors"
                           >
                             <span className="flex items-center gap-2.5">
                               <IconComp
@@ -2460,9 +2471,9 @@ export const ContextualNodeOverlay: React.FC = () => {
               </div>
             )}
 
-          {/* Bottom Controls Row: [Where (Platform)] + [Model] + [Settings] + [Generate] */}
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-1.5 flex-wrap">
+          {/* Bottom Controls Row: Single-Row [Where] + [Model] + [Unified Format/Res] + [Mode] + [Duration] + [@] + [Generate] */}
+          <div className="flex items-center justify-between gap-1.5 flex-nowrap">
+            <div className="flex items-center gap-1.5 min-w-0 flex-nowrap [&_button]:whitespace-nowrap">
               {/* 1. WHERE (Platform Selector) */}
               <div className="relative">
                 <button
@@ -2978,13 +2989,121 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </div>
               )}
 
+              {/* Dreamina Video Reference Mode Pill ("Omni reference ⌄" / "First & last frame ⌄" / "Text to video ⌄") */}
+              {modality === 'video' && activeModelDef?.supportsReferences && !modeSpec && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    data-testid="video-ref-mode-pill"
+                    onClick={() =>
+                      setOpenMenu(openMenu === 'video-ref-mode' ? null : 'video-ref-mode')
+                    }
+                    className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] text-[11.5px] text-white/90 flex items-center gap-1"
+                    title="Video Reference Conditioning Mode"
+                  >
+                    <span className="font-medium text-white">
+                      {activeVideoInputMethod === 'multi-ref'
+                        ? 'Omni reference'
+                        : activeVideoInputMethod === 'start-end'
+                        ? 'First & last frame'
+                        : 'Text to video'}
+                    </span>
+                    <ChevronDown className="w-3 h-3 text-white/40 shrink-0" strokeWidth={1.6} />
+                  </button>
+                  {openMenu === 'video-ref-mode' && (
+                    <div className="absolute bottom-full left-0 mb-1.5 w-[178px] p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                      {(
+                        [
+                          { id: 'multi-ref' as const, label: 'Omni reference', show: true },
+                          {
+                            id: 'start-end' as const,
+                            label: 'First & last frame',
+                            show: activeModelDef?.supportsStartEndFrames !== false,
+                          },
+                          { id: 't2v' as const, label: 'Text to video', show: true },
+                        ] as const
+                      )
+                        .filter((opt) => opt.show)
+                        .map((opt) => {
+                          const isActive = activeVideoInputMethod === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => {
+                                setVideoInputMethod(opt.id);
+                                setOpenMenu(null);
+                              }}
+                              className={`w-full h-7 px-2.5 rounded-[7px] text-[11.5px] flex items-center justify-between gap-2 ${
+                                isActive
+                                  ? 'bg-white/[0.1] text-white font-medium'
+                                  : 'hover:bg-white/[0.06] text-white/80'
+                              }`}
+                            >
+                              <span>{opt.label}</span>
+                              {isActive && (
+                                <Check className="w-3 h-3 text-[#20D5EC] shrink-0" strokeWidth={2} />
+                              )}
+                            </button>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Video Duration Pill ("15s ⌄") */}
+              {modality === 'video' && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenMenu(openMenu === 'duration' ? null : 'duration')
+                    }
+                    className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
+                    title="Clip Duration"
+                  >
+                    <span>
+                      {(selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5) === -1
+                        ? 'Auto'
+                        : `${selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5}s`}
+                    </span>
+                    <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
+                  </button>
+                  {openMenu === 'duration' && (
+                    <div className="absolute bottom-full left-0 mb-1.5 w-[108px] max-h-[240px] overflow-y-auto p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
+                      {durationOptions.map((sec) => (
+                        <button
+                          key={sec}
+                          type="button"
+                          onClick={() => {
+                            updateNodeFields(selectedNode.id, { durationSec: sec });
+                            setOpenMenu(null);
+                          }}
+                          className={`w-full h-7 px-2.5 rounded-[7px] tabular-nums text-[11.5px] flex items-center justify-between ${
+                            (selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5) === sec
+                              ? 'bg-white/[0.1] text-white'
+                              : 'hover:bg-white/[0.06] text-white/80'
+                          }`}
+                        >
+                          <span>{sec === -1 ? 'Auto' : `${sec}s`}</span>
+                          {(selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5) === sec && (
+                            <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Dreamina Bottom Toolbar @ Mention Trigger */}
               {modality !== 'audio' && (
                 <button
                   type="button"
                   data-testid="composer-at-btn"
                   onClick={openAtMenuFromToolbarButton}
-                  className={`h-8 w-8 rounded-[8px] border flex items-center justify-center transition-colors ${
+                  className={`h-8 w-8 rounded-[8px] border flex items-center justify-center shrink-0 transition-colors ${
                     atAutocompleteOpen
                       ? 'bg-white text-[#0e0e0e] border-white'
                       : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/85 hover:text-white'
@@ -2995,82 +3114,40 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </button>
               )}
 
-              {/* Video Duration + DoP Camera Rig + Dynamic Audio Toggle */}
+              {/* Compact Video DoP Camera Rig + Dynamic Audio Toggle */}
               {modality === 'video' && (
                 <>
                   <div className="relative">
                     <button
                       type="button"
                       onClick={() =>
-                        setOpenMenu(openMenu === 'duration' ? null : 'duration')
-                      }
-                      className="h-8 px-2 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.07] tabular-nums text-[11.5px] text-white/85 flex items-center gap-1"
-                      title="Clip Duration"
-                    >
-                      <span>
-                        {(selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5) === -1
-                          ? 'Auto'
-                          : `${selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5}s`}
-                      </span>
-                      <ChevronDown className="w-3 h-3 text-white/40" strokeWidth={1.6} />
-                    </button>
-                    {openMenu === 'duration' && (
-                      <div className="absolute bottom-full left-0 mb-1.5 w-[108px] max-h-[240px] overflow-y-auto p-1 rounded-[10px] dreamina-menu z-50 space-y-0.5">
-                        {durationOptions.map((sec) => (
-                          <button
-                            key={sec}
-                            type="button"
-                            onClick={() => {
-                              updateNodeFields(selectedNode.id, { durationSec: sec });
-                              setOpenMenu(null);
-                            }}
-                            className={`w-full h-7 px-2.5 rounded-[7px] tabular-nums text-[11.5px] flex items-center justify-between ${
-                              (selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5) === sec
-                                ? 'bg-white/[0.1] text-white'
-                                : 'hover:bg-white/[0.06] text-white/80'
-                            }`}
-                          >
-                            <span>{sec === -1 ? 'Auto' : `${sec}s`}</span>
-                            {(selectedNode.durationSec ?? activeModelDef?.defaultDurationSec ?? 5) === sec && (
-                              <Check className="w-3 h-3 text-[#20D5EC]" strokeWidth={2} />
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Higgsfield-Style DoP Camera Motion Rig */}
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() =>
                         setOpenMenu(openMenu === 'camera' ? null : 'camera')
                       }
-                      className={`h-8 px-2.5 rounded-[8px] border text-[11.5px] flex items-center gap-1.5 transition-colors max-w-[165px] ${
+                      className={`h-8 px-2 rounded-[8px] border text-[11.5px] flex items-center gap-1 transition-colors max-w-[138px] ${
                         selectedNode.cameraMotion &&
                         selectedNode.cameraMotion !== 'Static Tripod'
                           ? 'bg-[#252525] border-[#20D5EC]/40 text-white'
-                          : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/85'
+                          : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/80'
                       }`}
-                      title="DoP Rig · Camera Motion Control"
+                      title={`Camera Motion (DoP Rig): ${selectedNode.cameraMotion || 'Static Tripod'}`}
                     >
                       <Camera
                         className={`w-3.5 h-3.5 shrink-0 ${
                           selectedNode.cameraMotion &&
                           selectedNode.cameraMotion !== 'Static Tripod'
                             ? 'text-[#20D5EC]'
-                            : 'text-white/55'
+                            : 'text-white/65'
                         }`}
                         strokeWidth={1.6}
                       />
-                      <span className="truncate">
-                        {selectedNode.cameraMotion || 'DoP Rig'}
-                      </span>
+                      {selectedNode.cameraMotion &&
+                        selectedNode.cameraMotion !== 'Static Tripod' && (
+                          <span className="truncate">{selectedNode.cameraMotion}</span>
+                        )}
                       <ChevronDown className="w-3 h-3 text-white/40 shrink-0" strokeWidth={1.6} />
                     </button>
                     {openMenu === 'camera' && (
-                      <div className="absolute bottom-full left-0 mb-1.5 w-[212px] p-1.5 rounded-[11px] dreamina-menu z-50 space-y-0.5">
+                      <div className="absolute bottom-full right-0 mb-1.5 w-[212px] p-1.5 rounded-[11px] dreamina-menu z-50 space-y-0.5">
                         <div className="px-2 py-1 text-[10px] font-medium text-white/40 uppercase tracking-wider">
                           Camera Motion (DoP Rig)
                         </div>
@@ -3112,19 +3189,18 @@ export const ContextualNodeOverlay: React.FC = () => {
                           audioEnabled: !(selectedNode.audioEnabled ?? true),
                         })
                       }
-                      className={`h-8 px-2 rounded-[8px] border text-[11.5px] flex items-center gap-1 transition-colors ${
+                      className={`h-8 w-8 rounded-[8px] border flex items-center justify-center shrink-0 transition-colors ${
                         selectedNode.audioEnabled ?? true
                           ? 'bg-[#252525] border-white/[0.1] text-white/90'
                           : 'bg-[#191919] border-white/[0.06] text-white/40'
                       }`}
-                      title="Toggle native video audio"
+                      title={`Native Video Audio: ${(selectedNode.audioEnabled ?? true) ? 'On' : 'Off'}`}
                     >
                       {selectedNode.audioEnabled ?? true ? (
                         <Volume2 className="w-3.5 h-3.5 text-[#20D5EC]" strokeWidth={1.6} />
                       ) : (
                         <VolumeX className="w-3.5 h-3.5" strokeWidth={1.6} />
                       )}
-                      <span>Audio</span>
                     </button>
                   )}
                 </>
