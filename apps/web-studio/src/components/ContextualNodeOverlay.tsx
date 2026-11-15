@@ -390,7 +390,7 @@ export const ContextualNodeOverlay: React.FC = () => {
   );
   const quickBarTop = Math.max(58, nodeTopScreen - 56);
 
-  const popoverWidth = Math.min(composerExpanded ? 880 : 856, window.innerWidth - 88);
+  const popoverWidth = Math.min(composerExpanded ? 920 : 900, window.innerWidth - 72);
   const popoverLeft = Math.max(
     64,
     Math.min(window.innerWidth - popoverWidth - 20, centerScreenX - popoverWidth / 2)
@@ -399,8 +399,8 @@ export const ContextualNodeOverlay: React.FC = () => {
     window.innerHeight - (composerExpanded ? 410 : 332),
     Math.max(68, nodeBottomScreen + 18)
   );
-  const atMenuShiftDownPx = Math.max(0, 282 - popoverTop);
-  const atMenuOverlapIntoComposerPx = (composerExpanded ? 54 : 48) + atMenuShiftDownPx;
+  const atMenuShiftDownPx = Math.max(0, 272 - popoverTop);
+  const atMenuOverlapIntoComposerPx = (composerExpanded ? 44 : 38) + atMenuShiftDownPx;
 
   // Wired upstream & downstream inspection
   const upstreamNodes = edges
