@@ -249,7 +249,7 @@ export const App: React.FC = () => {
       {/* Subtle Matte Toast Notification */}
       {toastMessage && (
         <div
-          className={`fixed top-[58px] left-1/2 -translate-x-1/2 z-50 min-h-[34px] max-w-[780px] px-3.5 py-1.5 rounded-full dreamina-levitation text-[12px] flex items-center gap-2.5 ${
+          className={`fixed bottom-6 right-6 z-50 min-h-[34px] max-w-[520px] px-3.5 py-1.5 rounded-full dreamina-levitation text-[12px] flex items-center gap-2.5 ${
             toastKind === 'error'
               ? 'border border-amber-400/40 text-amber-100 pointer-events-auto'
               : 'text-white/90 pointer-events-none'

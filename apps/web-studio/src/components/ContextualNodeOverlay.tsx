@@ -589,7 +589,7 @@ export const ContextualNodeOverlay: React.FC = () => {
             transform: 'translateX(-50%)',
           }}
           onPointerDown={(e) => e.stopPropagation()}
-          className="fixed z-40 h-9 px-1.5 rounded-[10px] dreamina-levitation flex items-center gap-1 text-[11.5px] select-none"
+          className="fixed z-40 h-9 px-1.5 rounded-[10px] dreamina-levitation flex items-center gap-1 text-[11.5px] whitespace-nowrap w-max max-w-[calc(100vw-28px)] overflow-x-auto select-none [&_button]:shrink-0 [&_button]:whitespace-nowrap"
         >
           {(selectedNode.kind === 'image' ||
             selectedNode.kind === 'element' ||

@@ -446,7 +446,7 @@ export const TeamCreditsModal: React.FC = () => {
             type="button"
             data-testid="tab-credit-intelligence"
             onClick={() => openTeamCreditsModal('credits')}
-            className={`inline-flex items-center gap-2 px-4 py-2.5 text-[12px] font-medium border-b-2 transition-colors ${
+            className={`inline-flex items-center gap-2 px-4 py-2.5 text-[12px] font-medium border-b-2 ${
               teamCreditsModalTab === 'credits'
                 ? 'border-[#20D5EC] text-white'
                 : 'border-transparent text-white/50 hover:text-white/80'
@@ -461,7 +461,7 @@ export const TeamCreditsModal: React.FC = () => {
               type="button"
               data-testid="tab-friends-shared-credits"
               onClick={() => openTeamCreditsModal('team')}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 text-[12px] font-medium border-b-2 transition-colors ${
+              className={`inline-flex items-center gap-2 px-4 py-2.5 text-[12px] font-medium border-b-2 ${
                 teamCreditsModalTab === 'team'
                   ? 'border-[#20D5EC] text-white'
                   : 'border-transparent text-white/50 hover:text-white/80'
@@ -481,7 +481,7 @@ export const TeamCreditsModal: React.FC = () => {
             type="button"
             data-testid="tab-my-account"
             onClick={() => openTeamCreditsModal('account')}
-            className={`inline-flex items-center gap-2 px-4 py-2.5 text-[12px] font-medium border-b-2 transition-colors ${
+            className={`inline-flex items-center gap-2 px-4 py-2.5 text-[12px] font-medium border-b-2 ${
               teamCreditsModalTab === 'account'
                 ? 'border-[#20D5EC] text-white'
                 : 'border-transparent text-white/50 hover:text-white/80'
@@ -493,7 +493,7 @@ export const TeamCreditsModal: React.FC = () => {
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+        <div className="flex-1 overflow-y-auto px-6 pt-6 pb-8 space-y-5">
           {/* TAB 1: CREDIT INTELLIGENCE */}
           {teamCreditsModalTab === 'credits' && (
             <>
@@ -528,7 +528,7 @@ export const TeamCreditsModal: React.FC = () => {
                 )}
 
               {/* Primary Platform Credit Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
                 {/* Dreamina Expiry Timeline */}
                 <div className="rounded-xl border border-white/[0.08] bg-[#161619] p-4 space-y-3">
                   <div className="flex items-center justify-between">
@@ -882,13 +882,13 @@ export const TeamCreditsModal: React.FC = () => {
                           <input
                             type="number"
                             min={0}
-                            placeholder="Budget cr"
+                            placeholder="Budget"
                             value={draft.manualBudgetCredits}
                             onChange={(e) =>
                               patchDraft(plat.id, { manualBudgetCredits: e.target.value })
                             }
-                            title="Optional credit pack / monthly budget"
-                            className="w-20 rounded bg-black/60 border border-white/[0.1] px-1.5 py-1 text-[11px] tabular-nums text-white text-right"
+                            title="Optional credit pack / monthly budget (credits)"
+                            className="w-[82px] rounded bg-black/60 border border-white/[0.1] px-2 py-1 text-[11px] tabular-nums text-white text-right"
                           />
                           <button
                             type="button"
