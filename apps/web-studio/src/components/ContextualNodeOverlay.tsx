@@ -399,11 +399,8 @@ export const ContextualNodeOverlay: React.FC = () => {
     window.innerHeight - (composerExpanded ? 410 : 332),
     Math.max(68, nodeBottomScreen + 18)
   );
-  const atMenuAnchorY = popoverTop + (composerExpanded ? 104 : 92);
-  const atMenuSafeBottom = Math.max(
-    16,
-    Math.min(window.innerHeight - atMenuAnchorY, window.innerHeight - 58 - 356)
-  );
+  const atMenuShiftDownPx = Math.max(0, 282 - popoverTop);
+  const atMenuOverlapIntoComposerPx = (composerExpanded ? 54 : 48) + atMenuShiftDownPx;
 
   // Wired upstream & downstream inspection
   const upstreamNodes = edges
@@ -2075,11 +2072,11 @@ export const ContextualNodeOverlay: React.FC = () => {
               <div
                 data-testid="dreamina-at-menu"
                 style={{
-                  left: `${popoverLeft + 12}px`,
-                  bottom: `${atMenuSafeBottom}px`,
+                  left: '0px',
+                  bottom: `calc(100% - ${atMenuOverlapIntoComposerPx}px)`,
                   maxHeight: 'calc(100vh - 72px)',
                 }}
-                className="fixed w-[268px] p-2 rounded-[16px] bg-[#1e1e1e] border border-white/[0.09] shadow-[0_22px_54px_rgba(0,0,0,0.86)] z-50 text-[13px] overflow-y-auto"
+                className="absolute w-[268px] p-2 rounded-[16px] bg-[#1e1e1e] border border-white/[0.09] shadow-[0_22px_54px_rgba(0,0,0,0.86)] z-50 text-[13px] overflow-y-auto"
               >
                 {atCategory === null ? (
                   <>
