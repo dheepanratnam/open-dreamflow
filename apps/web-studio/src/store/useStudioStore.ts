@@ -36,6 +36,7 @@ import type {
   PlatformId,
   ProviderId,
   ProviderVerificationResult,
+  ReferenceHandleBinding,
   ResolutionTier,
   SharedCreditGrant,
   StudioAuthUser,
@@ -6633,50 +6634,154 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           ? `${basePrompt}, ${node.cameraMotion} camera motion`
           : basePrompt;
 
-    // Collect image + video references in deterministic priority:
+    // Collect image + video references AND explicit @Handle bindings in deterministic priority:
     // 1. Wired upstream image/element/contact-sheet & video nodes
-    // 2. Node's explicit referenceUrls[] & videoReferenceUrls[]
-    // 3. @Element handles referenced in prompt or attached to node
+    // 2. Node's explicit referenceUrls[], videoReferenceUrls[], and referenceHandles[]
+    // 3. Canvas `element` nodes or Vault `@Elements` referenced in prompt or attached to node
     const refSet = new Set<string>();
     const videoRefSet = new Set<string>();
+    const handleMap = new Map<string, ReferenceHandleBinding>();
+    const registerHandle = (
+      rawHandle: string | undefined,
+      url: string | undefined,
+      label?: string,
+      kind: 'image' | 'video' | 'audio' = 'image'
+    ) => {
+      if (!rawHandle || !url) return;
+      const clean = rawHandle.trim().startsWith('@')
+        ? rawHandle.trim()
+        : `@${rawHandle.trim().replace(/[^A-Za-z0-9_]/g, '')}`;
+      if (clean.length <= 1) return;
+      const key = clean.toLowerCase();
+      if (!handleMap.has(key)) {
+        handleMap.set(key, { handle: clean, url, label, kind });
+      }
+    };
+    const deriveNodeHandle = (n: CanvasNode, fallbackIdx: number): string => {
+      if (n.elementHandles?.[0]) return n.elementHandles[0];
+      const explicitAt = n.title.match(/@[A-Za-z0-9_]+/);
+      if (explicitAt?.[0]) return explicitAt[0];
+      const slug = n.title
+        .replace(/[^A-Za-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 24);
+      return slug ? `@${slug}` : `@Ref${fallbackIdx}`;
+    };
+
+    let upImgIdx = 0;
+    let upVidIdx = 0;
     for (const up of upstreamNodes) {
       if (
         (up.kind === 'image' || up.kind === 'element' || up.kind === 'contact-sheet') &&
         up.imageUrl
       ) {
+        upImgIdx += 1;
         refSet.add(up.imageUrl);
+        const primaryHandle = deriveNodeHandle(up, upImgIdx);
+        registerHandle(primaryHandle, up.imageUrl, up.title, 'image');
+        registerHandle(`@Image${upImgIdx}`, up.imageUrl, up.title, 'image');
+        registerHandle(`@Ref${upImgIdx}`, up.imageUrl, up.title, 'image');
+        for (const extraH of up.elementHandles || []) {
+          registerHandle(extraH, up.imageUrl, up.title, 'image');
+        }
       } else if (up.kind === 'video' && up.videoUrl) {
+        upVidIdx += 1;
         videoRefSet.add(up.videoUrl);
+        registerHandle(deriveNodeHandle(up, upVidIdx), up.videoUrl, up.title, 'video');
+        registerHandle(`@Video${upVidIdx}`, up.videoUrl, up.title, 'video');
       }
     }
+    let attachedIdx = upImgIdx;
     for (const url of node.referenceUrls || []) {
-      if (url) refSet.add(url);
+      if (url) {
+        attachedIdx += 1;
+        refSet.add(url);
+        registerHandle(`@Image${attachedIdx}`, url, `Ref ${attachedIdx}`, 'image');
+        registerHandle(`@Ref${attachedIdx}`, url, `Ref ${attachedIdx}`, 'image');
+      }
     }
     for (const vUrl of node.videoReferenceUrls || []) {
-      if (vUrl) videoRefSet.add(vUrl);
+      if (vUrl) {
+        upVidIdx += 1;
+        videoRefSet.add(vUrl);
+        registerHandle(`@Video${upVidIdx}`, vUrl, `Video ${upVidIdx}`, 'video');
+      }
+    }
+    for (const explicitBinding of node.referenceHandles || []) {
+      if (explicitBinding?.handle && explicitBinding?.url) {
+        if (explicitBinding.kind === 'video') {
+          videoRefSet.add(explicitBinding.url);
+        } else if (explicitBinding.kind !== 'audio') {
+          refSet.add(explicitBinding.url);
+        }
+        registerHandle(
+          explicitBinding.handle,
+          explicitBinding.url,
+          explicitBinding.label,
+          explicitBinding.kind || 'image'
+        );
+      }
     }
     const promptHandles = [
       ...extractHandles(effectivePrompt),
       ...(node.elementHandles || []),
     ];
     for (const h of promptHandles) {
-      const vault = state.elements.find(
-        (el) => el.handle.toLowerCase() === h.toLowerCase()
+      const hLow = h.toLowerCase();
+      // Match canvas element nodes first (even if unwired, when explicitly @tagged in prompt)
+      const canvasElementNode = state.nodes.find(
+        (cn) =>
+          cn.id !== node.id &&
+          cn.kind === 'element' &&
+          cn.imageUrl &&
+          ((cn.elementHandles || []).some((eh) => eh.toLowerCase() === hLow) ||
+            deriveNodeHandle(cn, 1).toLowerCase() === hLow)
       );
+      if (canvasElementNode?.imageUrl) {
+        refSet.add(canvasElementNode.imageUrl);
+        registerHandle(h, canvasElementNode.imageUrl, canvasElementNode.title, 'image');
+      }
+      const vault = state.elements.find((el) => el.handle.toLowerCase() === hLow);
       if (vault?.references?.[0]?.dataUrl) {
         refSet.add(vault.references[0].dataUrl);
+        registerHandle(vault.handle, vault.references[0].dataUrl, vault.name, 'image');
       }
     }
     const imageRefsList = Array.from(refSet);
     const videoRefsList = Array.from(videoRefSet);
+    const referenceHandlesList = Array.from(handleMap.values());
+
+    // Infer whether this video node is First/Last-Frame (`start-end`) vs Omni Reference-to-Video (`multi-ref`)
+    const explicitModeParam = String(node.modelParams?.mode || '').toLowerCase();
+    const hasPromptAtTag = /@[A-Za-z0-9_]+/.test(effectivePrompt);
+    const hasUpstreamElementNode = upstreamNodes.some(
+      (up) => up.kind === 'element' && Boolean(up.imageUrl)
+    );
+    const effectiveReferenceFrameMode: 'multi-ref' | 'start-end' | undefined =
+      modality !== 'video'
+        ? node.referenceFrameMode
+        : explicitModeParam === 'first_last_frame' || explicitModeParam === 'image-to-video'
+        ? 'start-end'
+        : explicitModeParam === 'm2v' ||
+          explicitModeParam === 'reference-to-video' ||
+          explicitModeParam === 'omni_reference' ||
+          modelId === 'kling-elements'
+        ? 'multi-ref'
+        : node.referenceFrameMode
+        ? node.referenceFrameMode
+        : imageRefsList.length > 0 &&
+          (hasPromptAtTag || hasUpstreamElementNode || imageRefsList.length >= 2)
+        ? 'multi-ref'
+        : undefined;
+
     const effectiveStartImg =
       node.startImageUrl ||
-      (node.referenceFrameMode === 'start-end' && imageRefsList.length >= 1
+      (effectiveReferenceFrameMode === 'start-end' && imageRefsList.length >= 1
         ? imageRefsList[0]
         : undefined);
     const effectiveEndImg =
       node.endImageUrl ||
-      (node.referenceFrameMode === 'start-end' && imageRefsList.length >= 2
+      (effectiveReferenceFrameMode === 'start-end' && imageRefsList.length >= 2
         ? imageRefsList[1]
         : undefined);
 
@@ -6840,7 +6945,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       ...(mergedModelParams ? { modelParams: mergedModelParams } : {}),
       referenceImages: imageRefsList,
       ...(videoRefsList.length > 0 ? { videoReferences: videoRefsList } : {}),
-      ...(node.referenceFrameMode ? { referenceFrameMode: node.referenceFrameMode } : {}),
+      ...(referenceHandlesList.length > 0 ? { referenceHandles: referenceHandlesList } : {}),
+      ...(effectiveReferenceFrameMode ? { referenceFrameMode: effectiveReferenceFrameMode } : {}),
       ...(effectiveStartImg ? { startImageUrl: effectiveStartImg } : {}),
       ...(effectiveEndImg ? { endImageUrl: effectiveEndImg } : {}),
       ...(node.creditSource ? { creditSource: node.creditSource } : {}),
@@ -7290,11 +7396,19 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   setMcpOAuthSession: (mcpOAuthSession) => set({ mcpOAuthSession }),
 
   startMcpOAuth: async (platformId, mcpUrl) => {
+    const defaultUrls: Record<string, string> = {
+      higgsfield: 'https://mcp.higgsfield.ai/mcp',
+      kling: 'https://kling.ai/mcp',
+      elevenlabs: 'https://api.elevenlabs.io/v1/mcp',
+      fal: 'https://mcp.fal.ai/mcp',
+      replicate: 'https://mcp.replicate.com/mcp',
+    };
+    const resolvedDefaultUrl = mcpUrl || defaultUrls[platformId] || '';
     set({
       mcpOAuthSession: {
         sessionId: 'starting',
         platformId,
-        mcpUrl: mcpUrl || (platformId === 'higgsfield' ? 'https://mcp.higgsfield.ai/mcp' : ''),
+        mcpUrl: resolvedDefaultUrl,
         step: 'registering',
         updatedAt: Date.now(),
       },

@@ -1,0 +1,14 @@
+{
+  "client_id": "https://open-dreamflow.pages.dev/oauth-client-metadata.json",
+  "client_name": "Open-DreamFlow Studio",
+  "client_uri": "https://open-dreamflow.pages.dev",
+  "redirect_uris": [
+    "https://open-dreamflow.pages.dev/edge-oauth/callback",
+    "https://open-dreamflow-engine-production.up.railway.app/api/mcp/oauth/callback",
+    "http://localhost:3001/api/mcp/oauth/callback",
+    "http://127.0.0.1:3001/api/mcp/oauth/callback"
+  ],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}

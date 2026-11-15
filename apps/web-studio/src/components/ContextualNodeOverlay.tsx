@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import type {
   AspectRatio,
+  CanvasNode,
   ConnectionTransport,
   CreditQuoteResponse,
   ModelParameterSpec,
@@ -444,10 +445,20 @@ export const ContextualNodeOverlay: React.FC = () => {
     } else {
       nextParams[name] = value;
     }
+    const modeStr = name === 'mode' ? String(value || '').toLowerCase() : '';
+    const syncedRefModePatch: Partial<CanvasNode> =
+      name === 'mode' && (modeStr === 'm2v' || modeStr === 'reference-to-video' || modeStr === 'omni_reference')
+        ? { referenceFrameMode: 'multi-ref' }
+        : name === 'mode' && (modeStr === 'first_last_frame' || modeStr === 'image-to-video')
+        ? { referenceFrameMode: 'start-end' }
+        : name === 'mode' && (modeStr === 't2v' || modeStr === 'text-to-video')
+        ? { referenceFrameMode: undefined }
+        : {};
     updateNodeFields(selectedNode.id, {
       ...(name === 'quality'
         ? { quality: typeof value === 'string' ? value : undefined }
         : {}),
+      ...syncedRefModePatch,
       modelParams: Object.keys(nextParams).length > 0 ? nextParams : undefined,
     });
   };
@@ -540,9 +551,141 @@ export const ContextualNodeOverlay: React.FC = () => {
 
   const isGenerating = selectedNode.status === 'generating';
 
+  const deriveUiHandleForNode = (n: CanvasNode, idx: number): string => {
+    if (n.elementHandles?.[0]) return n.elementHandles[0];
+    const m = n.title.match(/@[A-Za-z0-9_]+/);
+    if (m?.[0]) return m[0];
+    const slug = n.title
+      .replace(/[^A-Za-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 22);
+    return slug ? `@${slug}` : `@Ref${idx}`;
+  };
+
+  const availableAtHandleItems = (() => {
+    const items: Array<{ handle: string; label: string; imageUrl?: string; nodeId?: string }> = [];
+    const seen = new Set<string>();
+    const pushItem = (handle: string, label: string, imageUrl?: string, nodeId?: string) => {
+      const clean = handle.startsWith('@') ? handle : `@${handle}`;
+      const k = clean.toLowerCase();
+      if (seen.has(k)) return;
+      seen.add(k);
+      items.push({ handle: clean, label, imageUrl, nodeId });
+    };
+    upstreamRefNodes.forEach((up, idx) => {
+      pushItem(deriveUiHandleForNode(up, idx + 1), up.title, up.imageUrl, up.id);
+    });
+    for (const b of selectedNode.referenceHandles || []) {
+      if (b.handle) pushItem(b.handle, b.label || b.handle, b.url);
+    }
+    (selectedNode.referenceUrls || []).forEach((url, idx) => {
+      pushItem(`@Image${idx + 1}`, `Attached Ref ${idx + 1}`, url);
+    });
+    for (const cn of nodes) {
+      if (cn.id !== selectedNode.id && cn.kind === 'element' && cn.imageUrl) {
+        pushItem(deriveUiHandleForNode(cn, 1), cn.title, cn.imageUrl, cn.id);
+      }
+    }
+    for (const el of elements) {
+      pushItem(el.handle, el.name, el.references?.[0]?.dataUrl);
+    }
+    return items;
+  })();
+
+  const modeOptionsStrings = (modeSpec?.options || []).map((o) => String(o).toLowerCase());
+  const modeParamControlsVideoInput =
+    modeOptionsStrings.includes('m2v') ||
+    modeOptionsStrings.includes('first_last_frame') ||
+    modeOptionsStrings.includes('reference-to-video');
+
+  const activeVideoInputMethod: 't2v' | 'start-end' | 'multi-ref' = (() => {
+    const mStr = String(selectedNode.modelParams?.mode || '').toLowerCase();
+    if (mStr === 'm2v' || mStr === 'reference-to-video' || mStr === 'omni_reference') {
+      return 'multi-ref';
+    }
+    if (mStr === 'first_last_frame' || mStr === 'image-to-video') {
+      return 'start-end';
+    }
+    if (mStr === 't2v' || mStr === 'text-to-video') {
+      return 't2v';
+    }
+    if (selectedNode.referenceFrameMode === 'multi-ref' || activeModelDef?.id === 'kling-elements') {
+      return 'multi-ref';
+    }
+    if (selectedNode.referenceFrameMode === 'start-end') {
+      return 'start-end';
+    }
+    const hasAnyRefs =
+      upstreamRefNodes.length > 0 || (selectedNode.referenceUrls?.length || 0) > 0;
+    if (!hasAnyRefs) return 't2v';
+    if (
+      /@[A-Za-z0-9_]+/.test(selectedNode.prompt) ||
+      upstreamRefNodes.some((u) => u.kind === 'element') ||
+      upstreamRefNodes.length >= 2
+    ) {
+      return 'multi-ref';
+    }
+    return 'start-end';
+  })();
+
+  const setVideoInputMethod = (target: 't2v' | 'start-end' | 'multi-ref') => {
+    const nextParams: Record<string, string | number | boolean> = {
+      ...(selectedNode.modelParams || {}),
+    };
+    if (modeParamControlsVideoInput) {
+      if (modeOptionsStrings.includes('m2v')) {
+        nextParams.mode =
+          target === 'multi-ref'
+            ? 'm2v'
+            : target === 'start-end'
+            ? 'first_last_frame'
+            : 't2v';
+      } else if (modeOptionsStrings.includes('reference-to-video')) {
+        nextParams.mode =
+          target === 'multi-ref'
+            ? 'reference-to-video'
+            : target === 'start-end'
+            ? 'image-to-video'
+            : 'text-to-video';
+      }
+    }
+    updateNodeFields(selectedNode.id, {
+      referenceFrameMode: target === 't2v' ? undefined : target,
+      modelParams: Object.keys(nextParams).length > 0 ? nextParams : undefined,
+    });
+  };
+
+  const insertHandleIntoPrompt = (handle: string, autoWireNodeId?: string) => {
+    if (
+      autoWireNodeId &&
+      !edges.some((e) => e.sourceId === autoWireNodeId && e.targetId === selectedNode.id)
+    ) {
+      connectNodes(autoWireNodeId, selectedNode.id, 'lineage');
+    }
+    const trimmed = selectedNode.prompt;
+    const nextPrompt = trimmed.endsWith('@')
+      ? trimmed.replace(/@$/, `${handle} `)
+      : trimmed.includes(handle)
+      ? trimmed
+      : `${trimmed}${trimmed && !trimmed.endsWith(' ') ? ' ' : ''}${handle} `;
+    const nextParams: Record<string, string | number | boolean> = {
+      ...(selectedNode.modelParams || {}),
+    };
+    if (modality === 'video' && modeParamControlsVideoInput && modeOptionsStrings.includes('m2v')) {
+      nextParams.mode = 'm2v';
+    }
+    updateNodeFields(selectedNode.id, {
+      prompt: nextPrompt,
+      elementHandles: Array.from(new Set([...(selectedNode.elementHandles || []), handle])),
+      ...(modality === 'video' ? { referenceFrameMode: 'multi-ref' as const } : {}),
+      modelParams: Object.keys(nextParams).length > 0 ? nextParams : undefined,
+    });
+    setAtAutocompleteOpen(false);
+  };
+
   const handlePromptChange = (val: string) => {
     updateNodeFields(selectedNode.id, { prompt: val });
-    if (val.endsWith('@') && elements.length > 0) {
+    if (val.endsWith('@') && availableAtHandleItems.length > 0) {
       setAtAutocompleteOpen(true);
     } else if (!val.includes('@') || val.endsWith(' ')) {
       setAtAutocompleteOpen(false);
@@ -866,33 +1009,91 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </span>
               </span>
 
-              {/* Wired Upstream Reference Chips */}
-              {modality !== 'audio' &&
-                upstreamRefNodes.map((up) => (
-                  <div
-                    key={up.id}
-                    className="h-6 pl-1 pr-2 rounded-[6px] bg-[#252525] border border-[#20D5EC]/35 flex items-center gap-1.5 text-[11px] text-white/90"
-                    title={
-                      up.imageUrl
-                        ? `Wired reference from ${up.title}`
-                        : `Waiting for ${up.title} to generate`
-                    }
+              {/* Video Input Method Selector: Text-to-Video vs 1st/Last Frame vs @Ref R2V */}
+              {modality === 'video' && activeModelDef?.supportsReferences && (
+                <div
+                  data-testid="video-input-method-segmented"
+                  className="h-6 p-0.5 rounded-[7px] bg-[#1a1a1a] border border-white/[0.1] inline-flex items-center gap-0.5 text-[10.5px]"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setVideoInputMethod('t2v')}
+                    className={`h-5 px-2 rounded-[5px] font-medium transition-colors ${
+                      activeVideoInputMethod === 't2v'
+                        ? 'bg-white text-[#0e0e0e]'
+                        : 'text-white/60 hover:text-white'
+                    }`}
+                    title="Text-to-Video (ignore frame lock)"
                   >
-                    {up.imageUrl ? (
-                      <SmartMediaImage
-                        src={up.imageUrl}
-                        alt={up.title}
-                        className="w-4 h-4 rounded-[3px] object-cover"
-                      />
-                    ) : (
-                      <span className="w-2 h-2 rounded-full bg-[#20D5EC]/70 ml-1" />
-                    )}
-                    <span className="truncate max-w-[110px]">{up.title}</span>
-                    {!up.imageUrl && (
-                      <span className="text-[10px] text-[#20D5EC]">Pending</span>
-                    )}
-                  </div>
-                ))}
+                    T2V
+                  </button>
+                  {activeModelDef?.supportsStartEndFrames !== false && (
+                    <button
+                      type="button"
+                      onClick={() => setVideoInputMethod('start-end')}
+                      className={`h-5 px-2 rounded-[5px] font-medium transition-colors ${
+                        activeVideoInputMethod === 'start-end'
+                          ? 'bg-amber-400/20 border border-amber-300/40 text-amber-200'
+                          : 'text-white/60 hover:text-white'
+                      }`}
+                      title="First / Last Frame Keyframe Lock (I2V)"
+                    >
+                      1st/Last
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setVideoInputMethod('multi-ref')}
+                    className={`h-5 px-2 rounded-[5px] font-medium transition-colors ${
+                      activeVideoInputMethod === 'multi-ref'
+                        ? 'bg-[#20D5EC]/20 border border-[#20D5EC]/45 text-[#7ceeff]'
+                        : 'text-white/60 hover:text-white'
+                    }`}
+                    title="True Omni Reference-to-Video (@Character / @Scene / @Prop tagging via Seedance m2v & Kling omni_ref_video)"
+                  >
+                    @Ref R2V
+                  </button>
+                </div>
+              )}
+
+              {/* Wired Upstream Reference Chips (Click to insert @Handle tag into prompt!) */}
+              {modality !== 'audio' &&
+                upstreamRefNodes.map((up, upIdx) => {
+                  const chipHandle = deriveUiHandleForNode(up, upIdx + 1);
+                  const isTagged = selectedNode.prompt
+                    .toLowerCase()
+                    .includes(chipHandle.toLowerCase());
+                  return (
+                    <button
+                      key={up.id}
+                      type="button"
+                      onClick={() => insertHandleIntoPrompt(chipHandle)}
+                      className={`h-6 pl-1 pr-2 rounded-[6px] border flex items-center gap-1.5 text-[11px] transition-colors cursor-pointer ${
+                        isTagged
+                          ? 'bg-[#13262b] border-[#20D5EC]/60 text-[#8cf0ff]'
+                          : 'bg-[#252525] hover:bg-white/[0.08] border-[#20D5EC]/35 text-white/90'
+                      }`}
+                      title={`Click to insert ${chipHandle} into prompt (${up.title})`}
+                    >
+                      {up.imageUrl ? (
+                        <SmartMediaImage
+                          src={up.imageUrl}
+                          alt={up.title}
+                          className="w-4 h-4 rounded-[3px] object-cover"
+                        />
+                      ) : (
+                        <span className="w-2 h-2 rounded-full bg-[#20D5EC]/70 ml-1" />
+                      )}
+                      <span className="tabular-nums text-[10.5px] font-semibold text-[#20D5EC]">
+                        {chipHandle}
+                      </span>
+                      <span className="truncate max-w-[96px] text-white/75">{up.title}</span>
+                      {!up.imageUrl && (
+                        <span className="text-[10px] text-[#20D5EC]">Pending</span>
+                      )}
+                    </button>
+                  );
+                })}
 
               {/* Attached Custom Reference Image Chips */}
               {modality !== 'audio' &&
@@ -1098,31 +1299,35 @@ export const ContextualNodeOverlay: React.FC = () => {
               className="w-full bg-[#141414] border border-white/[0.07] focus:border-white/[0.22] rounded-[10px] px-3 py-2 text-[13px] leading-relaxed text-white placeholder:text-white/32 resize-none outline-none select-text"
             />
 
-            {/* Inline @Element Autocomplete (ONLY when active project actually has elements!) */}
-            {atAutocompleteOpen && elements.length > 0 && (
-              <div className="absolute bottom-full left-2 mb-1.5 w-[240px] p-1.5 rounded-[11px] dreamina-menu z-50 space-y-0.5">
-                {elements.map((el) => (
+            {/* Inline @Handle Autocomplete (Wired Nodes, Canvas @Elements & Vault) */}
+            {atAutocompleteOpen && availableAtHandleItems.length > 0 && (
+              <div className="absolute bottom-full left-2 mb-1.5 w-[272px] max-h-[220px] overflow-y-auto p-1.5 rounded-[11px] dreamina-menu z-50 space-y-0.5">
+                <div className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/40">
+                  Tag @Character / @Element Reference
+                </div>
+                {availableAtHandleItems.map((item) => (
                   <button
-                    key={el.id}
+                    key={item.handle}
                     type="button"
-                    onClick={() => {
-                      const nextPrompt = selectedNode.prompt.replace(
-                        /@$/,
-                        `${el.handle} `
-                      );
-                      updateNodeFields(selectedNode.id, {
-                        prompt: nextPrompt,
-                        elementHandles: Array.from(
-                          new Set([...selectedNode.elementHandles, el.handle])
-                        ),
-                      });
-                      setAtAutocompleteOpen(false);
-                    }}
-                    className="w-full h-8 px-2.5 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/90 flex items-center justify-between"
+                    onClick={() => insertHandleIntoPrompt(item.handle, item.nodeId)}
+                    className="w-full h-8 px-2 rounded-[7px] hover:bg-white/[0.08] text-left text-[12px] text-white/90 flex items-center justify-between gap-2"
                   >
-                    <span className="tabular-nums text-[#20D5EC]">{el.handle}</span>
-                    <span className="text-[11px] text-white/45 truncate ml-2">
-                      {el.name}
+                    <span className="flex items-center gap-2 min-w-0">
+                      {item.imageUrl ? (
+                        <SmartMediaImage
+                          src={item.imageUrl}
+                          alt={item.label}
+                          className="w-5 h-5 rounded-[4px] object-cover shrink-0"
+                        />
+                      ) : (
+                        <AtSign className="w-3.5 h-3.5 text-[#20D5EC] shrink-0" strokeWidth={1.6} />
+                      )}
+                      <span className="tabular-nums font-medium text-[#20D5EC] shrink-0">
+                        {item.handle}
+                      </span>
+                    </span>
+                    <span className="text-[11px] text-white/45 truncate">
+                      {item.label}
                     </span>
                   </button>
                 ))}

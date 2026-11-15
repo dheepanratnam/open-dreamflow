@@ -271,6 +271,13 @@ export type StudioPresetId =
 
 export type CreditSourcePreference = 'auto' | 'own' | 'shared';
 
+export interface ReferenceHandleBinding {
+  handle: string;
+  url: string;
+  label?: string;
+  kind?: 'image' | 'video' | 'audio';
+}
+
 export interface CanvasNode {
   id: string;
   kind: NodeKind;
@@ -298,6 +305,7 @@ export interface CanvasNode {
   mcpToolName?: string;
   referenceUrls?: string[];
   videoReferenceUrls?: string[];
+  referenceHandles?: ReferenceHandleBinding[];
   referenceFrameMode?: 'multi-ref' | 'start-end';
   batchViewMode?: 'grid' | 'single';
   generatedOutputs?: string[];

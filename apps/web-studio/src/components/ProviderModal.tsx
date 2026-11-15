@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import {
   EXTERNAL_MCP_TEMPLATES,
+  OFFICIAL_ONE_CLICK_MCPS,
   PLATFORM_CATALOG,
   PLATFORM_UI_META,
   getPlatformConnectionStatus,
@@ -71,15 +72,15 @@ interface PlatformKeyFieldConfig {
 const RAIL_ORDER: PlatformId[] = [
   'higgsfield',
   'dreamina',
-  'elevenlabs',
-  'sume',
   'kling',
+  'elevenlabs',
+  'fal',
+  'replicate',
+  'sume',
   'google-flow',
   'openart',
   'imagineart',
   'openai',
-  'fal',
-  'replicate',
   'comfyui',
   'custom-mcp',
 ];
@@ -681,14 +682,18 @@ const McpFunctionsExplorer: React.FC<McpFunctionsExplorerProps> = ({
   };
 
   const handleQuickInfoCheck = async () => {
-    const balanceTool = server.tools.find((t) => t.name === 'balance');
+    const balanceTool = server.tools.find(
+      (t) => t.name === 'balance' || t.name === 'query_membership_and_credits'
+    );
+    const whoAmITool = server.tools.find((t) => t.name === 'who_am_i');
     const gpuStatusTool = server.tools.find((t) => t.name === 'gpu_status');
     const accountOverviewTool = server.tools.find((t) => t.name === 'get_account_overview');
     const fallbackTool =
       server.tools.find((t) =>
         /status|gpu|account|info|credit|user|quota|models|list/i.test(t.name)
       ) || server.tools[0];
-    const infoCandidate = balanceTool || gpuStatusTool || accountOverviewTool || fallbackTool;
+    const infoCandidate =
+      balanceTool || whoAmITool || gpuStatusTool || accountOverviewTool || fallbackTool;
     if (!infoCandidate) {
       showToast('Connected MCP has 0 callable tools registered yet.', 'error');
       return;
@@ -1289,25 +1294,30 @@ export const ProviderModal: React.FC = () => {
     }
   };
 
-  const handleConnectHiggsfieldOAuthMcp = async () => {
+  const handleConnectOfficialOAuthMcp = async (targetPlatformId: PlatformId, mcpUrl: string) => {
     // Open blank popup synchronously inside click gesture to avoid popup blockers
+    const winName = `${targetPlatformId}_mcp_oauth`;
     const win = window.open(
       'about:blank',
-      'hf_mcp_oauth',
+      winName,
       'width=540,height=720,menubar=no,toolbar=no,status=no'
     );
     popupRef.current = win;
-    const sess = await startMcpOAuth('higgsfield', 'https://mcp.higgsfield.ai/mcp');
+    const sess = await startMcpOAuth(targetPlatformId, mcpUrl);
     if (sess?.authorizeUrl) {
       if (win && !win.closed) {
         win.location.href = sess.authorizeUrl;
         win.focus();
       } else {
-        window.open(sess.authorizeUrl, 'hf_mcp_oauth', 'width=540,height=720');
+        window.open(sess.authorizeUrl, winName, 'width=540,height=720');
       }
     } else if (win && !win.closed) {
       win.close();
     }
+  };
+
+  const handleConnectHiggsfieldOAuthMcp = async () => {
+    await handleConnectOfficialOAuthMcp('higgsfield', 'https://mcp.higgsfield.ai/mcp');
   };
 
   const handleConnectHiggsfieldCliMcp = async () => {
@@ -1622,14 +1632,18 @@ export const ProviderModal: React.FC = () => {
               const isActive = selectedPlatform.id === plat.id;
               const isHiggsfield = plat.id === 'higgsfield';
               const isDreamina = plat.id === 'dreamina';
+              const isKling = plat.id === 'kling';
               const isCustom = plat.id === 'custom-mcp';
+              const officialMcpDef = OFFICIAL_ONE_CLICK_MCPS.find(
+                (o) => o.platformId === plat.id
+              );
               const platBal =
                 mcpBalances[plat.id] ||
                 externalMcpServers.find((srv) => srv.platformId === plat.id && srv.balance)?.balance;
 
               return (
                 <React.Fragment key={plat.id}>
-                  {idx === 2 && (
+                  {idx === 6 && (
                     <div className="px-2 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-[#6e6e6e]">
                       All Creator Platforms
                     </div>
@@ -1645,7 +1659,7 @@ export const ProviderModal: React.FC = () => {
                         ? 'bg-[#1e1e1e] border-white/[0.18] text-white shadow-sm'
                         : isHiggsfield
                         ? 'bg-[#DFFF00]/[0.04] border-[#DFFF00]/20 hover:bg-[#DFFF00]/[0.08] text-[#e8e8e8]'
-                        : isDreamina
+                        : isDreamina || isKling
                         ? 'bg-[#20D5EC]/[0.04] border-[#20D5EC]/20 hover:bg-[#20D5EC]/[0.08] text-[#e8e8e8]'
                         : 'bg-transparent border-transparent hover:bg-white/[0.04] text-[#c2c2c2]'
                     }`}
@@ -1665,9 +1679,9 @@ export const ProviderModal: React.FC = () => {
                               Official CLI MCP
                             </span>
                           )}
-                          {plat.id === 'elevenlabs' && (
-                            <span className="rounded bg-white/[0.07] px-1.5 py-0.5 text-[9px] text-[#bdbdbd] shrink-0">
-                              MCP
+                          {!isHiggsfield && !isDreamina && officialMcpDef && !st?.connected && (
+                            <span className="rounded bg-[#38BDF8]/15 border border-[#38BDF8]/35 px-1.5 py-0.5 text-[9px] font-semibold text-[#7dd3fc] shrink-0">
+                              Official MCP
                             </span>
                           )}
                         </div>
@@ -1763,9 +1777,7 @@ export const ProviderModal: React.FC = () => {
                   if (mcpOAuthSession.authorizeUrl) {
                     window.open(
                       mcpOAuthSession.authorizeUrl,
-                      selectedPlatform.id === 'dreamina'
-                        ? 'dreamina_mcp_oauth'
-                        : 'hf_mcp_oauth',
+                      `${selectedPlatform.id}_mcp_oauth`,
                       'width=560,height=740'
                     );
                   }
@@ -2422,163 +2434,316 @@ export const ProviderModal: React.FC = () => {
                 </div>
               </div>
             ) : (
-              /* OTHER COMPANIES (MCP-First + Verified Browser Sign-In + API Key) */
+              /* OTHER COMPANIES (1-Click Official OAuth MCP + Presets + Verified Browser Sign-In + API Key) */
               <div className="space-y-4">
-                {/* 1. Primary: Official / Presets / Custom MCP Section */}
-                {connectedMcpServer ? (
-                  <McpFunctionsExplorer
-                    server={connectedMcpServer}
-                    onRefresh={() => void refreshExternalMcpById(connectedMcpServer.id)}
-                    onDisconnect={() => void removeExternalMcpById(connectedMcpServer.id)}
-                    onSpawnToolNode={(tool) => handleSpawnToolNode(tool, connectedMcpServer)}
-                  />
-                ) : (
-                  <div className="rounded-xl border border-[#20D5EC]/25 bg-[#15181a] p-4 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <Server className="w-4 h-4 text-[#20D5EC]" />
-                        <h4 className="text-xs font-semibold text-white">
-                          {matchingPreset
-                            ? `1-Click MCP Connection · ${matchingPreset.name}`
-                            : selectedPlatform.id === 'custom-mcp'
-                            ? 'Connect Custom MCP Server (Streamable HTTP / Stdio)'
-                            : `Connect ${selectedPlatform.name} via MCP`}
-                        </h4>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setInlineMcpAdvanced((v) => !v)}
-                        className="text-[11px] text-[#9b9b9b] hover:text-white underline underline-offset-2"
-                      >
-                        {inlineMcpAdvanced ? 'Simple Mode' : 'Advanced Config'}
-                      </button>
-                    </div>
+                {(() => {
+                  const selectedOfficialMcp = OFFICIAL_ONE_CLICK_MCPS.find(
+                    (o) => o.platformId === selectedPlatform.id && o.authFlow === 'oauth'
+                  );
+                  if (connectedMcpServer) {
+                    return (
+                      <McpFunctionsExplorer
+                        server={connectedMcpServer}
+                        onRefresh={() => void refreshExternalMcpById(connectedMcpServer.id)}
+                        onDisconnect={() => {
+                          void removeExternalMcpById(connectedMcpServer.id);
+                          setMcpOAuthSession(null);
+                        }}
+                        onSpawnToolNode={(tool) => handleSpawnToolNode(tool, connectedMcpServer)}
+                      />
+                    );
+                  }
+                  return (
+                    <>
+                      {/* 1-Click Official OAuth MCP Hero Card (Kling AI, ElevenLabs, Fal.ai, Replicate) */}
+                      {selectedOfficialMcp && !showProgressForSelected && (
+                        <div
+                          data-testid={`official-mcp-hero-${selectedOfficialMcp.platformId}`}
+                          className="rounded-2xl border border-[#20D5EC]/30 bg-gradient-to-br from-[#20D5EC]/[0.08] via-[#161616] to-[#131313] p-5 space-y-3.5"
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div className="flex items-start gap-3.5 min-w-0">
+                              <PlatformBrandIcon
+                                platformId={selectedOfficialMcp.platformId}
+                                size="xl"
+                              />
+                              <div className="space-y-1.5 min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="inline-flex items-center gap-1.5 rounded-full border border-[#20D5EC]/35 bg-[#20D5EC]/12 px-2.5 py-0.5 text-[10.5px] font-semibold text-[#7ceeff]">
+                                    <Sparkles className="w-3 h-3" />
+                                    <span>
+                                      {selectedOfficialMcp.badge} ·{' '}
+                                      {selectedOfficialMcp.mcpUrl.replace(/^https?:\/\//, '')}
+                                    </span>
+                                  </span>
+                                  {selectedOfficialMcp.guideUrl && (
+                                    <a
+                                      href={selectedOfficialMcp.guideUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="inline-flex items-center gap-1 text-[11px] text-[#9ca3af] hover:text-white underline underline-offset-2"
+                                    >
+                                      <span>Official MCP Guide</span>
+                                      <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  )}
+                                </div>
+                                <h4 className="text-base font-semibold text-white">
+                                  Connect {selectedPlatform.name} in 1 Click
+                                </h4>
+                                <p className="text-xs text-[#b5b5b5] leading-relaxed max-w-[560px]">
+                                  {selectedOfficialMcp.summary}
+                                </p>
+                              </div>
+                            </div>
 
-                    {matchingPreset && !inlineMcpAdvanced ? (
-                      <div className="space-y-2.5">
-                        <p className="text-[11px] text-[#9c9c9c]">{matchingPreset.description}</p>
-                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                          {matchingPreset.envKeyName && (
-                            <input
-                              type="password"
-                              value={inlineMcpApiKey}
-                              onChange={(e) => setInlineMcpApiKey(e.target.value)}
-                              placeholder={`Paste ${matchingPreset.envKeyName} (${matchingPreset.envPlaceholder || '...'})`}
-                              className="flex-1 rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-2 text-xs text-white placeholder-[#5e5e5e] focus:border-[#20D5EC] focus:outline-none"
-                            />
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => void handleConnectPresetForPlatform()}
-                            disabled={mcpConnecting}
-                            className="shrink-0 inline-flex items-center justify-center gap-1.5 rounded-xl bg-white hover:bg-[#e8e8e8] disabled:opacity-60 px-4 py-2 text-xs font-semibold text-[#0e0e0e] cursor-pointer"
-                          >
-                            {mcpConnecting ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <PlugZap className="w-3.5 h-3.5" />
-                            )}
-                            <span>Connect {selectedPlatform.shortLabel} MCP →</span>
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        <div>
-                          <label className="block text-[11px] text-[#a5a5a5] mb-1">
-                            MCP Server Name
-                          </label>
-                          <input
-                            type="text"
-                            value={inlineMcpName}
-                            onChange={(e) => setInlineMcpName(e.target.value)}
-                            placeholder={`${selectedPlatform.name} MCP`}
-                            className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs text-white focus:border-[#20D5EC] focus:outline-none"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] text-[#a5a5a5] mb-1">Transport</label>
-                          <select
-                            value={inlineMcpTransport}
-                            onChange={(e) =>
-                              setInlineMcpTransport(e.target.value as 'http' | 'stdio')
-                            }
-                            className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs text-white focus:border-[#20D5EC] focus:outline-none"
-                          >
-                            <option value="http">Streamable HTTP / SSE URL</option>
-                            <option value="stdio">Local Command (stdio)</option>
-                          </select>
-                        </div>
-                        {inlineMcpTransport === 'http' ? (
-                          <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                            <div>
-                              <label className="block text-[11px] text-[#a5a5a5] mb-1">
-                                MCP Endpoint URL
-                              </label>
-                              <input
-                                type="text"
-                                value={inlineMcpUrl}
-                                onChange={(e) => setInlineMcpUrl(e.target.value)}
-                                placeholder="https://.../mcp"
-                                className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs text-white focus:border-[#20D5EC] focus:outline-none"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-[11px] text-[#a5a5a5] mb-1">
-                                Bearer Token (Optional)
-                              </label>
-                              <input
-                                type="password"
-                                value={inlineMcpApiKey}
-                                onChange={(e) => setInlineMcpApiKey(e.target.value)}
-                                placeholder="Optional Authorization header..."
-                                className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs text-white focus:border-[#20D5EC] focus:outline-none"
-                              />
-                            </div>
+                            <button
+                              type="button"
+                              data-testid={`connect-official-mcp-${selectedOfficialMcp.platformId}`}
+                              onClick={() =>
+                                void handleConnectOfficialOAuthMcp(
+                                  selectedOfficialMcp.platformId,
+                                  selectedOfficialMcp.mcpUrl
+                                )
+                              }
+                              className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl bg-[#20D5EC] hover:bg-[#5ce1f2] px-5 py-3 text-xs font-bold text-[#0b0b0b] shadow-[0_8px_28px_rgba(32,213,236,0.22)] transition-all cursor-pointer"
+                            >
+                              <PlugZap className="w-4 h-4" />
+                              <span>Authorize {selectedPlatform.shortLabel} MCP →</span>
+                            </button>
                           </div>
-                        ) : (
-                          <>
-                            <div>
-                              <label className="block text-[11px] text-[#a5a5a5] mb-1">
-                                Command
-                              </label>
-                              <input
-                                type="text"
-                                value={inlineMcpCommand}
-                                onChange={(e) => setInlineMcpCommand(e.target.value)}
-                                className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs tabular-nums text-white focus:border-[#20D5EC] focus:outline-none"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-[11px] text-[#a5a5a5] mb-1">Args</label>
-                              <input
-                                type="text"
-                                value={inlineMcpArgs}
-                                onChange={(e) => setInlineMcpArgs(e.target.value)}
-                                className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs tabular-nums text-white focus:border-[#20D5EC] focus:outline-none"
-                              />
-                            </div>
-                          </>
-                        )}
-                        <div className="sm:col-span-2 flex justify-end pt-1">
-                          <button
-                            type="button"
-                            onClick={() => void handleConnectCustomMcp()}
-                            disabled={mcpConnecting}
-                            className="inline-flex items-center gap-1.5 rounded-xl bg-white hover:bg-[#e8e8e8] disabled:opacity-60 px-4 py-2 text-xs font-semibold text-[#0e0e0e] cursor-pointer"
-                          >
-                            {mcpConnecting ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <PlugZap className="w-3.5 h-3.5" />
-                            )}
-                            <span>Connect MCP Server →</span>
-                          </button>
+
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-white/[0.07]">
+                            <span className="text-[10px] uppercase tracking-wider text-white/40 mr-1">
+                              Ready Functions:
+                            </span>
+                            {selectedOfficialMcp.featuredTools.map((fnName) => (
+                              <span
+                                key={fnName}
+                                className="rounded-md bg-white/[0.05] border border-white/[0.08] px-2 py-0.5 tabular-nums text-[10px] text-white/80"
+                              >
+                                {fnName}
+                              </span>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
-                )}
+                      )}
+
+                      {/* 1-Click Pre-Configured Official MCP Directory on Custom MCP Tab */}
+                      {selectedPlatform.id === 'custom-mcp' && (
+                        <div className="rounded-xl border border-white/[0.09] bg-[#151515] p-4 space-y-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <Sparkles className="w-4 h-4 text-[#20D5EC]" />
+                              <h4 className="text-xs font-semibold text-white">
+                                Pre-Configured Official Company MCP Directory (1-Click Authorize)
+                              </h4>
+                            </div>
+                            <span className="text-[10.5px] text-white/45">
+                              No manual URL or JSON config needed
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            {OFFICIAL_ONE_CLICK_MCPS.map((item) => {
+                              const st = platformStatuses[item.platformId];
+                              const isConn = Boolean(st?.hasMcp);
+                              return (
+                                <div
+                                  key={item.platformId}
+                                  className="rounded-xl border border-white/[0.08] bg-[#101010] p-3 flex items-center justify-between gap-2.5"
+                                >
+                                  <div className="flex items-center gap-2.5 min-w-0">
+                                    <PlatformBrandIcon platformId={item.platformId} size="md" />
+                                    <div className="min-w-0">
+                                      <div className="text-xs font-semibold text-white truncate">
+                                        {item.name}
+                                      </div>
+                                      <div className="tabular-nums text-[10px] text-white/45 truncate">
+                                        {item.mcpUrl}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedPlatformId(item.platformId);
+                                      if (!isConn) {
+                                        if (item.authFlow === 'dreamina_cli') {
+                                          void handleConnectDreaminaMcp();
+                                        } else {
+                                          void handleConnectOfficialOAuthMcp(
+                                            item.platformId,
+                                            item.mcpUrl
+                                          );
+                                        }
+                                      }
+                                    }}
+                                    className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+                                      isConn
+                                        ? 'border border-[#10b981]/35 bg-[#10b981]/12 text-[#6ee7b7]'
+                                        : 'bg-white hover:bg-white/90 text-[#0e0e0e]'
+                                    }`}
+                                  >
+                                    {isConn ? '✓ Connected' : 'Authorize →'}
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Secondary Stdio / Custom HTTP MCP Config */}
+                      {(!selectedOfficialMcp || matchingPreset || inlineMcpAdvanced) && (
+                        <div className="rounded-xl border border-white/[0.09] bg-[#15181a] p-4 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <Server className="w-4 h-4 text-[#20D5EC]" />
+                              <h4 className="text-xs font-semibold text-white">
+                                {matchingPreset
+                                  ? `Alternative Local Stdio MCP · ${matchingPreset.name}`
+                                  : selectedPlatform.id === 'custom-mcp'
+                                  ? 'Connect Any Custom MCP Server (Streamable HTTP / Stdio)'
+                                  : `Connect ${selectedPlatform.name} via Custom MCP`}
+                              </h4>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setInlineMcpAdvanced((v) => !v)}
+                              className="text-[11px] text-[#9b9b9b] hover:text-white underline underline-offset-2"
+                            >
+                              {inlineMcpAdvanced ? 'Simple Mode' : 'Advanced Config'}
+                            </button>
+                          </div>
+
+                          {matchingPreset && !inlineMcpAdvanced ? (
+                            <div className="space-y-2.5">
+                              <p className="text-[11px] text-[#9c9c9c]">{matchingPreset.description}</p>
+                              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                                {matchingPreset.envKeyName && (
+                                  <input
+                                    type="password"
+                                    value={inlineMcpApiKey}
+                                    onChange={(e) => setInlineMcpApiKey(e.target.value)}
+                                    placeholder={`Paste ${matchingPreset.envKeyName} (${matchingPreset.envPlaceholder || '...'})`}
+                                    className="flex-1 rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-2 text-xs text-white placeholder-[#5e5e5e] focus:border-[#20D5EC] focus:outline-none"
+                                  />
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => void handleConnectPresetForPlatform()}
+                                  disabled={mcpConnecting}
+                                  className="shrink-0 inline-flex items-center justify-center gap-1.5 rounded-xl bg-white hover:bg-[#e8e8e8] disabled:opacity-60 px-4 py-2 text-xs font-semibold text-[#0e0e0e] cursor-pointer"
+                                >
+                                  {mcpConnecting ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <PlugZap className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>Connect Stdio MCP →</span>
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                              <div>
+                                <label className="block text-[11px] text-[#a5a5a5] mb-1">
+                                  MCP Server Name
+                                </label>
+                                <input
+                                  type="text"
+                                  value={inlineMcpName}
+                                  onChange={(e) => setInlineMcpName(e.target.value)}
+                                  placeholder={`${selectedPlatform.name} MCP`}
+                                  className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs text-white focus:border-[#20D5EC] focus:outline-none"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[11px] text-[#a5a5a5] mb-1">Transport</label>
+                                <select
+                                  value={inlineMcpTransport}
+                                  onChange={(e) =>
+                                    setInlineMcpTransport(e.target.value as 'http' | 'stdio')
+                                  }
+                                  className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs text-white focus:border-[#20D5EC] focus:outline-none"
+                                >
+                                  <option value="http">Streamable HTTP / SSE URL</option>
+                                  <option value="stdio">Local Command (stdio)</option>
+                                </select>
+                              </div>
+                              {inlineMcpTransport === 'http' ? (
+                                <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                  <div>
+                                    <label className="block text-[11px] text-[#a5a5a5] mb-1">
+                                      MCP Endpoint URL
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={inlineMcpUrl}
+                                      onChange={(e) => setInlineMcpUrl(e.target.value)}
+                                      placeholder="https://.../mcp"
+                                      className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs text-white focus:border-[#20D5EC] focus:outline-none"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[11px] text-[#a5a5a5] mb-1">
+                                      Bearer Token (Optional)
+                                    </label>
+                                    <input
+                                      type="password"
+                                      value={inlineMcpApiKey}
+                                      onChange={(e) => setInlineMcpApiKey(e.target.value)}
+                                      placeholder="Optional Authorization header..."
+                                      className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs text-white focus:border-[#20D5EC] focus:outline-none"
+                                    />
+                                  </div>
+                                </div>
+                              ) : (
+                                <>
+                                  <div>
+                                    <label className="block text-[11px] text-[#a5a5a5] mb-1">
+                                      Command
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={inlineMcpCommand}
+                                      onChange={(e) => setInlineMcpCommand(e.target.value)}
+                                      className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs tabular-nums text-white focus:border-[#20D5EC] focus:outline-none"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[11px] text-[#a5a5a5] mb-1">Args</label>
+                                    <input
+                                      type="text"
+                                      value={inlineMcpArgs}
+                                      onChange={(e) => setInlineMcpArgs(e.target.value)}
+                                      className="w-full rounded-lg border border-white/[0.1] bg-[#0e0e0e] px-3 py-1.5 text-xs tabular-nums text-white focus:border-[#20D5EC] focus:outline-none"
+                                    />
+                                  </div>
+                                </>
+                              )}
+                              <div className="sm:col-span-2 flex justify-end pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleConnectCustomMcp()}
+                                  disabled={mcpConnecting}
+                                  className="inline-flex items-center gap-1.5 rounded-xl bg-white hover:bg-[#e8e8e8] disabled:opacity-60 px-4 py-2 text-xs font-semibold text-[#0e0e0e] cursor-pointer"
+                                >
+                                  {mcpConnecting ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <PlugZap className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>Connect MCP Server →</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
 
                 {/* 2. Side-by-side Browser Sign-In (+ Explicit Verify Button) & Official API Key */}
                 {selectedPlatform.id !== 'custom-mcp' && (

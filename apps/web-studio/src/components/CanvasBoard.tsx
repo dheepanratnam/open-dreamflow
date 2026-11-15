@@ -860,6 +860,52 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
         }}
         className="absolute top-0 left-0 w-0 h-0"
       >
+        {/* Labeled Spatial Section Group Frames */}
+        {nodes
+          .filter((n) => n.modelParams?.isGroupBanner === true)
+          .map((grp) => {
+            const gw = Number(grp.modelParams?.groupWidth || 1680);
+            const gh = Number(grp.modelParams?.groupHeight || 620);
+            const accent = String(grp.modelParams?.groupAccent || '#20D5EC');
+            const subtitle = String(grp.modelParams?.groupSubtitle || '');
+            return (
+              <div
+                key={`grp_halo_${grp.id}`}
+                style={{
+                  left: `${grp.x - 28}px`,
+                  top: `${grp.y - 54}px`,
+                  width: `${gw}px`,
+                  height: `${gh}px`,
+                  borderColor: `${accent}38`,
+                  backgroundColor: `${accent}06`,
+                }}
+                className="absolute rounded-[24px] border border-dashed pointer-events-none"
+              >
+                <div
+                  style={{
+                    borderColor: `${accent}55`,
+                    backgroundColor: '#121518',
+                    color: '#f3f4f6',
+                  }}
+                  className="absolute -top-[18px] left-6 px-3.5 py-1 rounded-full border flex items-center gap-2.5 shadow-lg"
+                >
+                  <span
+                    style={{ backgroundColor: accent }}
+                    className="w-2 h-2 rounded-full shrink-0"
+                  />
+                  <span className="text-[12px] font-semibold tracking-wide uppercase">
+                    {grp.title}
+                  </span>
+                  {subtitle && (
+                    <span className="text-[11px] text-white/55 font-normal">
+                      · {subtitle}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
         {/* Bezier Node Connection Wires (#20D5EC) */}
         <svg
           className="overflow-visible pointer-events-none"
@@ -1252,17 +1298,36 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
                           aspectRatio={node.aspectRatio}
                           className="absolute inset-0 w-full h-full object-cover opacity-35"
                         />
-                        <div className="relative z-10 px-4 py-3 rounded-[10px] bg-[#141414]/90 backdrop-blur-md border border-white/[0.12] flex flex-col items-center gap-1.5 text-center max-w-[85%]">
-                          <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-[#20D5EC]">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#20D5EC]" />
-                            <span>
-                              Reference Ready · {readyUpstreamImages[0].title}
-                              {readyUpstreamImages.length > 1
-                                ? ` +${readyUpstreamImages.length - 1}`
-                                : ''}
-                            </span>
-                          </div>
-                          <p className="text-[11.5px] text-white/65 leading-snug">
+                        <div className="relative z-10 px-4 py-3 rounded-[10px] bg-[#141414]/90 backdrop-blur-md border border-white/[0.12] flex flex-col items-center gap-1.5 text-center max-w-[88%]">
+                          {(() => {
+                            const modeParam = String(node.modelParams?.mode || '').toLowerCase();
+                            const isOmniR2V =
+                              node.referenceFrameMode === 'multi-ref' ||
+                              modeParam === 'm2v' ||
+                              modeParam === 'reference-to-video' ||
+                              node.modelId === 'kling-elements' ||
+                              /@[A-Za-z0-9_]+/.test(node.prompt);
+                            return (
+                              <div className="flex items-center gap-1.5 flex-wrap justify-center">
+                                <span
+                                  className={`px-2 py-0.5 rounded-[5px] text-[10px] font-semibold border ${
+                                    isOmniR2V
+                                      ? 'bg-[#20D5EC]/15 border-[#20D5EC]/45 text-[#7ceeff]'
+                                      : 'bg-amber-400/15 border-amber-300/40 text-amber-200'
+                                  }`}
+                                >
+                                  {isOmniR2V ? '@Ref Omni R2V' : '1st / Last Frame'}
+                                </span>
+                                <span className="text-[11px] font-medium text-white/90">
+                                  {readyUpstreamImages[0].title}
+                                  {readyUpstreamImages.length > 1
+                                    ? ` +${readyUpstreamImages.length - 1}`
+                                    : ''}
+                                </span>
+                              </div>
+                            );
+                          })()}
+                          <p className="text-[11.5px] text-white/65 leading-snug line-clamp-3">
                             {node.prompt.trim()
                               ? node.prompt
                               : 'Select video model & prompt below to animate this reference'}

@@ -32,6 +32,22 @@ export const DEFAULT_OAUTH_MCP_ENDPOINTS: Record<
     mcpUrl: 'https://mcp.higgsfield.ai/mcp',
     serverName: 'Higgsfield Official MCP',
   },
+  kling: {
+    mcpUrl: 'https://kling.ai/mcp',
+    serverName: 'Kling AI Official MCP',
+  },
+  fal: {
+    mcpUrl: 'https://mcp.fal.ai/mcp',
+    serverName: 'Fal.ai Official MCP',
+  },
+  replicate: {
+    mcpUrl: 'https://mcp.replicate.com/mcp',
+    serverName: 'Replicate Official MCP',
+  },
+  elevenlabs: {
+    mcpUrl: 'https://api.elevenlabs.io/v1/mcp',
+    serverName: 'ElevenLabs Official MCP',
+  },
 };
 
 export interface PublicMcpOAuthSession {
@@ -79,6 +95,7 @@ interface OAuthMetadataDiscovery {
   authorizationEndpoint: string;
   tokenEndpoint: string;
   registrationEndpoint?: string;
+  clientIdMetadataDocumentSupported?: boolean;
   scopesSupported: string[];
 }
 
@@ -260,16 +277,22 @@ export class McpOAuthManager {
         : mcpUrl;
 
     let authServerOrigin = origin;
+    let authServerPath = '';
     if (
       Array.isArray(protectedRes?.authorization_servers) &&
       typeof protectedRes.authorization_servers[0] === 'string'
     ) {
       try {
-        authServerOrigin = new URL(protectedRes.authorization_servers[0]).origin;
+        const parsedAuthUrl = new URL(protectedRes.authorization_servers[0]);
+        authServerOrigin = parsedAuthUrl.origin;
+        authServerPath =
+          parsedAuthUrl.pathname !== '/' ? parsedAuthUrl.pathname.replace(/\/+$/, '') : '';
       } catch {
         authServerOrigin = origin;
+        authServerPath = '';
       }
     }
+    const authServerFullUrl = `${authServerOrigin}${authServerPath}`;
 
     // 2. Check if the MCP origin itself hosts an OAuth 2.0 proxy with dynamic registration
     // (e.g. `https://mcp.higgsfield.ai/.well-known/oauth-authorization-server` -> `/oauth2/*`
@@ -280,7 +303,7 @@ export class McpOAuthManager {
       !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\b/i.test(redirectUri);
 
     let authMeta: Record<string, unknown> | null = null;
-    if (authServerOrigin !== origin) {
+    if (authServerFullUrl !== origin) {
       const originMeta = await this.fetchJsonOrNull(`${origin}/.well-known/oauth-authorization-server`);
       const hasCompleteOriginOAuth =
         typeof originMeta?.authorization_endpoint === 'string' &&
@@ -289,12 +312,31 @@ export class McpOAuthManager {
       if (hasCompleteOriginOAuth && (isNonLoopbackRedirect || /higgsfield\.ai$/i.test(parsedMcpUrl.hostname))) {
         authMeta = originMeta;
         authServerOrigin = origin;
+        authServerPath = '';
       }
     }
 
-    // 3. RFC 8414 Authorization Server Metadata (with OIDC fallback)
+    // 3. RFC 8414 Authorization Server Metadata (preserving path-based issuers like `https://kling.ai/auth`)
     if (!authMeta) {
       authMeta =
+        (authServerPath
+          ? await this.fetchJsonOrNull(
+              `${authServerOrigin}/.well-known/oauth-authorization-server${authServerPath}`
+            )
+          : null) ||
+        (authServerPath
+          ? await this.fetchJsonOrNull(
+              `${authServerFullUrl}/.well-known/oauth-authorization-server`
+            )
+          : null) ||
+        (authServerPath
+          ? await this.fetchJsonOrNull(
+              `${authServerOrigin}/.well-known/openid-configuration${authServerPath}`
+            )
+          : null) ||
+        (authServerPath
+          ? await this.fetchJsonOrNull(`${authServerFullUrl}/.well-known/openid-configuration`)
+          : null) ||
         (await this.fetchJsonOrNull(`${authServerOrigin}/.well-known/oauth-authorization-server`)) ||
         (await this.fetchJsonOrNull(`${authServerOrigin}/.well-known/openid-configuration`));
     }
@@ -315,10 +357,13 @@ export class McpOAuthManager {
       typeof authMeta.registration_endpoint === 'string'
         ? authMeta.registration_endpoint.trim()
         : undefined;
+    const clientIdMetadataDocumentSupported = Boolean(
+      authMeta.client_id_metadata_document_supported
+    );
 
     if (!authorizationEndpoint || !tokenEndpoint) {
       throw new Error(
-        `OAuth metadata at ${authServerOrigin} is missing authorization_endpoint or token_endpoint.`
+        `OAuth metadata at ${authServerFullUrl} is missing authorization_endpoint or token_endpoint.`
       );
     }
 
@@ -334,6 +379,7 @@ export class McpOAuthManager {
       authorizationEndpoint,
       tokenEndpoint,
       registrationEndpoint,
+      clientIdMetadataDocumentSupported,
       scopesSupported,
     };
   }
@@ -355,6 +401,12 @@ export class McpOAuthManager {
     }
 
     if (!discovery.registrationEndpoint) {
+      if (discovery.clientIdMetadataDocumentSupported) {
+        return (
+          process.env.DREAMFLOW_OAUTH_CLIENT_METADATA_URL?.trim() ||
+          'https://open-dreamflow.pages.dev/oauth-client-metadata.json'
+        );
+      }
       throw new Error(
         `MCP OAuth server for ${mcpUrl} does not expose dynamic registration_endpoint.`
       );
@@ -462,12 +514,22 @@ export class McpOAuthManager {
     try {
       const discovery = await this.discoverOAuthMetadata(mcpUrl, redirectUri);
       const clientId = await this.ensureClientRegistered(mcpUrl, redirectUri, discovery);
-      const preferredScopes = ['openid', 'email', 'offline_access'].filter(
+      const oidcMetaSet = new Set([
+        'openid',
+        'profile',
+        'email',
+        'offline_access',
+        'phone',
+        'address',
+      ]);
+      const domainScopes = discovery.scopesSupported.filter((s) => !oidcMetaSet.has(s));
+      const preferredOidc = ['openid', 'email', 'offline_access'].filter(
         (s) => discovery.scopesSupported.length === 0 || discovery.scopesSupported.includes(s)
       );
+      const mergedScopes = Array.from(new Set([...domainScopes, ...preferredOidc]));
       const scope =
-        preferredScopes.length > 0
-          ? preferredScopes.join(' ')
+        mergedScopes.length > 0
+          ? mergedScopes.join(' ')
           : discovery.scopesSupported.join(' ') || 'openid email offline_access';
 
       const authUrl = new URL(discovery.authorizationEndpoint);

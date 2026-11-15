@@ -91,6 +91,107 @@ export interface ExternalMcpTemplate {
   url?: string;
 }
 
+export interface OfficialOneClickMcpDef {
+  platformId: PlatformId;
+  name: string;
+  badge: string;
+  mcpUrl: string;
+  authFlow: 'oauth' | 'dreamina_cli';
+  guideUrl?: string;
+  accentHex: string;
+  summary: string;
+  featuredTools: string[];
+}
+
+export const OFFICIAL_ONE_CLICK_MCPS: OfficialOneClickMcpDef[] = [
+  {
+    platformId: 'higgsfield',
+    name: 'Higgsfield Official MCP',
+    badge: 'Official OAuth MCP',
+    mcpUrl: 'https://mcp.higgsfield.ai/mcp',
+    authFlow: 'oauth',
+    guideUrl: 'https://higgsfield.ai',
+    accentHex: '#DFFF00',
+    summary:
+      '1-click OAuth 2.1 connection to mcp.higgsfield.ai using your existing Higgsfield credits for Soul, Cinema Studio, DoP I2V & @Image1 multi-ref.',
+    featuredTools: ['generate_image', 'generate_video', 'balance', 'models'],
+  },
+  {
+    platformId: 'dreamina',
+    name: 'Dreamina Official CLI MCP',
+    badge: 'Official CLI MCP',
+    mcpUrl: 'dreamina://mcp/dreamina-canvas',
+    authFlow: 'dreamina_cli',
+    guideUrl: 'https://dreamina.capcut.com/ai-tool/home',
+    accentHex: '#20D5EC',
+    summary:
+      'Official ByteDance dreamina-canvas MCP with Seedream 5.5, Seedance 2.5/2.0, and true @Character/@Element m2v ({{res:<uuid>}}) reference-to-video.',
+    featuredTools: [
+      'dreamina_generate_image',
+      'dreamina_generate_video',
+      'dreamina_upload_asset',
+      'dreamina_credits',
+    ],
+  },
+  {
+    platformId: 'kling',
+    name: 'Kling AI Official MCP',
+    badge: 'Official OAuth MCP',
+    mcpUrl: 'https://kling.ai/mcp',
+    authFlow: 'oauth',
+    guideUrl: 'https://kling.ai/app/mcp/guide',
+    accentHex: '#38BDF8',
+    summary:
+      '1-click OAuth 2.1 + PKCE connection to kling.ai/mcp (18 official tools incl. omni_ref_video @image_1..@image_7, text_to_video, image_to_video, element_create & live credit check).',
+    featuredTools: [
+      'omni_ref_video',
+      'text_to_video',
+      'image_to_video',
+      'text_to_image',
+      'image_to_image',
+      'motion_control',
+      'element_create',
+      'query_membership_and_credits',
+    ],
+  },
+  {
+    platformId: 'elevenlabs',
+    name: 'ElevenLabs Official MCP',
+    badge: 'Official OAuth MCP',
+    mcpUrl: 'https://api.elevenlabs.io/v1/mcp',
+    authFlow: 'oauth',
+    guideUrl: 'https://elevenlabs.io/docs/agents-platform/libraries/mcp',
+    accentHex: '#A78BFA',
+    summary:
+      '1-click remote MCP connection to api.elevenlabs.io/v1/mcp (or local stdio via XI_API_KEY) for Multilingual v2 TTS, Sound Effects v2 & voice design.',
+    featuredTools: ['text_to_speech', 'text_to_sound_effects', 'search_voices'],
+  },
+  {
+    platformId: 'fal',
+    name: 'Fal.ai Official MCP',
+    badge: 'Official OAuth MCP',
+    mcpUrl: 'https://mcp.fal.ai/mcp',
+    authFlow: 'oauth',
+    guideUrl: 'https://docs.fal.ai',
+    accentHex: '#F472B6',
+    summary:
+      '1-click OAuth connection to mcp.fal.ai/mcp for pay-per-call Flux, Recraft V3, Kling Master & Veo queue tools.',
+    featuredTools: ['search', 'generate', 'result', 'status'],
+  },
+  {
+    platformId: 'replicate',
+    name: 'Replicate Official MCP',
+    badge: 'Official OAuth MCP',
+    mcpUrl: 'https://mcp.replicate.com/mcp',
+    authFlow: 'oauth',
+    guideUrl: 'https://replicate.com/docs/reference/mcp',
+    accentHex: '#34D399',
+    summary:
+      '1-click OAuth connection to mcp.replicate.com/mcp for open-weights Flux, Wan, SDXL & community model predictions.',
+    featuredTools: ['create_predictions', 'get_predictions', 'search_models'],
+  },
+];
+
 export const EXTERNAL_MCP_TEMPLATES: ExternalMcpTemplate[] = [
   {
     id: 'tpl-higgsfield-cli-mcp',

@@ -26,6 +26,7 @@ import type {
   PlatformId,
   ProviderId,
   ProviderVerificationResult,
+  ReferenceHandleBinding,
   ResolutionTier,
   SharedCreditGrant,
   StudioAuthUser,
@@ -780,6 +781,7 @@ export interface GenerateNodeBackendParams {
   modelParams?: Record<string, string | number | boolean>;
   referenceImages?: string[];
   videoReferences?: string[];
+  referenceHandles?: ReferenceHandleBinding[];
   referenceFrameMode?: 'multi-ref' | 'start-end';
   startImageUrl?: string;
   endImageUrl?: string;
@@ -915,11 +917,18 @@ export async function generateNodeViaBackend(
     const cleanedEndImg = params.endImageUrl
       ? toBackendRelativeMediaPath(params.endImageUrl) || params.endImageUrl
       : undefined;
+    const cleanedHandles = (params.referenceHandles || [])
+      .filter((h) => h && h.handle && h.url)
+      .map((h) => ({
+        ...h,
+        url: toBackendRelativeMediaPath(h.url) || h.url,
+      }));
 
     const requestBody = JSON.stringify({
       ...params,
       referenceImages: cleanedRefs,
       ...(cleanedVideoRefs.length > 0 ? { videoReferences: cleanedVideoRefs } : {}),
+      ...(cleanedHandles.length > 0 ? { referenceHandles: cleanedHandles } : {}),
       ...(params.referenceFrameMode ? { referenceFrameMode: params.referenceFrameMode } : {}),
       ...(cleanedStartImg ? { startImageUrl: cleanedStartImg } : {}),
       ...(cleanedEndImg ? { endImageUrl: cleanedEndImg } : {}),
@@ -1267,6 +1276,269 @@ export async function checkBrowserConnectionsViaBackend(
   }
 }
 
+interface EdgePkceBundle {
+  sessionId: string;
+  state: string;
+  platformId: string;
+  mcpUrl: string;
+  redirectUri: string;
+  codeVerifier: string;
+  clientId: string;
+  clientSecret?: string;
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  registrationEndpoint?: string;
+  scope?: string;
+  resource?: string;
+}
+
+const edgeOAuthSessions = new Map<string, McpOAuthSession>();
+const edgePkceByState = new Map<string, EdgePkceBundle>();
+const edgeExchangingStates = new Set<string>();
+let edgeMessageListenerAttached = false;
+
+function saveEdgePkceBundle(bundle: EdgePkceBundle): void {
+  edgePkceByState.set(bundle.state, bundle);
+  if (typeof window !== 'undefined') {
+    try {
+      sessionStorage.setItem(`dreamflow_edge_pkce_${bundle.state}`, JSON.stringify(bundle));
+    } catch {
+      // ignore storage errors
+    }
+  }
+}
+
+function loadEdgePkceBundle(state: string): EdgePkceBundle | null {
+  const mem = edgePkceByState.get(state);
+  if (mem) return mem;
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = sessionStorage.getItem(`dreamflow_edge_pkce_${state}`);
+      if (raw) {
+        const parsed = JSON.parse(raw) as EdgePkceBundle;
+        edgePkceByState.set(state, parsed);
+        return parsed;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
+export async function completeEdgeMcpOAuthCallback(payload: {
+  code?: string;
+  state?: string;
+  error?: string;
+}): Promise<McpOAuthSession | null> {
+  const state = String(payload.state || '').trim();
+  if (!state) return null;
+  const bundle = loadEdgePkceBundle(state);
+  if (!bundle) return null;
+
+  const current = edgeOAuthSessions.get(bundle.sessionId);
+  if (current?.step === 'connected') return current;
+  if (edgeExchangingStates.has(state)) return current || null;
+
+  if (payload.error) {
+    const failed: McpOAuthSession = {
+      sessionId: bundle.sessionId,
+      state: bundle.state,
+      platformId: bundle.platformId,
+      mcpUrl: bundle.mcpUrl,
+      step: 'error',
+      error: payload.error,
+      updatedAt: Date.now(),
+    };
+    edgeOAuthSessions.set(bundle.sessionId, failed);
+    return failed;
+  }
+
+  const code = String(payload.code || '').trim();
+  if (!code) return null;
+
+  edgeExchangingStates.add(state);
+  try {
+    const exchanging: McpOAuthSession = {
+      sessionId: bundle.sessionId,
+      state: bundle.state,
+      platformId: bundle.platformId,
+      mcpUrl: bundle.mcpUrl,
+      step: 'exchanging_token',
+      updatedAt: Date.now(),
+    };
+    edgeOAuthSessions.set(bundle.sessionId, exchanging);
+
+    const exRes = await fetch('/edge-oauth/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        tokenEndpoint: bundle.tokenEndpoint,
+        clientId: bundle.clientId,
+        clientSecret: bundle.clientSecret,
+        redirectUri: bundle.redirectUri,
+        codeVerifier: bundle.codeVerifier,
+        authorizationEndpoint: bundle.authorizationEndpoint,
+        registrationEndpoint: bundle.registrationEndpoint,
+        scope: bundle.scope,
+        resource: bundle.resource,
+      }),
+    });
+    const exJson = (await exRes.json().catch(() => ({}))) as {
+      ok?: boolean;
+      oauth?: Record<string, unknown>;
+      error?: string;
+    };
+    if (!exRes.ok || !exJson.ok || !exJson.oauth) {
+      const failed: McpOAuthSession = {
+        sessionId: bundle.sessionId,
+        state: bundle.state,
+        platformId: bundle.platformId,
+        mcpUrl: bundle.mcpUrl,
+        step: 'error',
+        error: exJson.error || `Token exchange failed (HTTP ${exRes.status})`,
+        updatedAt: Date.now(),
+      };
+      edgeOAuthSessions.set(bundle.sessionId, failed);
+      return failed;
+    }
+
+    edgeOAuthSessions.set(bundle.sessionId, {
+      ...exchanging,
+      step: 'discovering_tools',
+      updatedAt: Date.now(),
+    });
+
+    const prettyNameMap: Record<string, string> = {
+      kling: 'Kling AI Official MCP',
+      higgsfield: 'Higgsfield Official MCP',
+      elevenlabs: 'ElevenLabs Official MCP',
+      fal: 'Fal.ai Official MCP',
+      replicate: 'Replicate Official MCP',
+    };
+
+    const reg = await registerExternalMcpServer({
+      id: `mcp_${bundle.platformId}`,
+      name: prettyNameMap[bundle.platformId] || `${bundle.platformId} Official MCP`,
+      platformId: bundle.platformId,
+      transport: 'http',
+      url: bundle.mcpUrl,
+      oauth: exJson.oauth,
+    });
+
+    if (!reg.ok) {
+      const failed: McpOAuthSession = {
+        sessionId: bundle.sessionId,
+        state: bundle.state,
+        platformId: bundle.platformId,
+        mcpUrl: bundle.mcpUrl,
+        step: 'error',
+        error: reg.error || 'Failed to register connected MCP server',
+        updatedAt: Date.now(),
+      };
+      edgeOAuthSessions.set(bundle.sessionId, failed);
+      return failed;
+    }
+
+    try {
+      localStorage.removeItem('dreamflow_edge_oauth_last');
+    } catch {
+      // ignore
+    }
+
+    const connected: McpOAuthSession = {
+      sessionId: bundle.sessionId,
+      state: bundle.state,
+      platformId: bundle.platformId,
+      mcpUrl: bundle.mcpUrl,
+      step: 'connected',
+      serverId: reg.server?.id || `mcp_${bundle.platformId}`,
+      tools: reg.server?.tools,
+      account: reg.server?.account,
+      balance: reg.server?.balance,
+      updatedAt: Date.now(),
+    };
+    edgeOAuthSessions.set(bundle.sessionId, connected);
+    return connected;
+  } finally {
+    edgeExchangingStates.delete(state);
+  }
+}
+
+function ensureEdgeOAuthListener(): void {
+  if (edgeMessageListenerAttached || typeof window === 'undefined') return;
+  edgeMessageListenerAttached = true;
+  window.addEventListener('message', (ev: MessageEvent) => {
+    const data = ev?.data;
+    if (data && typeof data === 'object' && data.type === 'dreamflow_edge_oauth_callback') {
+      void completeEdgeMcpOAuthCallback({
+        code: typeof data.code === 'string' ? data.code : undefined,
+        state: typeof data.state === 'string' ? data.state : undefined,
+        error: typeof data.error === 'string' ? data.error : undefined,
+      });
+    }
+  });
+}
+
+async function tryStartEdgeMcpOAuthFallback(
+  platformId: string,
+  mcpUrl?: string
+): Promise<{
+  ok: boolean;
+  sessionId?: string;
+  state?: string;
+  platformId?: string;
+  mcpUrl?: string;
+  authorizeUrl?: string;
+  step?: McpOAuthSession['step'];
+  error?: string;
+} | null> {
+  if (typeof window === 'undefined') return null;
+  try {
+    ensureEdgeOAuthListener();
+    const res = await fetch('/edge-oauth/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platformId, ...(mcpUrl ? { mcpUrl } : {}) }),
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return null;
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok || json.ok === false || typeof json.authorizeUrl !== 'string') {
+      return null;
+    }
+    const bundle = json.pkceBundle as EdgePkceBundle | undefined;
+    const sessionId = typeof json.sessionId === 'string' ? json.sessionId : `edge_oauth_${Date.now()}`;
+    const state = typeof json.state === 'string' ? json.state : bundle?.state;
+    const resolvedMcpUrl = typeof json.mcpUrl === 'string' ? json.mcpUrl : mcpUrl || '';
+    if (bundle && bundle.state) {
+      saveEdgePkceBundle(bundle);
+    }
+    const sess: McpOAuthSession = {
+      sessionId,
+      state,
+      platformId,
+      mcpUrl: resolvedMcpUrl,
+      authorizeUrl: json.authorizeUrl,
+      step: 'awaiting_login',
+      updatedAt: Date.now(),
+    };
+    edgeOAuthSessions.set(sessionId, sess);
+    return {
+      ok: true,
+      sessionId,
+      state,
+      platformId,
+      mcpUrl: resolvedMcpUrl,
+      authorizeUrl: json.authorizeUrl,
+      step: 'awaiting_login',
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function startMcpOAuthViaBackend(
   platformId: string,
   mcpUrl?: string
@@ -1292,6 +1564,8 @@ export async function startMcpOAuthViaBackend(
     clearTimeout(timer);
     const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok || json.ok === false) {
+      const edgeFallback = await tryStartEdgeMcpOAuthFallback(platformId, mcpUrl);
+      if (edgeFallback?.ok) return edgeFallback;
       return {
         ok: false,
         error:
@@ -1309,6 +1583,8 @@ export async function startMcpOAuthViaBackend(
       step: typeof json.step === 'string' ? (json.step as McpOAuthSession['step']) : 'awaiting_login',
     };
   } catch (err) {
+    const edgeFallback = await tryStartEdgeMcpOAuthFallback(platformId, mcpUrl);
+    if (edgeFallback?.ok) return edgeFallback;
     return {
       ok: false,
       error:
@@ -1324,6 +1600,30 @@ export async function getMcpOAuthStatusViaBackend(sessionId: string): Promise<{
   session?: McpOAuthSession;
   error?: string;
 }> {
+  if (sessionId.startsWith('edge_oauth_')) {
+    if (typeof window !== 'undefined') {
+      try {
+        const rawLast = localStorage.getItem('dreamflow_edge_oauth_last');
+        if (rawLast) {
+          const parsed = JSON.parse(rawLast) as {
+            code?: string;
+            state?: string;
+            error?: string;
+            ts?: number;
+          };
+          const sess = edgeOAuthSessions.get(sessionId);
+          if (parsed && (!sess?.state || parsed.state === sess.state)) {
+            await completeEdgeMcpOAuthCallback(parsed);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    const edgeSess = edgeOAuthSessions.get(sessionId);
+    if (edgeSess) return { ok: true, session: edgeSess };
+    return { ok: false, error: 'Edge OAuth session expired' };
+  }
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 5000);
@@ -1587,6 +1887,7 @@ export async function registerExternalMcpServer(payload: {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  oauth?: Record<string, unknown>;
 }): Promise<{
   ok: boolean;
   server?: ExternalMcpServerRecord;

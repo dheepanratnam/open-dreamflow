@@ -589,6 +589,8 @@ export class SeedanceClient {
     durationSeconds?: number;
     referenceImages?: string[];
     videoReferences?: string[];
+    referenceFrameMode?: 'multi-ref' | 'start-end' | 'auto';
+    referenceHandles?: Array<{ handle: string; url: string; label?: string }>;
     startImageUrl?: string;
     endImageUrl?: string;
     generateAudio?: boolean;
@@ -597,7 +599,16 @@ export class SeedanceClient {
   }): Promise<SeedanceVideoResult> {
     const refs = (req.referenceImages || []).filter(Boolean);
     const videoRefs = (req.videoReferences || []).filter(Boolean);
-    if (refs.length >= 2 && videoRefs.length === 0 && !req.startImageUrl && !req.endImageUrl) {
+    const frameMode = req.referenceFrameMode || 'auto';
+    const hasPromptHandleTag = /@[a-zA-Z0-9_-]+/.test(req.prompt);
+
+    if (
+      frameMode === 'start-end' &&
+      refs.length > 2 &&
+      videoRefs.length === 0 &&
+      !req.startImageUrl &&
+      !req.endImageUrl
+    ) {
       return this.synthesizeKeyframeSequence({
         prompt: req.prompt,
         model: req.model,
@@ -614,38 +625,89 @@ export class SeedanceClient {
     const aspectRatio = req.aspectRatio || '16:9';
     const duration = Math.max(4, Math.min(15, req.durationSeconds ?? 5));
 
+    const isMultiRefMode =
+      frameMode === 'multi-ref' ||
+      (!req.startImageUrl &&
+        !req.endImageUrl &&
+        frameMode !== 'start-end' &&
+        (refs.length >= 2 || videoRefs.length > 0 || (refs.length >= 1 && hasPromptHandleTag)));
+
+    let rewrittenPrompt = req.prompt.trim();
+    if (isMultiRefMode && refs.length > 0) {
+      const pairs: Array<{ alias: string; token: string }> = [];
+      refs.slice(0, 9).forEach((url, idx) => {
+        const slot = `[Image ${idx + 1}]`;
+        pairs.push(
+          { alias: `@Image${idx + 1}`, token: slot },
+          { alias: `@Image_${idx + 1}`, token: slot },
+          { alias: `@Ref${idx + 1}`, token: slot },
+          { alias: `@Ref_${idx + 1}`, token: slot }
+        );
+        for (const b of req.referenceHandles || []) {
+          if (b?.handle && b.url === url) {
+            const clean = b.handle.trim().startsWith('@') ? b.handle.trim() : `@${b.handle.trim()}`;
+            pairs.push({ alias: clean, token: slot });
+          }
+        }
+      });
+      pairs.sort((a, b) => b.alias.length - a.alias.length);
+      for (const { alias, token } of pairs) {
+        const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        rewrittenPrompt = rewrittenPrompt.replace(
+          new RegExp(`${escaped}(?![a-zA-Z0-9_-])`, 'gi'),
+          token
+        );
+      }
+    }
+
     const contentParts: Array<Record<string, unknown>> = [
       {
         type: 'text',
-        text: `${req.prompt.trim()} --rs ${resolution} --rt ${aspectRatio} --dur ${duration}`,
+        text: `${rewrittenPrompt} --rs ${resolution} --rt ${aspectRatio} --dur ${duration}`,
       },
     ];
 
-    const startImg = req.startImageUrl || refs[0];
-    if (startImg) {
-      const resolved = await resolveReferenceImageForCloud(startImg, { fetchImpl: this.fetchImpl });
-      contentParts.push({
-        type: 'image_url',
-        role: 'first_frame',
-        image_url: { url: resolved.publicOrDataUrl },
-      });
-    }
-    const endImg = req.endImageUrl;
-    if (endImg) {
-      const resolvedEnd = await resolveReferenceImageForCloud(endImg, { fetchImpl: this.fetchImpl });
-      contentParts.push({
-        type: 'image_url',
-        role: 'last_frame',
-        image_url: { url: resolvedEnd.publicOrDataUrl },
-      });
-    }
-    for (const extraRef of refs.slice(startImg && !req.startImageUrl ? 1 : 0, 6)) {
-      const resolvedExtra = await resolveReferenceImageForCloud(extraRef, { fetchImpl: this.fetchImpl });
-      contentParts.push({
-        type: 'image_url',
-        role: 'reference_image',
-        image_url: { url: resolvedExtra.publicOrDataUrl },
-      });
+    if (isMultiRefMode) {
+      for (const rUrl of refs.slice(0, 9)) {
+        const resolvedRef = await resolveReferenceImageForCloud(rUrl, { fetchImpl: this.fetchImpl });
+        contentParts.push({
+          type: 'image_url',
+          role: 'reference_image',
+          image_url: { url: resolvedRef.publicOrDataUrl },
+        });
+      }
+    } else {
+      const startImg = req.startImageUrl || refs[0];
+      if (startImg) {
+        const resolved = await resolveReferenceImageForCloud(startImg, { fetchImpl: this.fetchImpl });
+        contentParts.push({
+          type: 'image_url',
+          role: 'first_frame',
+          image_url: { url: resolved.publicOrDataUrl },
+        });
+      }
+      const endImg =
+        req.endImageUrl || (frameMode === 'start-end' && refs.length >= 2 ? refs[1] : undefined);
+      if (endImg) {
+        const resolvedEnd = await resolveReferenceImageForCloud(endImg, {
+          fetchImpl: this.fetchImpl,
+        });
+        contentParts.push({
+          type: 'image_url',
+          role: 'last_frame',
+          image_url: { url: resolvedEnd.publicOrDataUrl },
+        });
+      }
+      for (const extraRef of refs.slice(startImg && !req.startImageUrl ? (endImg && !req.endImageUrl ? 2 : 1) : 0, 6)) {
+        const resolvedExtra = await resolveReferenceImageForCloud(extraRef, {
+          fetchImpl: this.fetchImpl,
+        });
+        contentParts.push({
+          type: 'image_url',
+          role: 'reference_image',
+          image_url: { url: resolvedExtra.publicOrDataUrl },
+        });
+      }
     }
     for (const vRef of videoRefs.slice(0, 3)) {
       contentParts.push({

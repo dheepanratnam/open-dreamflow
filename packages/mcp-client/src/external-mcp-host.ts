@@ -347,6 +347,7 @@ export class ExternalMcpHost {
         'dreamina_generate_image',
         'create_image',
         'text_to_image',
+        'image_to_image',
         'render_image',
       ],
       video: [
@@ -355,6 +356,8 @@ export class ExternalMcpHost {
         'create_video',
         'text_to_video',
         'image_to_video',
+        'omni_ref_video',
+        'motion_control',
         'render_video',
       ],
       audio: [
@@ -382,13 +385,13 @@ export class ExternalMcpHost {
       audio: /audio|speech|tts|voice|sound|sfx|music|eleven/i,
     };
     const isStatusOrInfoTool = (t: ExternalMcpToolSchema) =>
-      /^(get_|list_|check_)?(gpu_status|account|credits|status|job_status|result|models|health|whoami|user_info)$/i.test(
+      /^(get_|list_|check_|query_)?(gpu_status|account|credits|membership_and_credits|tasks|status|job_status|result|models|health|whoami|who_am_i|user_info|feedback|logout)$/i.test(
         t.name
       );
     const tier2Excluded =
-      /(batch|explore|list|get_|show_|status|quote|prepare|register|publish|picker|history|samples|presets|3d_)/i;
+      /(batch|explore|list|get_|show_|status|quote|prepare|register|publish|picker|history|samples|presets|3d_|library_list|element_)/i;
     const readOnlyOrAdminRe =
-      /^(use_|get_|list_|show_|check_|register_|publish_|prepare_|resolve_|search_|update_|delete_|archive_|unarchive_|move_|copy_|rename_|attach_|remove_|confirm_|cancel_|select_|track_|set_|sync_|deploy_|participate_|models_explore|job_status|jobs_wait|job_display|balance|transactions|assets_picker|visual_effects|tiktok_)/i;
+      /^(use_|get_|list_|show_|check_|query_|register_|publish_|prepare_|resolve_|search_|update_|delete_|archive_|unarchive_|move_|copy_|rename_|attach_|remove_|confirm_|cancel_|select_|track_|set_|sync_|deploy_|participate_|models_explore|job_status|jobs_wait|job_display|balance|transactions|assets_picker|visual_effects|tiktok_|who_am_i|file_upload|element_create|element_list|element_get|element_update|element_delete|motion_library_list|feedback|logout)/i;
     const pattern = keywordsByModality[modality];
 
     // Tier 2: ^(generate|create|render|synthesize)_ + modality keyword in t.name (excluding batch/explore/admin)
@@ -560,6 +563,64 @@ export class ExternalMcpHost {
     runtime.tools = this.parseToolsList(toolsResp);
     runtime.status = 'connected';
     runtime.error = null;
+
+    // Official Kling AI MCP (`https://kling.ai/mcp`) requires triggering `who_am_i` on initial connect
+    if (runtime.tools.some((t) => t.name === 'who_am_i')) {
+      try {
+        const whoResp = await this.sendRpc(
+          runtime,
+          'tools/call',
+          { name: 'who_am_i', arguments: {} },
+          12_000
+        );
+        const resObj = (whoResp.result || {}) as Record<string, unknown>;
+        const structured =
+          typeof resObj.structuredContent === 'object' && resObj.structuredContent !== null
+            ? (resObj.structuredContent as Record<string, unknown>)
+            : null;
+        const contentBlocks = Array.isArray(resObj.content)
+          ? (resObj.content as Array<Record<string, unknown>>)
+          : [];
+        const firstText =
+          typeof contentBlocks[0]?.text === 'string' ? contentBlocks[0].text.trim() : '';
+        let parsedWho: Record<string, unknown> | null = structured;
+        if (!parsedWho && firstText.startsWith('{')) {
+          try {
+            parsedWho = JSON.parse(firstText) as Record<string, unknown>;
+          } catch {
+            parsedWho = null;
+          }
+        }
+        if (parsedWho && runtime.config.oauth) {
+          const email =
+            typeof parsedWho.email === 'string' ? parsedWho.email.trim() : undefined;
+          const name =
+            typeof parsedWho.name === 'string'
+              ? parsedWho.name.trim()
+              : typeof parsedWho.nickname === 'string'
+                ? parsedWho.nickname.trim()
+                : typeof parsedWho.user_name === 'string'
+                  ? parsedWho.user_name.trim()
+                  : undefined;
+          const sub =
+            typeof parsedWho.user_id === 'string' || typeof parsedWho.user_id === 'number'
+              ? String(parsedWho.user_id)
+              : typeof parsedWho.id === 'string' || typeof parsedWho.id === 'number'
+                ? String(parsedWho.id)
+                : undefined;
+          if (email || name || sub) {
+            runtime.config.oauth.account = {
+              ...(runtime.config.oauth.account || {}),
+              ...(email ? { email } : {}),
+              ...(name ? { name } : {}),
+              ...(sub ? { sub } : {}),
+            };
+          }
+        }
+      } catch {
+        // Non-fatal handshake probe
+      }
+    }
     runtime.config.updatedAt = new Date().toISOString();
     this.persistRegistry();
     return this.toPublicSummary(runtime);
@@ -783,29 +844,61 @@ export class ExternalMcpHost {
       setFirstMatching(['voice_id', 'voiceId', 'voice'], nodeInput.voiceId);
       setFirstMatching(['model_id', 'modelId', 'model', 'model_name'], nodeInput.modelId);
       if (typeof nodeInput.generateAudio === 'boolean') {
-        setFirstMatching(['generate_audio', 'generateAudio', 'sound', 'audio'], nodeInput.generateAudio);
+        const soundSchema = (targetProps.sound || {}) as Record<string, unknown>;
+        const soundEnum = Array.isArray(soundSchema.enum) ? soundSchema.enum : [];
+        if ('sound' in targetProps && (soundSchema.type === 'string' || soundEnum.includes('on'))) {
+          mapped.sound = nodeInput.generateAudio ? 'on' : 'off';
+        } else {
+          setFirstMatching(['generate_audio', 'generateAudio', 'sound', 'audio'], nodeInput.generateAudio);
+        }
       }
       if (typeof nodeInput.seed === 'number' && Number.isFinite(nodeInput.seed)) {
         setFirstMatching(['seed'], Math.round(nodeInput.seed));
       }
-      setFirstMatching(['start_image_url', 'startImageUrl', 'first_frame'], nodeInput.startImageUrl);
-      setFirstMatching(['end_image_url', 'endImageUrl', 'last_frame'], nodeInput.endImageUrl);
+      if (nodeInput.startImageUrl) {
+        const imgSchema = (targetProps.image || {}) as Record<string, unknown>;
+        if (
+          !('start_image_url' in targetProps) &&
+          !('startImageUrl' in targetProps) &&
+          !('first_frame' in targetProps) &&
+          'image' in targetProps &&
+          imgSchema.type !== 'array'
+        ) {
+          mapped.image = nodeInput.startImageUrl;
+        } else {
+          setFirstMatching(['start_image_url', 'startImageUrl', 'first_frame'], nodeInput.startImageUrl);
+        }
+      }
+      setFirstMatching(
+        ['end_image_url', 'endImageUrl', 'last_frame', 'image_tail', 'tail_image'],
+        nodeInput.endImageUrl
+      );
 
       if (nodeInput.referenceImages && nodeInput.referenceImages.length > 0) {
+        const imgSchema = (targetProps.image || {}) as Record<string, unknown>;
+        if ('image' in targetProps && imgSchema.type === 'array') {
+          mapped.image = nodeInput.referenceImages;
+        } else if (mapped.image === undefined) {
+          setFirstMatching(
+            ['image_url', 'imageUrl', 'image', 'start_image', 'first_frame', 'source_image'],
+            nodeInput.referenceImages[0]
+          );
+        }
         setFirstMatching(
-          ['image_url', 'imageUrl', 'image', 'start_image', 'first_frame', 'source_image'],
-          nodeInput.referenceImages[0]
-        );
-        setFirstMatching(
-          ['reference_images', 'referenceImages', 'images', 'image_urls'],
+          ['reference_images', 'referenceImages', 'images', 'image_urls', 'image_list'],
           nodeInput.referenceImages
         );
       }
       if (nodeInput.videoReferences && nodeInput.videoReferences.length > 0) {
-        setFirstMatching(
-          ['video_url', 'videoUrl', 'video', 'input_video', 'motion_video', 'driving_video'],
-          nodeInput.videoReferences[0]
-        );
+        const vidSchema = (targetProps.video || {}) as Record<string, unknown>;
+        if ('video' in targetProps && vidSchema.type === 'array') {
+          mapped.video = nodeInput.videoReferences;
+        } else {
+          setFirstMatching(
+            ['video_url', 'videoUrl', 'video', 'input_video', 'motion_video', 'driving_video'],
+            nodeInput.videoReferences[0]
+          );
+        }
         setFirstMatching(
           ['video_references', 'videoReferences', 'reference_videos', 'videos'],
           nodeInput.videoReferences
@@ -947,6 +1040,64 @@ export class ExternalMcpHost {
     runtime.tools = this.parseToolsList(toolsResp);
     runtime.status = 'connected';
     runtime.error = null;
+
+    // Official Kling AI MCP (`https://kling.ai/mcp`) requires triggering `who_am_i` on initial connect
+    if (runtime.tools.some((t) => t.name === 'who_am_i')) {
+      try {
+        const whoResp = await this.sendRpc(
+          runtime,
+          'tools/call',
+          { name: 'who_am_i', arguments: {} },
+          12_000
+        );
+        const resObj = (whoResp.result || {}) as Record<string, unknown>;
+        const structured =
+          typeof resObj.structuredContent === 'object' && resObj.structuredContent !== null
+            ? (resObj.structuredContent as Record<string, unknown>)
+            : null;
+        const contentBlocks = Array.isArray(resObj.content)
+          ? (resObj.content as Array<Record<string, unknown>>)
+          : [];
+        const firstText =
+          typeof contentBlocks[0]?.text === 'string' ? contentBlocks[0].text.trim() : '';
+        let parsedWho: Record<string, unknown> | null = structured;
+        if (!parsedWho && firstText.startsWith('{')) {
+          try {
+            parsedWho = JSON.parse(firstText) as Record<string, unknown>;
+          } catch {
+            parsedWho = null;
+          }
+        }
+        if (parsedWho && runtime.config.oauth) {
+          const email =
+            typeof parsedWho.email === 'string' ? parsedWho.email.trim() : undefined;
+          const name =
+            typeof parsedWho.name === 'string'
+              ? parsedWho.name.trim()
+              : typeof parsedWho.nickname === 'string'
+                ? parsedWho.nickname.trim()
+                : typeof parsedWho.user_name === 'string'
+                  ? parsedWho.user_name.trim()
+                  : undefined;
+          const sub =
+            typeof parsedWho.user_id === 'string' || typeof parsedWho.user_id === 'number'
+              ? String(parsedWho.user_id)
+              : typeof parsedWho.id === 'string' || typeof parsedWho.id === 'number'
+                ? String(parsedWho.id)
+                : undefined;
+          if (email || name || sub) {
+            runtime.config.oauth.account = {
+              ...(runtime.config.oauth.account || {}),
+              ...(email ? { email } : {}),
+              ...(name ? { name } : {}),
+              ...(sub ? { sub } : {}),
+            };
+          }
+        }
+      } catch {
+        // Non-fatal handshake probe
+      }
+    }
   }
 
   private drainStdioFrames(session: LiveStdioSession): void {
@@ -1428,7 +1579,7 @@ export class ExternalMcpHost {
       if (Array.isArray(obj.videos)) {
         inspectNestedValue(obj.videos, 'video');
       }
-      for (const nestedKey of ['generation', 'results', 'outputs', 'items', 'data']) {
+      for (const nestedKey of ['generation', 'results', 'outputs', 'items', 'data', 'works']) {
         const nestedVal = obj[nestedKey];
         if (nestedVal && typeof nestedVal === 'object') {
           inspectNestedValue(nestedVal);

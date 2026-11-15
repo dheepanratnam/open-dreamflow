@@ -19,13 +19,22 @@ export interface KlingClientConfig {
   fetchImpl?: typeof fetch;
 }
 
+export interface KlingReferenceHandleBinding {
+  handle: string;
+  url: string;
+  label?: string;
+}
+
 export interface KlingVideoRequest {
   model?: string;
   prompt: string;
   negativePrompt?: string;
   referenceImages?: string[];
+  referenceFrameMode?: 'multi-ref' | 'start-end' | 'auto';
+  referenceHandles?: KlingReferenceHandleBinding[];
+  startImageUrl?: string;
   endImageUrl?: string;
-  aspectRatio?: '16:9' | '9:16' | '1:1';
+  aspectRatio?: '16:9' | '9:16' | '1:1' | '21:9';
   durationSeconds?: number;
   mode?: 'std' | 'pro';
   cfgScale?: number;
@@ -340,11 +349,56 @@ export class KlingClient {
     return resolved.publicOrDataUrl;
   }
 
+  private rewriteMultiImagePromptHandles(
+    rawPrompt: string,
+    refs: string[],
+    bindings?: KlingReferenceHandleBinding[]
+  ): string {
+    let rewritten = rawPrompt;
+    const pairs: Array<{ alias: string; token: string }> = [];
+
+    refs.slice(0, 4).forEach((refUrl, idx) => {
+      const slotToken = `@image_${idx + 1}`;
+      pairs.push(
+        { alias: `@Image${idx + 1}`, token: slotToken },
+        { alias: `@Image_${idx + 1}`, token: slotToken },
+        { alias: `@Ref${idx + 1}`, token: slotToken },
+        { alias: `@Ref_${idx + 1}`, token: slotToken },
+        { alias: `@Element${idx + 1}`, token: slotToken }
+      );
+      const matched = (bindings || []).filter(
+        (b) => b && typeof b.handle === 'string' && b.handle.trim() && b.url === refUrl
+      );
+      for (const b of matched) {
+        const clean = b.handle.trim().startsWith('@') ? b.handle.trim() : `@${b.handle.trim()}`;
+        pairs.push({ alias: clean, token: slotToken });
+      }
+      if (!matched.length && bindings && bindings[idx]?.handle) {
+        const fallbackH = bindings[idx].handle.trim();
+        if (fallbackH) {
+          pairs.push({
+            alias: fallbackH.startsWith('@') ? fallbackH : `@${fallbackH}`,
+            token: slotToken,
+          });
+        }
+      }
+    });
+
+    pairs.sort((a, b) => b.alias.length - a.alias.length);
+    for (const { alias, token } of pairs) {
+      if (alias.toLowerCase() === token.toLowerCase()) continue;
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`${escaped}(?![a-zA-Z0-9_-])`, 'gi');
+      rewritten = rewritten.replace(re, token);
+    }
+    return rewritten;
+  }
+
   public async generateVideo(req: KlingVideoRequest): Promise<KlingVideoResult> {
     const requestedModel = req.model || 'kling-4.0';
     const apiModelName = KLING_VIDEO_MODEL_MAP[requestedModel] || requestedModel;
     const refs = (req.referenceImages || []).filter(Boolean);
-    const hasRef = refs.length > 0;
+    const hasRef = refs.length > 0 || Boolean(req.startImageUrl);
 
     const durationStr = (req.durationSeconds && req.durationSeconds >= 10 ? '10' : '5') as
       | '5'
@@ -352,17 +406,33 @@ export class KlingClient {
     const aspectRatio =
       req.aspectRatio === '9:16' || req.aspectRatio === '1:1' ? req.aspectRatio : '16:9';
 
+    const frameMode = req.referenceFrameMode || 'auto';
+    const hasPromptHandleTag = /@[a-zA-Z0-9_-]+/.test(req.prompt);
+    const useMultiRefElements =
+      refs.length > 0 &&
+      frameMode !== 'start-end' &&
+      !req.startImageUrl &&
+      !req.endImageUrl &&
+      (frameMode === 'multi-ref' ||
+        requestedModel === 'kling-elements' ||
+        refs.length >= 2 ||
+        hasPromptHandleTag);
+
     let endpointPath = '/v1/videos/text2video';
+    const effectivePrompt = useMultiRefElements
+      ? this.rewriteMultiImagePromptHandles(req.prompt, refs, req.referenceHandles)
+      : req.prompt;
+
     const payload: Record<string, unknown> = {
       model_name: apiModelName,
-      prompt: req.prompt,
+      prompt: effectivePrompt,
       ...(req.negativePrompt ? { negative_prompt: req.negativePrompt } : {}),
       duration: durationStr,
       mode: req.mode || 'pro',
       cfg_scale: req.cfgScale ?? 0.5,
     };
 
-    if (hasRef && (requestedModel === 'kling-elements' || refs.length > 1) && refs.length >= 2) {
+    if (useMultiRefElements) {
       endpointPath = '/v1/videos/multi-image2video';
       const imageList: Array<{ image: string }> = [];
       for (const r of refs.slice(0, 4)) {
@@ -372,9 +442,12 @@ export class KlingClient {
       payload.aspect_ratio = aspectRatio;
     } else if (hasRef) {
       endpointPath = '/v1/videos/image2video';
-      payload.image = await this.prepareKlingImageField(refs[0]);
-      if (req.endImageUrl || refs[1]) {
-        payload.image_tail = await this.prepareKlingImageField(req.endImageUrl || refs[1]);
+      const startSource = req.startImageUrl || refs[0];
+      payload.image = await this.prepareKlingImageField(startSource);
+      const tailSource =
+        req.endImageUrl || (frameMode === 'start-end' && refs.length >= 2 ? refs[1] : undefined);
+      if (tailSource) {
+        payload.image_tail = await this.prepareKlingImageField(tailSource);
       }
     } else {
       payload.aspect_ratio = aspectRatio;

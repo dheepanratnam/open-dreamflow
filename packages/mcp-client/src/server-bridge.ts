@@ -5550,9 +5550,17 @@ export class McpStdioBridgeServer {
     }
 
     try {
+      const srvSummary = this.externalMcpHost
+        .listServers()
+        .find((s) => s.id === serverId);
+      const balanceToolName = srvSummary?.tools.some((t) => t.name === 'balance')
+        ? 'balance'
+        : srvSummary?.tools.some((t) => t.name === 'query_membership_and_credits')
+          ? 'query_membership_and_credits'
+          : 'balance';
       const res = await this.externalMcpHost.callTool({
         serverId,
-        toolName: 'balance',
+        toolName: balanceToolName,
         arguments: {},
         timeoutMs: 8_000,
       });
@@ -5561,16 +5569,37 @@ export class McpStdioBridgeServer {
       let plan: string | undefined;
       let account: string | undefined;
 
-      const structured =
+      let structured =
         typeof res.rawResult?.structuredContent === 'object' && res.rawResult.structuredContent !== null
           ? (res.rawResult.structuredContent as Record<string, unknown>)
           : null;
+      if (!structured && rawText.startsWith('{')) {
+        try {
+          const parsedJson = JSON.parse(rawText);
+          if (typeof parsedJson === 'object' && parsedJson !== null) {
+            structured = parsedJson as Record<string, unknown>;
+          }
+        } catch {
+          structured = null;
+        }
+      }
       if (structured) {
+        const nestedData =
+          typeof structured.data === 'object' && structured.data !== null
+            ? (structured.data as Record<string, unknown>)
+            : {};
         const rawCredits =
           structured.credits ??
           structured.balance ??
           structured.availableCredits ??
-          structured.remaining_credits;
+          structured.remaining_credits ??
+          structured.available_credits ??
+          structured.remainingUnits ??
+          structured.credit_balance ??
+          nestedData.credits ??
+          nestedData.remaining_credits ??
+          nestedData.available_credits ??
+          nestedData.balance;
         if (typeof rawCredits === 'number' && Number.isFinite(rawCredits)) {
           credits = rawCredits;
         } else if (typeof rawCredits === 'string' && rawCredits.trim()) {
@@ -5580,13 +5609,22 @@ export class McpStdioBridgeServer {
         const rawPlan =
           structured.plan ??
           structured.subscription_plan_type ??
+          structured.membership_type ??
+          structured.membership ??
           structured.vipLevel ??
           structured.tier ??
-          structured.subscription;
+          structured.subscription ??
+          nestedData.membership_type ??
+          nestedData.plan ??
+          nestedData.tier;
         if (typeof rawPlan === 'string' && rawPlan.trim()) {
           plan = rawPlan.trim().toLowerCase();
         }
-        const rawAccount = structured.account ?? structured.email;
+        const rawAccount =
+          structured.account ??
+          structured.email ??
+          nestedData.account ??
+          nestedData.email;
         if (typeof rawAccount === 'string' && rawAccount.trim()) {
           account = rawAccount.trim();
         }
@@ -5852,7 +5890,13 @@ export class McpStdioBridgeServer {
     >();
     await Promise.all(
       rawMcpServers
-        .filter((srv) => srv.status === 'connected' && srv.tools.some((t) => t.name === 'balance'))
+        .filter(
+          (srv) =>
+            srv.status === 'connected' &&
+            srv.tools.some(
+              (t) => t.name === 'balance' || t.name === 'query_membership_and_credits'
+            )
+        )
         .map(async (srv) => {
           const bal = await this.getMcpBalanceWithCache(srv.id, forceRefresh);
           balanceByServerId.set(srv.id, bal);
@@ -6682,7 +6726,9 @@ export class McpStdioBridgeServer {
 
     if (
       effectiveMcpServer &&
-      effectiveMcpServer.tools.some((t) => t.name === 'balance')
+      effectiveMcpServer.tools.some(
+        (t) => t.name === 'balance' || t.name === 'query_membership_and_credits'
+      )
     ) {
       const bal = await this.getMcpBalanceWithCache(effectiveMcpServer.id, true).catch(() => null);
       if (typeof bal?.credits === 'number' && Number.isFinite(bal.credits)) {
@@ -7027,8 +7073,17 @@ export class McpStdioBridgeServer {
           manualExpiresAt: meta.manualExpiresAt ?? null,
         };
       } else if (pid === 'kling') {
+        const klingMcpServer = this.findMcpServerForUser(user, 'kling', undefined, 'auto');
+        const klingMcpBal =
+          klingMcpServer &&
+          klingMcpServer.tools.some(
+            (t) => t.name === 'balance' || t.name === 'query_membership_and_credits'
+          )
+            ? await this.getMcpBalanceWithCache(klingMcpServer.id, forceRefresh)
+            : null;
         const connected =
           klingQuota.connected ||
+          Boolean(klingMcpServer) ||
           visibleServers.some((s) => s.platformId === 'kling' && s.status === 'connected');
         const expInfo = this.computePlatformExpiryInfo({
           manualExpiresAt: meta.manualExpiresAt,
@@ -7039,9 +7094,21 @@ export class McpStdioBridgeServer {
         platforms[pid] = {
           platformId: pid,
           connected,
-          credits: klingQuota.remainingUnits ?? meta.manualBudgetCredits ?? null,
+          credits:
+            klingQuota.remainingUnits ??
+            klingMcpBal?.credits ??
+            meta.manualBudgetCredits ??
+            null,
           limit: klingQuota.totalUnits ?? null,
-          plan: klingQuota.remainingUnits !== null ? 'Resource Pack Live' : null,
+          plan:
+            klingQuota.remainingUnits !== null
+              ? 'Resource Pack Live'
+              : klingMcpBal?.plan || null,
+          account:
+            klingMcpBal?.account ||
+            klingMcpServer?.account?.email ||
+            klingMcpServer?.account?.name ||
+            null,
           buckets: klingQuota.buckets,
           expiresAt: expInfo.expiresAt,
           nextResetAt: expInfo.nextResetAt,
@@ -7660,12 +7727,53 @@ export class McpStdioBridgeServer {
       typeof obj.generation === 'object' && obj.generation !== null
         ? (obj.generation as Record<string, unknown>)
         : {};
-    pushId(genObj.id || genObj.job_id || genObj.jobId);
-    pushId(obj.jobId || obj.job_id || obj.request_id || obj.task_id || obj.id);
+    const nestedData =
+      typeof obj.data === 'object' && obj.data !== null
+        ? (obj.data as Record<string, unknown>)
+        : {};
+    pushId(
+      genObj.id ||
+        genObj.job_id ||
+        genObj.jobId ||
+        genObj.generation_id ||
+        genObj.generationId
+    );
+    pushId(
+      obj.jobId ||
+        obj.job_id ||
+        obj.generation_id ||
+        obj.generationId ||
+        obj.request_id ||
+        obj.task_id ||
+        obj.taskId ||
+        nestedData.generation_id ||
+        nestedData.task_id ||
+        obj.id
+    );
 
     if (ids.length === 0) {
-      const txt = typeof text === 'string' ? text : '';
-      if (/submitted|queued|pending/i.test(txt)) {
+      const txt = typeof text === 'string' ? text.trim() : '';
+      if (txt.startsWith('{')) {
+        try {
+          const parsedTxt = JSON.parse(txt) as Record<string, unknown>;
+          const pData =
+            typeof parsedTxt.data === 'object' && parsedTxt.data !== null
+              ? (parsedTxt.data as Record<string, unknown>)
+              : {};
+          pushId(
+            parsedTxt.generation_id ||
+              parsedTxt.generationId ||
+              parsedTxt.task_id ||
+              parsedTxt.job_id ||
+              parsedTxt.jobId ||
+              pData.generation_id ||
+              pData.task_id
+          );
+        } catch {
+          // Ignore non-JSON text
+        }
+      }
+      if (ids.length === 0 && /submitted|queued|pending|processing/i.test(txt)) {
         const matches = txt.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) || [];
         for (const m of matches) pushId(m);
       }
@@ -8832,6 +8940,70 @@ export class McpStdioBridgeServer {
           ? 'multi-ref'
           : 'auto';
 
+    const rawHandlesInput = Array.isArray(params.referenceHandles)
+      ? params.referenceHandles
+      : Array.isArray(settings.referenceHandles)
+        ? settings.referenceHandles
+        : [];
+    const resolvedReferenceHandles: Array<{
+      handle: string;
+      url: string;
+      label?: string;
+      kind?: string;
+    }> = [];
+    for (const item of rawHandlesInput) {
+      if (!item || typeof item !== 'object') continue;
+      const rec = item as Record<string, unknown>;
+      const h = typeof rec.handle === 'string' ? rec.handle.trim() : '';
+      const rawUrl = typeof rec.url === 'string' ? rec.url.trim() : '';
+      if (!h) continue;
+      const resolvedUrl = rawUrl
+        ? resolveReferenceToPublicOrDataUrl(rawUrl, this.mediaDir, {
+            allowAbsFileForVideo: rec.kind === 'video',
+          }) || rawUrl
+        : '';
+      resolvedReferenceHandles.push({
+        handle: h.startsWith('@') ? h : `@${h}`,
+        url: resolvedUrl,
+        ...(typeof rec.label === 'string' && rec.label.trim() ? { label: rec.label.trim() } : {}),
+        ...(typeof rec.kind === 'string' && rec.kind.trim() ? { kind: rec.kind.trim() } : {}),
+      });
+    }
+
+    const rewriteHandlesForSlotPrefix = (
+      basePrompt: string,
+      imgList: string[],
+      slotBuilder: (index1Based: number) => string
+    ): string => {
+      if (!basePrompt.includes('@') || imgList.length === 0) return basePrompt;
+      let out = basePrompt;
+      const pairs: Array<{ alias: string; token: string }> = [];
+      imgList.forEach((imgUrl, idx) => {
+        const slot = slotBuilder(idx + 1);
+        pairs.push(
+          { alias: `@Image${idx + 1}`, token: slot },
+          { alias: `@Image_${idx + 1}`, token: slot },
+          { alias: `@Ref${idx + 1}`, token: slot },
+          { alias: `@Ref_${idx + 1}`, token: slot },
+          { alias: `@Element${idx + 1}`, token: slot }
+        );
+        const matched = resolvedReferenceHandles.filter((b) => b.url === imgUrl);
+        for (const b of matched) {
+          pairs.push({ alias: b.handle, token: slot });
+        }
+        if (matched.length === 0 && resolvedReferenceHandles[idx]) {
+          pairs.push({ alias: resolvedReferenceHandles[idx].handle, token: slot });
+        }
+      });
+      pairs.sort((a, b) => b.alias.length - a.alias.length);
+      for (const { alias, token } of pairs) {
+        if (alias.toLowerCase() === token.toLowerCase()) continue;
+        const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        out = out.replace(new RegExp(`${escaped}(?![a-zA-Z0-9_-])`, 'gi'), token);
+      }
+      return out;
+    };
+
     // Extract credentials from `params.credentials`, top-level fields, or server environment
     const credsObj =
       typeof params.credentials === 'object' && params.credentials !== null
@@ -8905,10 +9077,75 @@ export class McpStdioBridgeServer {
         );
       }
 
+      const rawSettingsModelParams =
+        typeof settings.modelParams === 'object' && settings.modelParams !== null
+          ? (settings.modelParams as Record<string, unknown>)
+          : {};
+      const rawTopModelParams =
+        typeof params.modelParams === 'object' && params.modelParams !== null
+          ? (params.modelParams as Record<string, unknown>)
+          : {};
+      const mergedModelParams: Record<string, unknown> = {
+        ...rawSettingsModelParams,
+        ...rawTopModelParams,
+      };
+      const quality = String(
+        settings.quality ?? params.quality ?? mergedModelParams.quality ?? ''
+      ).trim();
+      const seedParam = settings.seed ?? params.seed ?? mergedModelParams.seed;
+      const requestedModeHint = String(mergedModelParams.mode ?? '').trim().toLowerCase();
+      const hasPromptHandleTag = /@[a-zA-Z0-9_-]+/.test(prompt);
+
+      let effectiveToolNameHint = mcpToolName || undefined;
+      if (!effectiveToolNameHint) {
+        const srvToolNames = new Set(candidateMcpServer.tools.map((t) => t.name));
+        if (kind === 'video') {
+          const isExplicitKeyframe =
+            referenceFrameMode === 'start-end' ||
+            Boolean(typeof params.startImageUrl === 'string' && params.startImageUrl.trim()) ||
+            Boolean(typeof params.endImageUrl === 'string' && params.endImageUrl.trim()) ||
+            requestedModeHint === 'image-to-video' ||
+            requestedModeHint === 'first_last_frame';
+          const wantsOmniRef =
+            !isExplicitKeyframe &&
+            (referenceFrameMode === 'multi-ref' ||
+              requestedModeHint === 'm2v' ||
+              requestedModeHint === 'reference-to-video' ||
+              requestedModeHint === 'omni_reference' ||
+              modelId === 'kling-elements' ||
+              resolvedVideoReferences.length > 0 ||
+              resolvedReferenceImages.length >= 2 ||
+              (resolvedReferenceImages.length >= 1 &&
+                (hasPromptHandleTag || resolvedReferenceHandles.length > 0)));
+          if (
+            (requestedModeHint === 'motion_control' || requestedModeHint === 'motion-control') &&
+            srvToolNames.has('motion_control')
+          ) {
+            effectiveToolNameHint = 'motion_control';
+          } else if (wantsOmniRef && srvToolNames.has('omni_ref_video')) {
+            effectiveToolNameHint = 'omni_ref_video';
+          } else if (
+            (resolvedReferenceImages.length > 0 ||
+              Boolean(typeof params.startImageUrl === 'string' && params.startImageUrl.trim())) &&
+            srvToolNames.has('image_to_video')
+          ) {
+            effectiveToolNameHint = 'image_to_video';
+          } else if (resolvedReferenceImages.length === 0 && srvToolNames.has('text_to_video')) {
+            effectiveToolNameHint = 'text_to_video';
+          }
+        } else if (kind === 'image') {
+          if (resolvedReferenceImages.length > 0 && srvToolNames.has('image_to_image')) {
+            effectiveToolNameHint = 'image_to_image';
+          } else if (resolvedReferenceImages.length === 0 && srvToolNames.has('text_to_image')) {
+            effectiveToolNameHint = 'text_to_image';
+          }
+        }
+      }
+
       const chosenTool = this.externalMcpHost.selectBestToolForModality(
         candidateMcpServer.id,
         kind,
-        mcpToolName || undefined
+        effectiveToolNameHint
       );
       if (!chosenTool) {
         throw new BridgeHttpError(
@@ -8932,30 +9169,13 @@ export class McpStdioBridgeServer {
           ? (params.mcpArguments as Record<string, unknown>)
           : {};
 
-      const rawModelForMcp = modelId.includes('::') ? '' : modelId;
+      const rawModelForMcpResolved = modelId.includes('::') ? '' : modelId;
       let mcpToolArgs: Record<string, unknown>;
-      let normalizedHiggsfieldModel = rawModelForMcp;
+      let normalizedHiggsfieldModel = rawModelForMcpResolved;
       let hfBaseParams: Record<string, unknown> | null = null;
 
-      const rawSettingsModelParams =
-        typeof settings.modelParams === 'object' && settings.modelParams !== null
-          ? (settings.modelParams as Record<string, unknown>)
-          : {};
-      const rawTopModelParams =
-        typeof params.modelParams === 'object' && params.modelParams !== null
-          ? (params.modelParams as Record<string, unknown>)
-          : {};
-      const mergedModelParams: Record<string, unknown> = {
-        ...rawSettingsModelParams,
-        ...rawTopModelParams,
-      };
-      const quality = String(
-        settings.quality ?? params.quality ?? mergedModelParams.quality ?? ''
-      ).trim();
-      const seedParam = settings.seed ?? params.seed ?? mergedModelParams.seed;
-
       if (isHiggsfieldOfficialMcp) {
-        normalizedHiggsfieldModel = normalizeHiggsfieldMcpModelId(rawModelForMcp, kind);
+        normalizedHiggsfieldModel = normalizeHiggsfieldMcpModelId(rawModelForMcpResolved, kind);
         const modelDef = await this.findHiggsfieldModelSchema(
           candidateMcpServer.id,
           normalizedHiggsfieldModel
@@ -8988,14 +9208,26 @@ export class McpStdioBridgeServer {
           ? (modelDef.mediaRoles as Array<unknown>).map((r) => String(r).trim())
           : [];
         const modelSupportsImageRefs = modelRolesArr.includes('image_references');
-        const requestedModeLower = String(mergedModelParams.mode ?? '').trim().toLowerCase();
+        const requestedModeLower = requestedModeHint;
         const preferMultiImageReferences =
           !isStartEndMode &&
           !hasExplicitStartFrame &&
           !hasExplicitEndFrame &&
-          resolvedReferenceImages.length >= 2 &&
           modelSupportsImageRefs &&
-          requestedModeLower !== 'image-to-video';
+          requestedModeLower !== 'image-to-video' &&
+          requestedModeLower !== 'first_last_frame' &&
+          resolvedReferenceImages.length >= 1 &&
+          (referenceFrameMode === 'multi-ref' ||
+            requestedModeLower === 'm2v' ||
+            requestedModeLower === 'reference-to-video' ||
+            requestedModeLower === 'omni_reference' ||
+            resolvedReferenceImages.length >= 2 ||
+            hasPromptHandleTag ||
+            resolvedReferenceHandles.length > 0);
+
+        const effectiveHfPrompt = preferMultiImageReferences
+          ? rewriteHandlesForSlotPrefix(prompt, resolvedReferenceImages, (n) => `@Image${n}`)
+          : prompt;
 
         const medias: Array<{ value: string; role: string }> = [];
         const firstRole = this.resolveHiggsfieldRoleForModel(
@@ -9056,7 +9288,7 @@ export class McpStdioBridgeServer {
           normalizedModel: normalizedHiggsfieldModel,
           kind,
           modelDef,
-          prompt,
+          prompt: effectiveHfPrompt,
           aspectRatio,
           resolution,
           quality,
@@ -9075,6 +9307,17 @@ export class McpStdioBridgeServer {
           ...explicitTop,
         };
       } else {
+        const isDreaminaMcpTool =
+          candidateMcpServer.platformId === 'dreamina' ||
+          chosenTool.name.startsWith('dreamina_generate_');
+        const isKlingOmniTool =
+          chosenTool.name === 'omni_ref_video' ||
+          (candidateMcpServer.platformId === 'kling' && resolvedReferenceImages.length > 0);
+        const effectiveGenericPrompt =
+          !isDreaminaMcpTool && isKlingOmniTool
+            ? rewriteHandlesForSlotPrefix(prompt, resolvedReferenceImages, (n) => `@image_${n}`)
+            : prompt;
+
         const startImgResolved =
           typeof params.startImageUrl === 'string' && params.startImageUrl.trim()
             ? resolveReferenceToPublicOrDataUrl(params.startImageUrl.trim(), this.mediaDir)
@@ -9088,14 +9331,14 @@ export class McpStdioBridgeServer {
               ? resolvedReferenceImages[1]
               : undefined;
         const builtArgs = this.externalMcpHost.buildArgumentsForToolSchema(chosenTool, {
-          prompt,
+          prompt: effectiveGenericPrompt,
           negativePrompt,
           aspectRatio,
           resolution,
           durationSec,
           batchCount,
           voiceId,
-          modelId: rawModelForMcp || undefined,
+          modelId: rawModelForMcpResolved || undefined,
           referenceImages: resolvedReferenceImages,
           videoReferences: resolvedVideoReferences,
           startImageUrl: startImgResolved,
@@ -9106,12 +9349,12 @@ export class McpStdioBridgeServer {
               ? Math.round(Number(seedParam))
               : undefined,
         });
-        const isDreaminaMcpTool =
-          candidateMcpServer.platformId === 'dreamina' ||
-          chosenTool.name.startsWith('dreamina_generate_');
         const dreaminaExtraArgs: Record<string, unknown> = isDreaminaMcpTool
           ? {
               reference_frame_mode: referenceFrameMode,
+              ...(resolvedReferenceHandles.length > 0
+                ? { reference_handles: resolvedReferenceHandles }
+                : {}),
               ...(quality ? { quality } : {}),
               ...(typeof mergedModelParams.mode === 'string' && mergedModelParams.mode.trim()
                 ? { mode: mergedModelParams.mode.trim() }
@@ -9151,8 +9394,9 @@ export class McpStdioBridgeServer {
 
       const statusTool =
         candidateMcpServer.tools.find((t) => t.name === 'job_status') ||
+        candidateMcpServer.tools.find((t) => t.name === 'query_tasks') ||
         candidateMcpServer.tools.find((t) =>
-          /(get_job|check_job|job_status|task_status|request_status|generation_status|poll|job_result|get_result)/i.test(
+          /(get_job|check_job|job_status|query_tasks|task_status|request_status|generation_status|poll|job_result|get_result)/i.test(
             t.name
           )
         ) ||
@@ -9186,17 +9430,28 @@ export class McpStdioBridgeServer {
           }
           pollAttempt++;
 
-          const pollArgs: Record<string, unknown> = usesCamelJobId
-            ? { jobId: jid, ...(usesSync ? { sync: true } : {}) }
-            : {
-                ['request_id' in statusProps
-                  ? 'request_id'
-                  : 'job_id' in statusProps
-                    ? 'job_id'
-                    : 'task_id' in statusProps
-                      ? 'task_id'
-                      : 'id']: jid,
-              };
+          let pollArgs: Record<string, unknown>;
+          if (usesCamelJobId) {
+            pollArgs = { jobId: jid, ...(usesSync ? { sync: true } : {}) };
+          } else if ('generation_ids' in statusProps) {
+            pollArgs = { generation_ids: [jid] };
+          } else if ('generation_id' in statusProps || statusTool.name === 'query_tasks') {
+            pollArgs = { generation_id: jid };
+          } else if ('task_ids' in statusProps) {
+            pollArgs = { task_ids: [jid] };
+          } else {
+            const key =
+              'request_id' in statusProps
+                ? 'request_id'
+                : 'job_id' in statusProps
+                  ? 'job_id'
+                  : 'task_id' in statusProps
+                    ? 'task_id'
+                    : 'generationId' in statusProps
+                      ? 'generationId'
+                      : 'id';
+            pollArgs = { [key]: jid };
+          }
 
           lastOut = await this.executeExternalMcpToolCall({
             serverId: candidateMcpServer.id,
@@ -9210,16 +9465,36 @@ export class McpStdioBridgeServer {
           if (urls.length > 0) {
             return { out: lastOut, urls };
           }
-          const polledObj = readStructuredObj(lastOut);
+          let polledObj = readStructuredObj(lastOut);
+          if (
+            Object.keys(polledObj).length === 0 &&
+            typeof lastOut.textContent === 'string' &&
+            lastOut.textContent.trim().startsWith('{')
+          ) {
+            try {
+              polledObj = JSON.parse(lastOut.textContent.trim()) as Record<string, unknown>;
+            } catch {
+              polledObj = {};
+            }
+          }
           const polledGen =
             typeof polledObj.generation === 'object' && polledObj.generation !== null
               ? (polledObj.generation as Record<string, unknown>)
               : {};
           const polledResultsArr = Array.isArray(polledObj.results)
             ? (polledObj.results as Array<Record<string, unknown>>)
-            : [];
+            : Array.isArray(polledObj.tasks)
+              ? (polledObj.tasks as Array<Record<string, unknown>>)
+              : Array.isArray(polledObj.works)
+                ? (polledObj.works as Array<Record<string, unknown>>)
+                : [];
           const polledStatus = String(
-            polledGen.status || polledResultsArr[0]?.status || polledObj.status || ''
+            polledGen.status ||
+              polledResultsArr[0]?.status ||
+              polledResultsArr[0]?.task_status ||
+              polledObj.task_status ||
+              polledObj.status ||
+              ''
           ).toLowerCase();
 
           if (polledStatus === 'failed' || polledStatus === 'error' || polledStatus === 'cancelled') {
@@ -9229,7 +9504,11 @@ export class McpStdioBridgeServer {
               platformId
             );
           }
-          if (polledStatus === 'completed' || polledStatus === 'succeeded') {
+          if (
+            polledStatus === 'completed' ||
+            polledStatus === 'succeeded' ||
+            polledStatus === 'succeed'
+          ) {
             break;
           }
         }
@@ -9533,6 +9812,14 @@ export class McpStdioBridgeServer {
               outputs: savedOutputs,
             };
           } else {
+            const startImg =
+              typeof params.startImageUrl === 'string' && params.startImageUrl.trim()
+                ? resolveReferenceToPublicOrDataUrl(params.startImageUrl.trim(), this.mediaDir)
+                : undefined;
+            const endImg =
+              typeof params.endImageUrl === 'string' && params.endImageUrl.trim()
+                ? resolveReferenceToPublicOrDataUrl(params.endImageUrl.trim(), this.mediaDir)
+                : undefined;
             const out = await client.generateVideo({
               model: modelId || 'kling-4.0',
               prompt,
@@ -9543,6 +9830,10 @@ export class McpStdioBridgeServer {
               durationSeconds: durationSec,
               sound: audioEnabled,
               referenceImages: resolvedReferenceImages,
+              referenceFrameMode,
+              referenceHandles: resolvedReferenceHandles,
+              startImageUrl: startImg,
+              endImageUrl: endImg,
             });
             const saved = await this.ingestExternalMediaToDisk(out.videoUrl, 'kling_live');
             return {
@@ -9871,6 +10162,8 @@ export class McpStdioBridgeServer {
               durationSeconds: durationSec,
               referenceImages: resolvedReferenceImages,
               videoReferences: resolvedVideoReferences,
+              referenceFrameMode,
+              referenceHandles: resolvedReferenceHandles,
               startImageUrl: startImg,
               endImageUrl: endImg,
               generateAudio: audioEnabled,

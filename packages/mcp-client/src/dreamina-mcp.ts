@@ -267,6 +267,19 @@ const DREAMINA_TOOLS: ExternalMcpToolSchema[] = [
         count: { type: 'number', description: 'Alias for batch_count (1-8).' },
         negative_prompt: { type: 'string' },
         reference_images: { type: 'array', items: { type: 'string' } },
+        reference_handles: {
+          type: 'array',
+          description: 'Optional @handle bindings mapping prompt tags (e.g. @Aria) to reference URLs.',
+          items: {
+            type: 'object',
+            properties: {
+              handle: { type: 'string' },
+              url: { type: 'string' },
+              label: { type: 'string' },
+              kind: { type: 'string' },
+            },
+          },
+        },
         seed: { type: 'number' },
       },
     },
@@ -279,9 +292,9 @@ const DREAMINA_TOOLS: ExternalMcpToolSchema[] = [
       type: 'object',
       required: ['prompt'],
       properties: {
-        prompt: { type: 'string', description: 'Detailed motion & scene prompt.' },
-        model: { type: 'string', description: 'Video model ID (e.g. seedance_2_5, veo_3_1, wan_3_0).' },
-        mode: { type: 'string', enum: ['t2v', 'first_last_frame', 'm2v'], description: 'Optional generation mode override.' },
+        prompt: { type: 'string', description: 'Detailed motion & scene prompt (supports @Character / @Element handles in m2v mode).' },
+        model: { type: 'string', description: 'Video model ID (e.g. seedance_2_5, veo_3_1, wan_3_0, happyhorse_1_1).' },
+        mode: { type: 'string', enum: ['t2v', 'first_last_frame', 'm2v'], description: 'Optional generation mode override (t2v, first_last_frame, or m2v omni-reference).' },
         aspect_ratio: { type: 'string' },
         resolution: { type: 'string', description: 'Target resolution (480p, 720p, 720P, 1080p, 1080P, 4k).' },
         duration: { type: 'number', description: 'Duration in seconds (4-30).' },
@@ -291,6 +304,19 @@ const DREAMINA_TOOLS: ExternalMcpToolSchema[] = [
         reference_images: { type: 'array', items: { type: 'string' } },
         video_references: { type: 'array', items: { type: 'string' } },
         audio_references: { type: 'array', items: { type: 'string' } },
+        reference_handles: {
+          type: 'array',
+          description: 'Optional @handle bindings mapping prompt tags (e.g. @Aria, @Sanctum) to reference URLs.',
+          items: {
+            type: 'object',
+            properties: {
+              handle: { type: 'string' },
+              url: { type: 'string' },
+              label: { type: 'string' },
+              kind: { type: 'string' },
+            },
+          },
+        },
         generate_audio: { type: 'boolean' },
         negative_prompt: { type: 'string' },
         seed: { type: 'number' },
@@ -819,6 +845,217 @@ const DREAMINA_TOOLS: ExternalMcpToolSchema[] = [
     },
   },
 ];
+
+export interface DreaminaReferenceHandleBinding {
+  handle: string;
+  url: string;
+  label?: string;
+  kind?: string;
+}
+
+function extractMediaPathTail(rawUrl: string): string {
+  const m = /\/media\/([^?#\s]+)/i.exec(String(rawUrl || ''));
+  return m ? m[1].toLowerCase() : '';
+}
+
+function toDreaminaMentionToken(refToken: string): string {
+  const trimmed = String(refToken || '').trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('{{') && trimmed.endsWith('}}')) return trimmed;
+  if (/^(res|node|el):/i.test(trimmed)) return `{{${trimmed}}}`;
+  return `{{res:${trimmed}}}`;
+}
+
+export function rewriteDreaminaPromptHandles(options: {
+  prompt: string;
+  uploadedImages?: Array<{ source: string; refToken: string }>;
+  uploadedVideos?: Array<{ source: string; refToken: string }>;
+  uploadedAudios?: Array<{ source: string; refToken: string }>;
+  referenceHandles?: DreaminaReferenceHandleBinding[];
+}): string {
+  let rewritten = String(options.prompt || '');
+  if (!rewritten.includes('@')) return rewritten;
+
+  const imgs = options.uploadedImages || [];
+  const vids = options.uploadedVideos || [];
+  const auds = options.uploadedAudios || [];
+  const handles = (options.referenceHandles || []).filter(
+    (h) => h && typeof h.handle === 'string' && h.handle.trim().length > 0
+  );
+
+  const pairs: Array<{ alias: string; token: string }> = [];
+  const matchedHandles = new Set<number>();
+
+  const bindCustomHandlesForEntry = (source: string, mention: string, fallbackIdx?: number, fallbackKind?: string) => {
+    handles.forEach((h, hIdx) => {
+      const hUrl = String(h.url || '').trim();
+      const sameExact = Boolean(hUrl && hUrl === source);
+      const tailA = extractMediaPathTail(hUrl);
+      const tailB = extractMediaPathTail(source);
+      const sameMediaTail = Boolean(tailA && tailB && tailA === tailB);
+      if (sameExact || sameMediaTail) {
+        matchedHandles.add(hIdx);
+        const clean = h.handle.trim().startsWith('@') ? h.handle.trim() : `@${h.handle.trim()}`;
+        pairs.push({ alias: clean, token: mention });
+      }
+    });
+    if (fallbackIdx !== undefined) {
+      const candidateByKind = handles.filter(
+        (h) => !h.kind || !fallbackKind || h.kind.toLowerCase() === fallbackKind
+      );
+      const positional = candidateByKind[fallbackIdx];
+      if (positional) {
+        const origIdx = handles.indexOf(positional);
+        if (origIdx >= 0 && !matchedHandles.has(origIdx)) {
+          matchedHandles.add(origIdx);
+          const clean = positional.handle.trim().startsWith('@')
+            ? positional.handle.trim()
+            : `@${positional.handle.trim()}`;
+          pairs.push({ alias: clean, token: mention });
+        }
+      }
+    }
+  };
+
+  imgs.forEach((entry, idx) => {
+    const mention = toDreaminaMentionToken(entry.refToken);
+    if (!mention) return;
+    const n = idx + 1;
+    pairs.push(
+      { alias: `@Image${n}`, token: mention },
+      { alias: `@Image_${n}`, token: mention },
+      { alias: `@Ref${n}`, token: mention },
+      { alias: `@Ref_${n}`, token: mention },
+      { alias: `@Element${n}`, token: mention },
+      { alias: `@Element_${n}`, token: mention }
+    );
+    bindCustomHandlesForEntry(entry.source, mention, idx, 'image');
+  });
+
+  vids.forEach((entry, idx) => {
+    const mention = toDreaminaMentionToken(entry.refToken);
+    if (!mention) return;
+    const n = idx + 1;
+    pairs.push(
+      { alias: `@Video${n}`, token: mention },
+      { alias: `@Video_${n}`, token: mention }
+    );
+    bindCustomHandlesForEntry(entry.source, mention, idx, 'video');
+  });
+
+  auds.forEach((entry, idx) => {
+    const mention = toDreaminaMentionToken(entry.refToken);
+    if (!mention) return;
+    const n = idx + 1;
+    pairs.push(
+      { alias: `@Audio${n}`, token: mention },
+      { alias: `@Audio_${n}`, token: mention }
+    );
+    bindCustomHandlesForEntry(entry.source, mention, idx, 'audio');
+  });
+
+  pairs.sort((a, b) => b.alias.length - a.alias.length);
+  for (const { alias, token } of pairs) {
+    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    rewritten = rewritten.replace(new RegExp(`${escaped}(?![a-zA-Z0-9_-])`, 'gi'), token);
+  }
+  return rewritten;
+}
+
+export function resolveDreaminaCliVideoMode(options: {
+  requestedMode?: string;
+  rawFrameMode?: string;
+  prompt: string;
+  startImageUrl?: string;
+  endImageUrl?: string;
+  imageRefCount: number;
+  videoRefCount: number;
+  audioRefCount: number;
+  hasReferenceHandles?: boolean;
+  supportedModes?: string[];
+}): 't2v' | 'first_last_frame' | 'm2v' {
+  const reqMode = String(options.requestedMode || '').trim().toLowerCase();
+  const frameMode = String(options.rawFrameMode || '').trim().toLowerCase();
+  const totalMediaCount =
+    options.imageRefCount + options.videoRefCount + options.audioRefCount;
+  const modes = Array.isArray(options.supportedModes) && options.supportedModes.length > 0
+    ? options.supportedModes
+    : null;
+  const supportsM2v = !modes || modes.includes('m2v');
+  const supportsFirstLast = !modes || modes.includes('first_last_frame');
+  const supportsT2v = !modes || modes.includes('t2v');
+
+  const coerceSupported = (desired: 't2v' | 'first_last_frame' | 'm2v'): 't2v' | 'first_last_frame' | 'm2v' => {
+    if (desired === 'm2v') {
+      if (totalMediaCount === 0 && supportsT2v && !modes?.includes('m2v_empty')) return 't2v';
+      return supportsM2v ? 'm2v' : supportsFirstLast ? 'first_last_frame' : 't2v';
+    }
+    if (desired === 'first_last_frame') {
+      if (options.imageRefCount === 0 && supportsT2v) return 't2v';
+      return supportsFirstLast ? 'first_last_frame' : supportsM2v ? 'm2v' : 't2v';
+    }
+    return supportsT2v ? 't2v' : supportsM2v ? 'm2v' : 'first_last_frame';
+  };
+
+  if (reqMode === 't2v' || reqMode === 'text-to-video') {
+    return coerceSupported('t2v');
+  }
+  if (reqMode === 'm2v' || reqMode === 'reference-to-video' || reqMode === 'omni_reference' || reqMode === 'multi-ref') {
+    return totalMediaCount > 0 ? coerceSupported('m2v') : coerceSupported('t2v');
+  }
+  if (reqMode === 'first_last_frame' || reqMode === 'image-to-video' || reqMode === 'keyframes' || reqMode === 'start-end') {
+    return options.imageRefCount > 0 ? coerceSupported('first_last_frame') : coerceSupported('t2v');
+  }
+
+  if (totalMediaCount === 0) {
+    return coerceSupported('t2v');
+  }
+
+  const isExplicitKeyframe =
+    frameMode === 'start-end' ||
+    frameMode === 'keyframes' ||
+    Boolean(options.startImageUrl) ||
+    Boolean(options.endImageUrl);
+
+  if (isExplicitKeyframe && options.videoRefCount === 0 && options.audioRefCount === 0) {
+    return coerceSupported('first_last_frame');
+  }
+
+  const hasPromptTag =
+    /@[a-zA-Z0-9_-]+/.test(options.prompt) || /\{\{(?:res|node|el):/i.test(options.prompt);
+
+  if (
+    frameMode === 'multi-ref' ||
+    options.videoRefCount > 0 ||
+    options.audioRefCount > 0 ||
+    options.imageRefCount >= 2 ||
+    hasPromptTag ||
+    Boolean(options.hasReferenceHandles)
+  ) {
+    return coerceSupported('m2v');
+  }
+
+  return coerceSupported('first_last_frame');
+}
+
+function parseReferenceHandlesArg(raw: unknown): DreaminaReferenceHandleBinding[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DreaminaReferenceHandleBinding[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+    const handle = typeof rec.handle === 'string' ? rec.handle.trim() : '';
+    const url = typeof rec.url === 'string' ? rec.url.trim() : '';
+    if (!handle) continue;
+    out.push({
+      handle,
+      url,
+      ...(typeof rec.label === 'string' && rec.label.trim() ? { label: rec.label.trim() } : {}),
+      ...(typeof rec.kind === 'string' && rec.kind.trim() ? { kind: rec.kind.trim() } : {}),
+    });
+  }
+  return out;
+}
 
 function compareSemver(a: string, b: string): number {
   const pa = a.replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
@@ -4341,6 +4578,7 @@ export class DreaminaMcpEngine {
             (x): x is string => typeof x === 'string' && x.trim().length > 0
           )
         : [];
+      const referenceHandles = parseReferenceHandlesArg(args.reference_handles);
       const seed =
         typeof args.seed === 'number' && Number.isFinite(args.seed)
           ? Math.round(args.seed)
@@ -4368,9 +4606,20 @@ export class DreaminaMcpEngine {
         const clampedCount = Math.max(1, Math.min(maxCount, batchCount));
 
         const uploadedRefs: string[] = [];
+        const uploadedImgPairs: Array<{ source: string; refToken: string }> = [];
         for (const refSrc of refImages) {
-          uploadedRefs.push(await this.uploadReferenceToDreamina(projectId, refSrc, 'image'));
+          const refToken = await this.uploadReferenceToDreamina(projectId, refSrc, 'image');
+          uploadedRefs.push(refToken);
+          uploadedImgPairs.push({ source: refSrc, refToken });
         }
+        const effectiveCliPrompt =
+          uploadedImgPairs.length > 0
+            ? rewriteDreaminaPromptHandles({
+                prompt,
+                uploadedImages: uploadedImgPairs,
+                referenceHandles,
+              })
+            : prompt;
 
         const createArgs = [
           '--mode',
@@ -4378,7 +4627,7 @@ export class DreaminaMcpEngine {
           '--model',
           resolvedCliModel,
           '--prompt',
-          prompt,
+          effectiveCliPrompt,
           '--ratio',
           coercedRatio,
           '--resolution',
@@ -4602,6 +4851,8 @@ export class DreaminaMcpEngine {
             (x): x is string => typeof x === 'string' && x.trim().length > 0
           )
         : [];
+      const referenceHandles = parseReferenceHandlesArg(args.reference_handles);
+      const requestedMode = String(args.mode || '').trim().toLowerCase();
       const seed =
         typeof args.seed === 'number' && Number.isFinite(args.seed)
           ? Math.round(args.seed)
@@ -4619,56 +4870,84 @@ export class DreaminaMcpEngine {
             m.model?.replace(/\./g, '_') === canonicalModel
         );
         const resolvedCliModel = spec?.model || cliModel;
+        const supportedModes = spec?.modes
+          ?.map((m) => m.name)
+          .filter((x): x is string => typeof x === 'string' && x.length > 0);
 
-        const orderedImgSources = [
+        const prelimImgSources =
+          rawFrameMode === 'start-end' || startImageUrl || endImageUrl
+            ? [
+                startImageUrl,
+                ...refImages.filter((r) => r !== startImageUrl && r !== endImageUrl),
+                endImageUrl,
+              ].filter((x): x is string => Boolean(x))
+            : [...refImages];
+
+        const cliVideoMode = resolveDreaminaCliVideoMode({
+          requestedMode,
+          rawFrameMode,
+          prompt,
           startImageUrl,
-          ...refImages.filter((r) => r !== startImageUrl && r !== endImageUrl),
           endImageUrl,
-        ].filter((x): x is string => Boolean(x));
+          imageRefCount: prelimImgSources.length,
+          videoRefCount: videoRefs.length,
+          audioRefCount: audioRefs.length,
+          hasReferenceHandles: referenceHandles.length > 0,
+          supportedModes,
+        });
+
+        const orderedImgSources =
+          cliVideoMode === 'first_last_frame'
+            ? [
+                startImageUrl,
+                ...refImages.filter((r) => r !== startImageUrl && r !== endImageUrl),
+                endImageUrl,
+              ]
+                .filter((x): x is string => Boolean(x))
+                .slice(0, 2)
+            : [
+                ...refImages,
+                ...(startImageUrl && !refImages.includes(startImageUrl) ? [startImageUrl] : []),
+                ...(endImageUrl && !refImages.includes(endImageUrl) ? [endImageUrl] : []),
+              ];
 
         const uploadedImgRefs: string[] = [];
+        const uploadedImgPairs: Array<{ source: string; refToken: string }> = [];
         for (const src of orderedImgSources) {
-          uploadedImgRefs.push(await this.uploadReferenceToDreamina(projectId, src, 'image'));
+          const refToken = await this.uploadReferenceToDreamina(projectId, src, 'image');
+          uploadedImgRefs.push(refToken);
+          uploadedImgPairs.push({ source: src, refToken });
         }
         const uploadedVidRefs: string[] = [];
+        const uploadedVidPairs: Array<{ source: string; refToken: string }> = [];
         for (const src of videoRefs) {
-          uploadedVidRefs.push(await this.uploadReferenceToDreamina(projectId, src, 'video'));
+          const refToken = await this.uploadReferenceToDreamina(projectId, src, 'video');
+          uploadedVidRefs.push(refToken);
+          uploadedVidPairs.push({ source: src, refToken });
         }
         const uploadedAudRefs: string[] = [];
+        const uploadedAudPairs: Array<{ source: string; refToken: string }> = [];
         for (const src of audioRefs) {
-          uploadedAudRefs.push(await this.uploadReferenceToDreamina(projectId, src, 'audio'));
-        }
-
-        const requestedMode = String(args.mode || '').trim().toLowerCase();
-        const totalMediaCount =
-          uploadedImgRefs.length + uploadedVidRefs.length + uploadedAudRefs.length;
-
-        let cliVideoMode: 't2v' | 'first_last_frame' | 'm2v' = 't2v';
-        if (requestedMode === 't2v' || requestedMode === 'first_last_frame' || requestedMode === 'm2v') {
-          cliVideoMode = requestedMode;
-        } else if (
-          uploadedVidRefs.length > 0 ||
-          uploadedAudRefs.length > 0 ||
-          rawFrameMode === 'multi-ref' ||
-          uploadedImgRefs.length > 2
-        ) {
-          cliVideoMode = totalMediaCount > 0 ? 'm2v' : 't2v';
-        } else if (
-          rawFrameMode === 'start-end' ||
-          startImageUrl ||
-          endImageUrl ||
-          uploadedImgRefs.length === 1 ||
-          uploadedImgRefs.length === 2
-        ) {
-          const supportsFirstLast =
-            !spec?.modes || spec.modes.some((m) => m.name === 'first_last_frame');
-          cliVideoMode = supportsFirstLast ? 'first_last_frame' : 'm2v';
+          const refToken = await this.uploadReferenceToDreamina(projectId, src, 'audio');
+          uploadedAudRefs.push(refToken);
+          uploadedAudPairs.push({ source: src, refToken });
         }
 
         const allRefs =
           cliVideoMode === 'first_last_frame'
             ? uploadedImgRefs.slice(0, 2)
             : [...uploadedImgRefs, ...uploadedVidRefs, ...uploadedAudRefs];
+
+        const effectiveCliPrompt =
+          allRefs.length > 0
+            ? rewriteDreaminaPromptHandles({
+                prompt,
+                uploadedImages: uploadedImgPairs,
+                uploadedVideos: uploadedVidPairs,
+                uploadedAudios: uploadedAudPairs,
+                referenceHandles,
+              })
+            : prompt;
 
         const coercedRatio =
           this.coerceFlagValue(spec, cliVideoMode, '--ratio', aspectRatio) || aspectRatio;
@@ -4696,7 +4975,7 @@ export class DreaminaMcpEngine {
           '--model',
           resolvedCliModel,
           '--prompt',
-          prompt,
+          effectiveCliPrompt,
           '--ratio',
           coercedRatio,
           '--resolution',
@@ -4761,6 +5040,13 @@ export class DreaminaMcpEngine {
           durationSeconds: durationSec,
           referenceImages: refImages,
           videoReferences: videoRefs,
+          referenceFrameMode:
+            requestedMode === 'm2v' || rawFrameMode === 'multi-ref'
+              ? 'multi-ref'
+              : requestedMode === 'first_last_frame' || rawFrameMode === 'start-end'
+                ? 'start-end'
+                : 'auto',
+          referenceHandles,
           startImageUrl,
           endImageUrl,
           generateAudio,
