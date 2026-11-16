@@ -1178,6 +1178,7 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({
               onMouseLeave={() => scheduleNodeHoverClear(node.id)}
               onPointerDown={(e) => handleNodePointerDown(e, node)}
               onContextMenu={(e) => handleNodeContextMenu(e, node)}
+              data-node-id={node.id}
               className="absolute group"
             >
               {/* Outside Top-Left Node Header Label (-24px above frame) */}
@@ -2695,16 +2696,21 @@ const AudioCanvasCard: React.FC<{ node: CanvasNode }> = ({ node }) => {
     [node.voiceId]
   );
 
+  const isElevenLabsAudioNode = (node.platformId || 'elevenlabs') === 'elevenlabs';
   const modeLabel =
     effectiveSubMode === 'music'
       ? node.modelParams?.force_instrumental
         ? 'Music · Instrumental'
-        : 'Eleven Music'
+        : isElevenLabsAudioNode
+        ? 'Eleven Music'
+        : 'Music'
       : effectiveSubMode === 'sfx'
       ? node.modelParams?.loop
         ? 'SFX · Loop'
         : 'Sound Effects'
-      : `Voice · ${matchedVoice?.shortName || 'Speech'}`;
+      : isElevenLabsAudioNode
+      ? `Voice · ${matchedVoice?.shortName || 'Speech'}`
+      : 'Speech (TTS)';
 
   const rawRequestedSec =
     typeof node.durationSec === 'number' && node.durationSec > 0

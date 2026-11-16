@@ -400,8 +400,7 @@ export function convertRawHiggsfieldModelToPlatformModel(
     if (pname === 'resolution' && resolutions && resolutions.length > 0) return false;
     if ((pname === 'aspect_ratio' || pname === 'ratio') && aspectRatios && aspectRatios.length > 0)
       return false;
-    if ((pname === 'duration' || pname === 'duration_sec') && durationsSec && durationsSec.length > 0)
-      return false;
+    if (pname === 'duration' || pname === 'duration_sec') return false;
     if (pname === 'batch_size' || pname === 'batch_count' || pname === 'count') return false;
     return true;
   });
