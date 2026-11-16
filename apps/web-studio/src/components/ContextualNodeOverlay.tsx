@@ -134,7 +134,10 @@ function familyMatchesChip(providerFamily: string | undefined, chip: string): bo
   return fam === target || fam.includes(target);
 }
 
-function buildFamilyChips(models: PlatformModelDefinition[]): string[] {
+function buildFamilyChips(
+  models: PlatformModelDefinition[],
+  allowUnlimChip = true
+): string[] {
   const seen = new Set<string>();
   const uniqueFamilies: string[] = [];
   for (const m of models) {
@@ -155,7 +158,7 @@ function buildFamilyChips(models: PlatformModelDefinition[]): string[] {
   });
   return [
     'All',
-    ...(models.some((m) => m.supportsUnlim) ? ['∞ Unlim'] : []),
+    ...(allowUnlimChip && models.some((m) => m.supportsUnlim) ? ['∞ Unlim'] : []),
     ...uniqueFamilies,
   ];
 }
@@ -720,8 +723,6 @@ export const ContextualNodeOverlay: React.FC = () => {
     effectiveAudioSubMode === 'music' &&
     Boolean(activeModelDef?.parameters?.some((p) => p.name === 'force_instrumental'));
 
-  const showHiggsfieldUnlimPill =
-    effectivePlatformId === 'higgsfield' && Boolean(activeModelDef?.supportsUnlim);
   const hasMcpForEffectivePlatform =
     connectedMcpPlatforms.includes(effectivePlatformId) ||
     externalMcpServers.some(
@@ -730,7 +731,14 @@ export const ContextualNodeOverlay: React.FC = () => {
   const isHiggsfieldMcpRoute =
     effectivePlatformId === 'higgsfield' &&
     hasMcpForEffectivePlatform &&
-    (selectedNode.connectionMode || 'auto') !== 'api-key';
+    (selectedNode.connectionMode || 'auto') !== 'api-key' &&
+    (selectedNode.connectionMode || 'auto') !== 'browser-bridge';
+  // Higgsfield's remote OAuth MCP server restricts `use_unlim: true` to Claude/ChatGPT hosts;
+  // only show Unlimited toggle when routing via Browser Session Bridge (`higgsfield.ai/create`).
+  const showHiggsfieldUnlimPill =
+    effectivePlatformId === 'higgsfield' &&
+    Boolean(activeModelDef?.supportsUnlim) &&
+    !isHiggsfieldMcpRoute;
   const showAdvancedNegativePrompt =
     modality !== 'audio' &&
     !(
@@ -757,7 +765,7 @@ export const ContextualNodeOverlay: React.FC = () => {
     (p) =>
       p.name !== 'quality' &&
       p !== modeSpec &&
-      !(showHiggsfieldUnlimPill && p.name === 'use_unlim') &&
+      !((showHiggsfieldUnlimPill || isHiggsfieldMcpRoute) && p.name === 'use_unlim') &&
       !(showAdvancedSeedInput && p.name === 'seed') &&
       !(showAdvancedNegativePrompt && p.name === 'negative_prompt') &&
       !(showVideoAudioPill && p.name === 'generate_audio') &&
@@ -812,7 +820,7 @@ export const ContextualNodeOverlay: React.FC = () => {
     });
   };
 
-  const dynamicFamilyChips = buildFamilyChips(availableModels);
+  const dynamicFamilyChips = buildFamilyChips(availableModels, !isHiggsfieldMcpRoute);
   const normalizedModelSearch = modelSearch.trim().toLowerCase();
   const visibleModels = availableModels.filter((m) => {
     if (modelFamilyFilter === '∞ Unlim' && !m.supportsUnlim) return false;
@@ -2989,7 +2997,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                   className="h-8 px-2.5 rounded-[8px] bg-[#252525] hover:bg-white/[0.11] border border-white/[0.08] text-[12px] text-white/90 flex items-center gap-1.5 transition-colors max-w-[220px]"
                   title="Model on selected platform"
                 >
-                  {activeModelDef?.supportsUnlim && (
+                  {!isHiggsfieldMcpRoute && activeModelDef?.supportsUnlim && (
                     <span className="text-[10px] font-semibold text-emerald-300 shrink-0">
                       ∞
                     </span>
@@ -3126,7 +3134,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                                       <span className="text-[12px] font-medium truncate">
                                         {m.label}
                                       </span>
-                                      {m.supportsUnlim && (
+                                      {!isHiggsfieldMcpRoute && m.supportsUnlim && (
                                         <span className="px-1.5 py-px rounded-[4px] bg-emerald-500/15 border border-emerald-400/25 text-[9.5px] font-semibold text-emerald-300 shrink-0">
                                           ∞ UNLIM
                                         </span>
@@ -4321,7 +4329,8 @@ export const ContextualNodeOverlay: React.FC = () => {
                     <span>
                       Generate
                       {creditQuote?.ok
-                        ? creditQuote.isUnlimitedEligible || creditQuote.unit === 'unlimited'
+                        ? !isHiggsfieldMcpRoute &&
+                          (creditQuote.isUnlimitedEligible || creditQuote.unit === 'unlimited')
                           ? ' · ∞ Unlim'
                           : creditQuote.estimatedCredits != null
                           ? ` · ${creditQuote.estimatedCredits.toLocaleString()} ${

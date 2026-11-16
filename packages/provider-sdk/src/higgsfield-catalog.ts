@@ -305,12 +305,15 @@ export function convertRawHiggsfieldModelToPlatformModel(
     if (typeof m.max === 'number' && m.max > maxReferences) {
       maxReferences = m.max;
     } else if (typeof m.description === 'string') {
-      const match = /maxs+(d+)/i.exec(m.description);
+      const match = /(?:max(?:imum)?|at most|up to)\s+(\d+)/i.exec(m.description);
       if (match) {
         const parsed = Number(match[1]);
         if (Number.isFinite(parsed) && parsed > maxReferences) maxReferences = parsed;
       }
     }
+  }
+  if (raw.id === 'soul_cinema_studio' || raw.id === 'soul_2' || raw.id === 'soul_cinematic' || raw.id === 'cinematic_studio_2_5') {
+    maxReferences = 1;
   }
   if (mediaRoles.length > 0 && maxReferences === 0) {
     maxReferences = mediaRoles.includes('image_references') ? 10 : 2;
@@ -347,19 +350,21 @@ export function convertRawHiggsfieldModelToPlatformModel(
     mediaRoles.includes('ref_image');
   const supportsTailFrame = mediaRoles.includes('end_image');
   const supportsStartEndFrames = supportsSingleStartFrame || supportsTailFrame;
-  const supportsOmniRef = mediaRoles.some((r) =>
-    [
-      'image_references',
-      'input_images',
-      'character_images',
-      'character_image',
-      'character_photo',
-      'product_image',
-      'product_photo',
-      'location_image',
-      'location_photo',
-    ].includes(r)
-  );
+  const supportsOmniRef =
+    maxReferences !== 1 &&
+    mediaRoles.some((r) =>
+      [
+        'image_references',
+        'input_images',
+        'character_images',
+        'character_image',
+        'character_photo',
+        'product_image',
+        'product_photo',
+        'location_image',
+        'location_photo',
+      ].includes(r)
+    );
   const supportsVideoRef = mediaRoles.some((r) =>
     [
       'video_references',

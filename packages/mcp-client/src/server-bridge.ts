@@ -7032,10 +7032,13 @@ export class McpStdioBridgeServer {
     const batchCount = Number(settings.batchCount ?? params.batchCount ?? 1) || 1;
     const aspectRatio = String(settings.aspectRatio ?? params.aspectRatio ?? '16:9').trim();
     const prompt = typeof params.prompt === 'string' ? params.prompt : undefined;
+    const connMode = String(params.connectionMode ?? settings.connectionMode ?? 'auto')
+      .trim()
+      .toLowerCase();
     const live = params.live === true;
     const promptLenKey = platformId === 'elevenlabs' ? (prompt || '').trim().length : 0;
 
-    const quoteKey = `${user.id}|${platformId}|${modelId}|${modality}|${resolution}|${quality}|${durationSec}|${batchCount}|${aspectRatio}|${promptLenKey}`;
+    const quoteKey = `${user.id}|${platformId}|${connMode}|${modelId}|${modality}|${resolution}|${quality}|${durationSec}|${batchCount}|${aspectRatio}|${promptLenKey}`;
     const now = Date.now();
     const cached = this.creditsQuoteCache.get(quoteKey);
     const cacheTtlMs = live ? 300_000 : 60_000;
@@ -7093,8 +7096,12 @@ export class McpStdioBridgeServer {
         : null;
       const planStr = String(cachedBal?.plan || '').toLowerCase();
       supportsUnlimited = /ultimate|unlimited|pro/i.test(planStr);
-      // Note: gpt_image_2_6 on Higgsfield charges paid credits unless explicitly marked eligible by get_cost (0 credits)
+      // Higgsfield's remote OAuth MCP server restricts `use_unlim: true` to Claude/ChatGPT hosts;
+      // external MCP calls always execute on credits unless routing via Browser Session Bridge (`browser-bridge`).
+      const isExternalHfMcp =
+        Boolean(hfServer) && connMode !== 'browser-bridge' && connMode !== 'api-key';
       unlimitedEligible =
+        !isExternalHfMcp &&
         supportsUnlimited &&
         batchCount === 1 &&
         !/kling-o|sora-2-pro|gpt[-_ ]?image/i.test(modelId);
@@ -9632,15 +9639,14 @@ export class McpStdioBridgeServer {
       }
     }
 
-    // Explicit Billing Mode (`use_unlim`: 'unlimited' | 'credits' | 'auto')
-    const rawUseUnlim = mergedModelParams.use_unlim ?? explicitParams.use_unlim;
-    if (rawUseUnlim === true || String(rawUseUnlim || '').toLowerCase() === 'unlimited') {
-      if (batchCount <= 1 && modelDef?.supportsUnlim !== false) {
-        hfParams.use_unlim = true;
-      } else {
-        hfParams.use_unlim = false;
-      }
-    } else if (rawUseUnlim === false || String(rawUseUnlim || '').toLowerCase() === 'credits') {
+    // Billing Mode (`use_unlim`): Higgsfield's remote OAuth MCP server restricts `use_unlim: true`
+    // exclusively to whitelisted first-party chat hosts (Claude chat, Claude Cowork, ChatGPT) and rejects
+    // `use_unlim: true` on external OAuth apps. Always send `use_unlim: false` on external MCP unless
+    // raw `explicitParams.use_unlim === true` was explicitly passed for diagnostic probing.
+    const rawUseUnlim = explicitParams.use_unlim ?? mergedModelParams.use_unlim;
+    if (explicitParams.use_unlim === true) {
+      hfParams.use_unlim = batchCount <= 1;
+    } else if (modelDef?.supportsUnlim || specByName.has('use_unlim') || rawUseUnlim !== undefined) {
       hfParams.use_unlim = false;
     }
 
@@ -9668,12 +9674,14 @@ export class McpStdioBridgeServer {
       }
     }
 
-    // Voice & Seed
-    if (voiceId && specByName.has('voice_id')) {
-      hfParams.voice_id = voiceId;
+    // Voice & Seed (only accept UUID-formatted voice_id on Higgsfield so stale ElevenLabs IDs never leak across platform switches)
+    if (voiceId && specByName.has('voice_id') && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(voiceId.trim())) {
+      hfParams.voice_id = voiceId.trim();
     }
     if (voiceId && specByName.has('voice') && !mergedModelParams.voice) {
-      hfParams.voice = voiceId;
+      const voiceOpts = specByName.get('voice')?.options;
+      const matchedVoice = Array.isArray(voiceOpts) ? matchOption(voiceId, voiceOpts) : voiceId;
+      if (matchedVoice !== undefined) hfParams.voice = matchedVoice;
     }
     if (seed !== undefined && seed !== null && seed !== '' && specByName.has('seed')) {
       const nSeed = Number(seed);
@@ -9752,22 +9760,32 @@ export class McpStdioBridgeServer {
       }
     }
 
-    // Billing / `use_unlim` policy: batch > 1 or explicit credits forces `use_unlim: false`
-    const explicitUnlim =
-      mergedModelParams.use_unlim ?? mergedModelParams.billing_mode ?? explicitParams.use_unlim;
-    if (
-      batchCount > 1 ||
-      explicitUnlim === false ||
-      explicitUnlim === 'false' ||
-      explicitUnlim === 'credits'
-    ) {
-      hfParams.use_unlim = false;
-    } else if (
-      explicitUnlim === true ||
-      explicitUnlim === 'true' ||
-      explicitUnlim === 'unlimited'
-    ) {
-      hfParams.use_unlim = true;
+    // Guarantee required audio defaults (`variant`, `voice`, `voice_type` + `voice_id`, `duration`, `target_language`)
+    if (kind === 'audio') {
+      const variantSpec = specByName.get('variant');
+      if (variantSpec?.required && !hfParams.variant) {
+        hfParams.variant =
+          Array.isArray(variantSpec.options) && variantSpec.options.length > 0
+            ? variantSpec.options[0]
+            : 'elevenlabs';
+      }
+      const voiceEnumSpec = specByName.get('voice');
+      if (voiceEnumSpec?.required && !hfParams.voice && Array.isArray(voiceEnumSpec.options) && voiceEnumSpec.options.length > 0) {
+        hfParams.voice = voiceEnumSpec.options[0];
+      }
+      const voiceIdSpec = specByName.get('voice_id');
+      const voiceTypeSpec = specByName.get('voice_type');
+      if (voiceIdSpec?.required && !hfParams.voice_id) {
+        hfParams.voice_type = String(hfParams.voice_type || 'preset');
+        // Built-in Higgsfield preset voice Grady (verified via `list_voices`)
+        hfParams.voice_id = 'e2a2d2e6-9ed2-59cd-82af-feaa27f8a678';
+      } else if (hfParams.voice_id && voiceTypeSpec && !hfParams.voice_type) {
+        hfParams.voice_type = 'preset';
+      }
+      const durReqSpec = specByName.get('duration');
+      if (durReqSpec?.required && hfParams.duration === undefined) {
+        hfParams.duration = normalizedModel.includes('music') ? 8 : 5;
+      }
     }
 
     return {
@@ -10815,23 +10833,34 @@ export class McpStdioBridgeServer {
           preferMultiImageReferences
         );
 
+        const maxAllowedImageRefs =
+          normalizedHiggsfieldModel === 'soul_cinema_studio' ||
+          normalizedHiggsfieldModel === 'soul_2' ||
+          normalizedHiggsfieldModel === 'soul_cinematic' ||
+          normalizedHiggsfieldModel === 'cinematic_studio_2_5'
+            ? 1
+            : typeof modelDef?.maxReferences === 'number' && modelDef.maxReferences > 0
+              ? modelDef.maxReferences
+              : resolvedReferenceImages.length;
+
         if (
           firstRole !== null &&
           selectedOutputFormat !== 'svg' &&
           resolvedReferenceImages.length > 0
         ) {
-          for (let i = 0; i < resolvedReferenceImages.length; i++) {
+          const cappedRefImages = resolvedReferenceImages.slice(0, maxAllowedImageRefs);
+          for (let i = 0; i < cappedRefImages.length; i++) {
             const role = this.resolveHiggsfieldRoleForModel(
               normalizedHiggsfieldModel,
               modelDef,
               i,
               endRefIndex === i,
-              preferMultiImageReferences
+              preferMultiImageReferences && maxAllowedImageRefs > 1
             );
             if (!role) continue;
             const uploadedMediaId = await this.uploadReferenceForHiggsfieldMcp(
               candidateMcpServer.id,
-              resolvedReferenceImages[i],
+              cappedRefImages[i],
               candidateMcpServer.tools,
               'image'
             );
@@ -11635,14 +11664,43 @@ export class McpStdioBridgeServer {
         urls: string[];
         jobIds: string[];
       }> => {
-        let out = await this.executeExternalMcpToolCall({
-          serverId: candidateMcpServer.id,
-          toolName: chosenTool.name,
-          arguments: callArgs,
-          timeoutMs: effectiveMcpTimeoutMs ?? params.timeoutMs,
-          maxOutputs: maxOutputsForCall,
-          _internalSkipCreditCheck: true,
-        });
+        let out: Record<string, unknown>;
+        try {
+          out = await this.executeExternalMcpToolCall({
+            serverId: candidateMcpServer.id,
+            toolName: chosenTool.name,
+            arguments: callArgs,
+            timeoutMs: effectiveMcpTimeoutMs ?? params.timeoutMs,
+            maxOutputs: maxOutputsForCall,
+            _internalSkipCreditCheck: true,
+          });
+        } catch (initialErr) {
+          const errMsg = initialErr instanceof Error ? initialErr.message : String(initialErr);
+          const baseP =
+            typeof callArgs.params === 'object' && callArgs.params !== null
+              ? (callArgs.params as Record<string, unknown>)
+              : null;
+          if (
+            isHiggsfieldOfficialMcp &&
+            baseP &&
+            baseP.use_unlim === true &&
+            /unlimited generations (are not available|aren't supported)|unlim_choice/i.test(errMsg)
+          ) {
+            out = await this.executeExternalMcpToolCall({
+              serverId: candidateMcpServer.id,
+              toolName: chosenTool.name,
+              arguments: {
+                ...callArgs,
+                params: { ...baseP, use_unlim: false },
+              },
+              timeoutMs: effectiveMcpTimeoutMs ?? params.timeoutMs,
+              maxOutputs: maxOutputsForCall,
+              _internalSkipCreditCheck: true,
+            });
+          } else {
+            throw initialErr;
+          }
+        }
         let stObj = readStructuredObj(out);
         let jids = this.extractPendingMcpJobIds(stObj, out.textContent);
         let directUrls = collectOutUrls(out);

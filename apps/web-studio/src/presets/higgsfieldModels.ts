@@ -619,13 +619,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
       }
     ],
     "supportsReferences": true,
-    "maxReferences": 4,
+    "maxReferences": 1,
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "supportsSingleStartFrame": false,
     "supportsTailFrame": false,
     "supportsStartEndFrames": false,
-    "supportsOmniRef": true,
+    "supportsOmniRef": false,
     "supportsVideoRef": false,
     "supportsAudioRef": false,
     "supportsMotionControl": false
