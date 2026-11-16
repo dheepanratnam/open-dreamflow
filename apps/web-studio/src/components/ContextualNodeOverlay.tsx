@@ -86,6 +86,8 @@ const FIRST_CLASS_DUP_PARAMS = new Set([
   'duration',
   'duration_sec',
   'batch_count',
+  'batch_size',
+  'num_images',
   'count',
 ]);
 
@@ -523,22 +525,27 @@ export const ContextualNodeOverlay: React.FC = () => {
     selectedNode.audioMode === 'music' ||
     rawMatchedAudioModel?.audioSubMode === 'music' ||
     (selectedNode.modelId || '').startsWith('music_') ||
-    (selectedNode.modelId || '').startsWith('eleven_music_')
+    (selectedNode.modelId || '').startsWith('eleven_music_') ||
+    (selectedNode.modelId || '').includes('music')
       ? 'music'
       : selectedNode.audioMode === 'sfx' ||
         rawMatchedAudioModel?.audioSubMode === 'sfx' ||
-        (selectedNode.modelId || '').includes('sound')
+        (selectedNode.modelId || '').includes('sound') ||
+        (selectedNode.modelId || '').includes('mirelo') ||
+        (selectedNode.modelId || '').includes('dubbing')
       ? 'sfx'
       : 'tts';
 
+  const activeAudioPlatformId = activePlatformDef?.id || effectivePlatformId;
   const availableModels =
-    modality === 'audio' && (activePlatformDef?.id || effectivePlatformId) === 'elevenlabs'
+    modality === 'audio' &&
+    (activeAudioPlatformId === 'elevenlabs' || activeAudioPlatformId === 'higgsfield')
       ? allPlatformModels.filter((m) => {
           const mSub =
             m.audioSubMode ||
-            (m.id.startsWith('music_') || m.id.startsWith('eleven_music_')
+            (m.id.startsWith('music_') || m.id.startsWith('eleven_music_') || m.id.includes('music')
               ? 'music'
-              : m.id.includes('sound')
+              : m.id.includes('sound') || m.id.includes('mirelo') || m.id.includes('dubbing')
               ? 'sfx'
               : 'tts');
           return mSub === effectiveAudioSubMode;
@@ -555,9 +562,16 @@ export const ContextualNodeOverlay: React.FC = () => {
     : modality === 'video'
     ? VIDEO_ASPECTS
     : IMAGE_ASPECTS;
+  const hasExplicitModelSchema = Boolean(
+    activeModelDef?.aspectRatios?.length ||
+      activeModelDef?.parameters?.length ||
+      effectivePlatformId === 'higgsfield' ||
+      effectivePlatformId === 'kling' ||
+      effectivePlatformId === 'dreamina'
+  );
   const showResolutionPill =
     modality !== 'audio' &&
-    (Boolean(activeModelDef?.resolutions?.length) || !activeModelDef?.parameters?.length);
+    (Boolean(activeModelDef?.resolutions?.length) || !hasExplicitModelSchema);
   const totalImageRefCountEarly =
     upstreamRefNodes.length + (selectedNode.referenceUrls?.length || 0);
   const requiresKlingTailPro1080p =
@@ -638,9 +652,6 @@ export const ContextualNodeOverlay: React.FC = () => {
       if (mStr === 'first_last_frame' || mStr === 'image-to-video') {
         return 'start-end';
       }
-      if (mStr === 't2v' || mStr === 'text-to-video') {
-        return 't2v';
-      }
       if (
         selectedNode.referenceFrameMode === 'multi-ref' ||
         activeModelDef?.id === 'kling-elements'
@@ -649,6 +660,9 @@ export const ContextualNodeOverlay: React.FC = () => {
       }
       if (selectedNode.referenceFrameMode === 'start-end') {
         return 'start-end';
+      }
+      if (mStr === 't2v' || mStr === 'text-to-video') {
+        return 't2v';
       }
       const hasAnyRefs =
         upstreamRefNodes.length > 0 ||
@@ -706,10 +720,46 @@ export const ContextualNodeOverlay: React.FC = () => {
     effectiveAudioSubMode === 'music' &&
     Boolean(activeModelDef?.parameters?.some((p) => p.name === 'force_instrumental'));
 
+  const showHiggsfieldUnlimPill =
+    effectivePlatformId === 'higgsfield' && Boolean(activeModelDef?.supportsUnlim);
+  const hasMcpForEffectivePlatform =
+    connectedMcpPlatforms.includes(effectivePlatformId) ||
+    externalMcpServers.some(
+      (s) => s.platformId === effectivePlatformId && s.status === 'connected'
+    );
+  const isHiggsfieldMcpRoute =
+    effectivePlatformId === 'higgsfield' &&
+    hasMcpForEffectivePlatform &&
+    (selectedNode.connectionMode || 'auto') !== 'api-key';
+  const showAdvancedNegativePrompt =
+    modality !== 'audio' &&
+    !(
+      effectivePlatformId === 'kling' &&
+      hasMcpForEffectivePlatform &&
+      (selectedNode.connectionMode || 'auto') !== 'api-key'
+    ) &&
+    !(
+      isHiggsfieldMcpRoute &&
+      !activeModelDef?.parameters?.some((p) => p.name === 'negative_prompt')
+    );
+  const showAdvancedSeedInput =
+    effectivePlatformId !== 'kling' &&
+    !(
+      modality === 'audio' &&
+      (effectiveAudioSubMode === 'sfx' || effectiveAudioSubMode === 'music')
+    ) &&
+    !(
+      isHiggsfieldMcpRoute &&
+      !activeModelDef?.parameters?.some((p) => p.name === 'seed')
+    );
+
   const remainingParamSpecs = (activeModelDef?.parameters || []).filter(
     (p) =>
       p.name !== 'quality' &&
       p !== modeSpec &&
+      !(showHiggsfieldUnlimPill && p.name === 'use_unlim') &&
+      !(showAdvancedSeedInput && p.name === 'seed') &&
+      !(showAdvancedNegativePrompt && p.name === 'negative_prompt') &&
       !(showVideoAudioPill && p.name === 'generate_audio') &&
       !(showAudioSpeedPill && p.name === 'speed') &&
       !(showAudioLoopPill && p.name === 'loop') &&
@@ -914,6 +964,22 @@ export const ContextualNodeOverlay: React.FC = () => {
       });
       return;
     }
+    if (effectivePlatformId === 'higgsfield') {
+      const targetModelId =
+        nextMode === 'music'
+          ? 'sonilo_music'
+          : nextMode === 'sfx'
+          ? 'mirelo_text_to_audio'
+          : 'text2speech_v2';
+      setNodePlatformAndModel(selectedNode.id, 'higgsfield', targetModelId);
+      updateNodeFields(selectedNode.id, {
+        audioMode: nextMode,
+        voiceId: undefined,
+        durationSec:
+          nextMode === 'tts' ? undefined : nextMode === 'music' ? 10 : 5,
+      });
+      return;
+    }
     updateNodeFields(selectedNode.id, {
       audioMode: nextMode,
       durationSec: nextMode === 'tts' ? undefined : nextMode === 'music' ? 15 : 8,
@@ -1055,6 +1121,8 @@ export const ContextualNodeOverlay: React.FC = () => {
             : target === 'start-end'
             ? 'first_last_frame'
             : 't2v';
+      } else if (modeOptionsStrings.includes('omni_reference')) {
+        nextParams.mode = target === 'multi-ref' ? 'omni_reference' : 't2v';
       } else if (modeOptionsStrings.includes('reference-to-video')) {
         nextParams.mode =
           target === 'multi-ref'
@@ -1642,7 +1710,8 @@ export const ContextualNodeOverlay: React.FC = () => {
                   >
                     Sound Effects
                   </button>
-                  {effectivePlatformId === 'elevenlabs' && (
+                  {(effectivePlatformId === 'elevenlabs' ||
+                    effectivePlatformId === 'higgsfield') && (
                     <button
                       type="button"
                       data-testid="audio-mode-music"
@@ -1652,7 +1721,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                           ? 'bg-amber-400/20 border border-amber-300/40 text-amber-200'
                           : 'text-white/60 hover:text-white'
                       }`}
-                      title="Studio Songs & Instrumental Film Scores (Eleven Music v2.5 & v2)"
+                      title="Studio Songs & Instrumental Film Scores"
                     >
                       Music
                     </button>
@@ -1812,7 +1881,8 @@ export const ContextualNodeOverlay: React.FC = () => {
             {modality !== 'audio' && (
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2 flex-wrap min-w-0">
-                  {/* Dreamina [ + ] 40x40 Reference Upload / Drop Tile */}
+                  {/* Dreamina [ + ] 40x40 Reference Upload / Drop Tile (hidden on strictly text-only models) */}
+                  {activeModelDef?.supportsReferences !== false && (
                   <div className="relative">
                     <button
                       type="button"
@@ -2038,6 +2108,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                       </div>
                     )}
                   </div>
+                  )}
 
                   {/* Wired Upstream Image / Element Reference Thumbnails */}
                   {(!composerExpanded || composerFilterTab !== 'text') &&
@@ -2493,7 +2564,8 @@ export const ContextualNodeOverlay: React.FC = () => {
                             isNew: false,
                             show:
                               modality === 'video' &&
-                              (effectivePlatformId !== 'kling' ||
+                              ((effectivePlatformId !== 'kling' &&
+                                effectivePlatformId !== 'higgsfield') ||
                                 Boolean(activeModelDef?.supportsVideoRef)),
                           },
                           {
@@ -2503,7 +2575,8 @@ export const ContextualNodeOverlay: React.FC = () => {
                             isNew: false,
                             show:
                               modality === 'video' &&
-                              (effectivePlatformId !== 'kling' ||
+                              ((effectivePlatformId !== 'kling' &&
+                                effectivePlatformId !== 'higgsfield') ||
                                 Boolean(activeModelDef?.supportsAudioRef)),
                           },
                           {
@@ -2513,7 +2586,8 @@ export const ContextualNodeOverlay: React.FC = () => {
                             isNew: true,
                             show:
                               modality === 'video' &&
-                              (effectivePlatformId !== 'kling' ||
+                              ((effectivePlatformId !== 'kling' &&
+                                effectivePlatformId !== 'higgsfield') ||
                                 Boolean(activeModelDef?.supportsMotionControl)),
                           },
                         ] as const
@@ -3464,8 +3538,8 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </div>
               )}
 
-              {/* Dreamina Bottom Toolbar @ Mention Trigger */}
-              {modality !== 'audio' && (
+              {/* Dreamina Bottom Toolbar @ Mention Trigger (hidden on strictly text-only models) */}
+              {modality !== 'audio' && activeModelDef?.supportsReferences !== false && (
                 <button
                   type="button"
                   data-testid="composer-at-btn"
@@ -3481,11 +3555,15 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </button>
               )}
 
-              {/* Compact Video DoP Camera Rig (Higgsfield / DoP providers only) + Dynamic Audio Toggle */}
+              {/* Compact Video DoP Camera Rig (generative cinema models only, never utility/edit or native camera_style models) + Dynamic Audio Toggle */}
               {modality === 'video' && (
                 <>
                   {effectivePlatformId !== 'kling' &&
-                    effectivePlatformId !== 'dreamina' && (
+                    effectivePlatformId !== 'dreamina' &&
+                    !activeModelDef?.parameters?.some((p) => p.name === 'camera_style') &&
+                    !/^(video_upscale|video_deflicker|sam_3_video|video_background_remover|fps_boost|voice_change|dubbing|reframe|hf_mult_)/i.test(
+                      activeModelDef?.id || ''
+                    ) && (
                       <div className="relative">
                         <button
                           type="button"
@@ -3578,11 +3656,11 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </>
               )}
 
-              {/* ElevenLabs / Audio Strictly Isolated Per-Mode Controls (TTS vs SFX vs Music) */}
+              {/* ElevenLabs / Higgsfield Audio Strictly Isolated Per-Mode Controls (TTS vs SFX vs Music) */}
               {modality === 'audio' && (
                 <>
-                  {/* TTS Mode: Voice Picker (21+ Premade & Workspace Voices + ▶ Preview) + Speaking Speed */}
-                  {effectiveAudioSubMode === 'tts' && (
+                  {/* TTS Mode: ElevenLabs Voice Picker only on ElevenLabs; Higgsfield uses model-declared voice/variant pills */}
+                  {effectiveAudioSubMode === 'tts' && effectivePlatformId === 'elevenlabs' && (
                     <>
                       <div className="relative">
                         <button
@@ -3871,6 +3949,41 @@ export const ContextualNodeOverlay: React.FC = () => {
                 </>
               )}
 
+              {/* Higgsfield Ultimate Unlimited Allowance Toggle Pill (1x single output uses 0 credits when On) */}
+              {showHiggsfieldUnlimPill && (
+                <button
+                  type="button"
+                  data-testid="higgsfield-unlim-pill"
+                  onClick={() => {
+                    const curMode = String(selectedNode.modelParams?.use_unlim || 'auto').toLowerCase();
+                    const isCurrentlyCredits = curMode === 'credits' || activeBatchCount > 1;
+                    if (isCurrentlyCredits && activeBatchCount > 1) {
+                      updateNodeFields(selectedNode.id, { batchCount: 1 });
+                    }
+                    updateModelParam('use_unlim', isCurrentlyCredits ? 'unlimited' : 'credits');
+                  }}
+                  className={`h-8 px-2.5 rounded-[8px] border text-[11.5px] font-medium flex items-center gap-1.5 transition-colors ${
+                    String(selectedNode.modelParams?.use_unlim || 'auto').toLowerCase() !== 'credits' &&
+                    activeBatchCount === 1
+                      ? 'bg-emerald-500/18 border-emerald-400/45 text-emerald-200'
+                      : 'bg-[#252525] hover:bg-white/[0.11] border-white/[0.07] text-white/75'
+                  }`}
+                  title={
+                    activeBatchCount > 1
+                      ? 'Multi-batch (>1) bills credits · Click to switch to 1x ∞ Unlimited'
+                      : 'Toggle between Ultimate ∞ Unlimited allowance (0 credits) and priority credit queue'
+                  }
+                >
+                  <span className="text-[11px] font-semibold">∞</span>
+                  <span>
+                    {String(selectedNode.modelParams?.use_unlim || 'auto').toLowerCase() !== 'credits' &&
+                    activeBatchCount === 1
+                      ? 'Unlimited'
+                      : 'Credits'}
+                  </span>
+                </button>
+              )}
+
               {/* Full Model Parameters + Connection Route + Negative Prompt + Seed Popover */}
               <div className="relative">
                 <button
@@ -4094,12 +4207,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                       </div>
                     </div>
 
-                    {modality !== 'audio' &&
-                      !(
-                        effectivePlatformId === 'kling' &&
-                        activeConnStatus.hasMcp &&
-                        (selectedNode.connectionMode || 'auto') !== 'api-key'
-                      ) && (
+                    {showAdvancedNegativePrompt && (
                         <div className="space-y-1">
                           <label className="text-[10.5px] font-medium text-white/45 uppercase tracking-wider">
                             Negative Prompt
@@ -4118,11 +4226,7 @@ export const ContextualNodeOverlay: React.FC = () => {
                         </div>
                       )}
 
-                    {effectivePlatformId !== 'kling' &&
-                      !(
-                        modality === 'audio' &&
-                        (effectiveAudioSubMode === 'sfx' || effectiveAudioSubMode === 'music')
-                      ) && (
+                    {showAdvancedSeedInput && (
                       <div className="flex items-center justify-between gap-2">
                         <label className="text-[10.5px] font-medium text-white/45 uppercase tracking-wider">
                           Seed

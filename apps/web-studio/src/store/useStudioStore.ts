@@ -6337,9 +6337,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const inferredAudioSubMode: 'tts' | 'sfx' | 'music' | undefined =
       modality === 'audio'
         ? chosenModel?.audioSubMode ||
-          (resolvedModelId.startsWith('music_')
+          (resolvedModelId.startsWith('music_') || resolvedModelId.includes('music')
             ? 'music'
-            : resolvedModelId.includes('sound')
+            : resolvedModelId.includes('sound') ||
+              resolvedModelId.includes('mirelo') ||
+              resolvedModelId.includes('dubbing')
             ? 'sfx'
             : 'tts')
         : undefined;

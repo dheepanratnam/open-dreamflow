@@ -115,7 +115,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 16,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "gpt_image_2_6_flare",
@@ -217,7 +224,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 16,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "gpt_image_2_5",
@@ -307,7 +321,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 16,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "gpt_image_2",
@@ -365,7 +386,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "openai_hazel",
@@ -400,7 +428,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 16,
     "supportsAudio": false,
-    "defaultAspect": "1:1"
+    "defaultAspect": "1:1",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "soul_2",
@@ -450,7 +485,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "cinematic_studio_2_5",
@@ -482,7 +524,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "soul_cinematic",
@@ -520,7 +570,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "soul_cinema_studio",
@@ -564,7 +621,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "nano_banana_2_1",
@@ -646,7 +710,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 14,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "nano_banana_2",
@@ -702,7 +773,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "nano_banana_pro",
@@ -749,7 +827,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "2k"
+    "defaultResolution": "2k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "nano_banana",
@@ -775,7 +860,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "nano_banana_2_lite",
@@ -827,7 +920,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "nano_banana_2_shots",
@@ -853,7 +953,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "seedream_5_5",
@@ -898,7 +1006,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 10,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "2k"
+    "defaultResolution": "2k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "seedream_v5_pro",
@@ -971,7 +1086,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "2k"
+    "defaultResolution": "2k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "seedream_5_0_flash",
@@ -1018,7 +1140,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 10,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "2k"
+    "defaultResolution": "2k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "seedream_v5_lite",
@@ -1054,7 +1183,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "seedream_v4_5",
@@ -1092,7 +1228,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "flux_3_image",
@@ -1131,7 +1274,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 10,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "flux_2",
@@ -1172,7 +1323,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "flux_kontext",
@@ -1193,7 +1351,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "flux_2_pro_outpaint",
@@ -1245,7 +1411,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "kling_omni_image",
@@ -1275,7 +1448,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 10,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "grok_image_2_0",
@@ -1320,7 +1501,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 3,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "grok_image",
@@ -1365,7 +1553,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "ideogram_4_5",
@@ -1439,7 +1634,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 5,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "2k"
+    "defaultResolution": "2k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "ideogram_vector",
@@ -1509,7 +1711,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 5,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "recraft_v4_1",
@@ -1556,7 +1765,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": false,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "recraft_v4_styles",
@@ -1600,7 +1816,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": false,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "minimax_h3_image",
@@ -1620,7 +1843,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 16,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "4k"
+    "defaultResolution": "4k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "3d_jutsu_angles",
@@ -1680,7 +1911,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "2k"
+    "defaultResolution": "2k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "image_auto",
@@ -1701,7 +1939,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "bytedance_image_upscale",
@@ -1728,7 +1974,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "4k"
+    "defaultResolution": "4k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "cinematic_studio_image",
@@ -1757,7 +2010,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "2k"
+    "defaultResolution": "2k",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "cinematic_studio_soul_cast",
@@ -1788,7 +2049,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "cinematic_studio_soul_location",
@@ -1808,7 +2076,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "ms_image",
@@ -1860,7 +2136,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "image_background_remover",
@@ -1873,7 +2156,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "image_command",
@@ -1896,7 +2187,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 1,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "image_decompose",
@@ -1923,7 +2221,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "marketing_studio_image",
@@ -1956,7 +2261,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultResolution": "1k"
+    "defaultResolution": "1k",
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "marketing_studio_2_image",
@@ -2012,7 +2325,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 1,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "outpaint",
@@ -2038,7 +2358,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 4,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "soul_cast",
@@ -2060,7 +2388,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "soul_location",
@@ -2081,7 +2416,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "topaz_image_generative",
@@ -2196,7 +2539,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 1,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "topaz_image",
@@ -2285,7 +2635,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 1,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "z_image",
@@ -2302,7 +2659,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": false,
-    "defaultAspect": "16:9"
+    "defaultAspect": "16:9",
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "cinematic_studio_video_4_0",
@@ -2402,7 +2767,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "cinematic_studio_video_3_5",
@@ -2552,7 +2923,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 15
+    "defaultDurationSec": 15,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "cinematic_studio_3_0",
@@ -2604,7 +2981,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "cinematic_studio_video_v2",
@@ -2702,7 +3085,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": true,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "cinematic_studio_video",
@@ -2736,7 +3125,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": true,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "kling4_0",
@@ -2795,7 +3190,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "1080p",
-    "defaultDurationSec": 10
+    "defaultDurationSec": 10,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "kling_4_0_flash",
@@ -2851,7 +3252,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 10
+    "defaultDurationSec": 10,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "kling3_0",
@@ -2898,7 +3305,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": true,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "kling3_0_turbo",
@@ -2934,7 +3347,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "kling_o3_image_reference",
@@ -2986,7 +3406,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 7,
     "supportsAudio": true,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "kling_o3_flf",
@@ -3040,7 +3467,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": true,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "kling_video_edit",
@@ -3071,7 +3504,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 1,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "kling3_0_motion_control",
@@ -3111,7 +3551,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": true
   },
   {
     "id": "kling2_6",
@@ -3136,7 +3583,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": true,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "seedance_2_5",
@@ -3240,7 +3694,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "seedance_2_5_flash",
@@ -3322,7 +3782,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "seedance_2_0",
@@ -3421,7 +3887,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "seedance_2_0_mini",
@@ -3493,7 +3965,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "veo3_1",
@@ -3545,7 +4023,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 8
+    "defaultDurationSec": 8,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "veo3_1_lite",
@@ -3572,7 +4056,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": true,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 8
+    "defaultDurationSec": 8,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "gemini_omni_flash_1_2",
@@ -3629,7 +4120,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 8
+    "defaultDurationSec": 8,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "gemini_omni_flash_1_1",
@@ -3683,7 +4180,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 8
+    "defaultDurationSec": 8,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "flux_3_video",
@@ -3728,7 +4231,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "flux_3_video_edit",
@@ -3743,7 +4253,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 1,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "wan3_0_prime",
@@ -3800,7 +4318,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "wan3_0",
@@ -3857,7 +4381,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "wan2_7",
@@ -3898,7 +4428,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "wan2_6",
@@ -3939,7 +4476,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 1,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "minimax_h3",
@@ -3981,7 +4525,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "2K",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "minimax_h3_max",
@@ -4023,7 +4574,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "768p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "minimax_hailuo",
@@ -4066,7 +4624,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "768",
-    "defaultDurationSec": 6
+    "defaultDurationSec": 6,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "grok_video_v15",
@@ -4101,7 +4665,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "grok_video_v15_lite",
@@ -4144,7 +4715,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "grok_video",
@@ -4176,7 +4754,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "happy_horse_video",
@@ -4214,7 +4799,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "ad_multiplier",
@@ -4297,7 +4889,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "ad_multiplier_v2",
@@ -4344,7 +4942,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "bytedance_video_upscale",
@@ -4400,7 +5005,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "2k",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "depth_anything_video",
@@ -4467,7 +5079,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "auto",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "draw_to_video",
@@ -4513,7 +5132,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": true,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "fps_boost",
@@ -4551,7 +5177,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 1,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "hf_mult_motion_control_flash",
@@ -4573,7 +5206,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": true,
+    "parameters": []
   },
   {
     "id": "hf_mult_replace_object_flash",
@@ -4594,7 +5235,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "hf_mult_motion_control",
@@ -4616,7 +5265,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": true,
+    "parameters": []
   },
   {
     "id": "hf_mult_replace_object",
@@ -4638,7 +5295,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "intone",
@@ -4683,7 +5348,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "1080p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "higgsfield_preset",
@@ -4703,7 +5375,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "marketing_studio_video",
@@ -4757,7 +5437,13 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": true,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": true,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "marketing_studio_v2_reference2video",
@@ -4774,7 +5460,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "marketing_studio_v2_video",
@@ -4853,7 +5547,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 9,
     "supportsAudio": true,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 4
+    "defaultDurationSec": 4,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "reframe",
@@ -4890,7 +5591,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "720p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": true,
+    "supportsTailFrame": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "sam_3_video",
@@ -4920,7 +5628,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "sync_so",
@@ -4951,7 +5666,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false
   },
   {
     "id": "topaz_hyperion_2_5",
@@ -4980,7 +5702,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 1,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "topaz_video",
@@ -5022,7 +5751,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsAudio": false,
     "defaultAspect": "16:9",
     "defaultResolution": "1080p",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "video_background_remover",
@@ -5036,7 +5772,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "video_deflicker",
@@ -5061,7 +5805,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 2
+    "defaultDurationSec": 2,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "dubbing",
@@ -5104,7 +5856,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "video_upscale",
@@ -5129,7 +5888,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 2
+    "defaultDurationSec": 2,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "parameters": []
   },
   {
     "id": "voice_change",
@@ -5163,7 +5930,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "maxReferences": 4,
     "supportsAudio": false,
     "defaultAspect": "16:9",
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": true,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false
   },
   {
     "id": "elevenlabs_v4",
@@ -5191,7 +5965,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": true,
-    "defaultDurationSec": 8
+    "defaultDurationSec": 8,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "audioSubMode": "tts"
   },
   {
     "id": "elevenlabs_v4_turbo",
@@ -5219,7 +6001,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": true,
-    "defaultDurationSec": 8
+    "defaultDurationSec": 8,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "audioSubMode": "tts"
   },
   {
     "id": "elevenlabs_music_v2_5",
@@ -5256,7 +6046,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": true,
-    "defaultDurationSec": 3
+    "defaultDurationSec": 3,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "audioSubMode": "music"
   },
   {
     "id": "elevenlabs_music_v2",
@@ -5293,7 +6091,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": true,
-    "defaultDurationSec": 3
+    "defaultDurationSec": 3,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "audioSubMode": "music"
   },
   {
     "id": "seed_audio",
@@ -5394,7 +6200,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     "supportsReferences": true,
     "maxReferences": 1,
     "supportsAudio": true,
-    "defaultDurationSec": 8
+    "defaultDurationSec": 8,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": true,
+    "supportsVideoRef": false,
+    "supportsAudioRef": true,
+    "supportsMotionControl": false,
+    "audioSubMode": "tts"
   },
   {
     "id": "text2speech_v2",
@@ -5452,7 +6266,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": true,
-    "defaultDurationSec": 8
+    "defaultDurationSec": 8,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "audioSubMode": "tts"
   },
   {
     "id": "qwen_audio_tts",
@@ -5562,7 +6384,15 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": true,
-    "defaultDurationSec": 8
+    "defaultDurationSec": 8,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "audioSubMode": "tts"
   },
   {
     "id": "inworld_text_to_speech",
@@ -5691,12 +6521,21 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
           "Omar (ar)"
         ],
         "required": true,
-        "description": "Voice to use for text-to-speech synthesis (language tag in parentheses)."
+        "description": "Voice to use for text-to-speech synthesis (language tag in parentheses).",
+        "inlinePill": true
       }
     ],
     "supportsReferences": false,
     "supportsAudio": true,
-    "defaultDurationSec": 8
+    "defaultDurationSec": 8,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "audioSubMode": "tts"
   },
   {
     "id": "sonilo_music",
@@ -5713,7 +6552,16 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": true,
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "audioSubMode": "music",
+    "parameters": []
   },
   {
     "id": "mirelo_text_to_audio",
@@ -5730,7 +6578,16 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": true,
-    "defaultDurationSec": 5
+    "defaultDurationSec": 5,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "audioSubMode": "sfx",
+    "parameters": []
   },
   {
     "id": "audio_dubbing",
@@ -5767,6 +6624,14 @@ export const HIGGSFIELD_MODELS: PlatformModelDefinition[] = [
     ],
     "supportsReferences": false,
     "supportsAudio": true,
-    "defaultDurationSec": 8
+    "defaultDurationSec": 8,
+    "supportsSingleStartFrame": false,
+    "supportsTailFrame": false,
+    "supportsStartEndFrames": false,
+    "supportsOmniRef": false,
+    "supportsVideoRef": false,
+    "supportsAudioRef": false,
+    "supportsMotionControl": false,
+    "audioSubMode": "sfx"
   }
 ];

@@ -1789,6 +1789,7 @@ export class McpStdioBridgeServer {
     bridgeWsUrl: string;
     httpUrl: string;
   }> {
+    this.enforceLocalMediaCacheBudget(32 * 1024 * 1024);
     this.authStore.pruneReadOnlyLedgerEntries();
     if (this.command) this.spawnStdioProcess();
 
@@ -2776,9 +2777,16 @@ export class McpStdioBridgeServer {
     try {
       const r2Key = `media/${filename}`;
       const up = await uploadBufferToR2(r2Key, buf, contentType);
-      if (up.ok && up.publicUrl) {
-        this.recordMediaOwnership(filename, user.id, platformId, up.publicUrl, up.key);
-        return up.publicUrl;
+      if (up.ok) {
+        this.recordMediaOwnership(
+          filename,
+          user.id,
+          platformId,
+          up.publicUrl || `/media/${filename}`,
+          up.key || r2Key
+        );
+        this.enforceLocalMediaCacheBudget(32 * 1024 * 1024, filename);
+        return up.publicUrl || `/media/${filename}`;
       }
     } catch {
       // Non-fatal fallback to local media disk
@@ -3614,11 +3622,34 @@ export class McpStdioBridgeServer {
     }
   }
 
-  private pruneLocalMediaCacheAfterR2Sync(
-    remoteMediaKeys: Set<string>,
-    capBytes = 200 * 1024 * 1024
+  private enforceLocalMediaCacheBudget(
+    capBytes = 32 * 1024 * 1024,
+    keepFilename?: string
   ): number {
-    if (!isR2Configured() || !fs.existsSync(this.mediaDir)) return 0;
+    if (!isR2Configured()) return 0;
+    const mediaIdx = this.loadMediaIndex();
+    let evicted = 0;
+
+    // Also clear redundant dist/media copies that already live in R2
+    try {
+      const distMediaDir = path.resolve(this.mediaDir, '../../dist/media');
+      if (fs.existsSync(distMediaDir) && path.resolve(distMediaDir) !== path.resolve(this.mediaDir)) {
+        for (const dName of fs.readdirSync(distMediaDir)) {
+          if (!dName || dName.startsWith('.') || dName === keepFilename) continue;
+          if (mediaIdx[dName]?.r2Key) {
+            try {
+              fs.unlinkSync(path.join(distMediaDir, dName));
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    if (!fs.existsSync(this.mediaDir)) return 0;
     let entries: Array<{ name: string; fullPath: string; size: number; mtimeMs: number }> = [];
     let totalBytes = 0;
     try {
@@ -3635,16 +3666,54 @@ export class McpStdioBridgeServer {
     }
     if (totalBytes <= capBytes) return 0;
 
-    const targetBytes = Math.floor(capBytes * 0.8);
-    const minAgeCutoff = Date.now() - 10 * 60_000;
+    const targetBytes = Math.floor(capBytes * 0.65);
+    entries = entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const item of entries) {
+      if (totalBytes <= targetBytes) break;
+      if (item.name === keepFilename) continue;
+      if (!mediaIdx[item.name]?.r2Key) continue;
+      try {
+        fs.unlinkSync(item.fullPath);
+        totalBytes -= item.size;
+        evicted++;
+      } catch {
+        // ignore
+      }
+    }
+    return evicted;
+  }
+
+  private pruneLocalMediaCacheAfterR2Sync(
+    remoteMediaKeys: Set<string>,
+    capBytes = 32 * 1024 * 1024
+  ): number {
+    if (!isR2Configured() || !fs.existsSync(this.mediaDir)) return 0;
+    const mediaIdx = this.loadMediaIndex();
+    let entries: Array<{ name: string; fullPath: string; size: number; mtimeMs: number }> = [];
+    let totalBytes = 0;
+    try {
+      for (const name of fs.readdirSync(this.mediaDir)) {
+        if (!name || name.startsWith('.') || name.endsWith('.tmp')) continue;
+        const fullPath = path.join(this.mediaDir, name);
+        const st = fs.statSync(fullPath);
+        if (!st.isFile()) continue;
+        totalBytes += st.size;
+        entries.push({ name, fullPath, size: st.size, mtimeMs: st.mtimeMs });
+      }
+    } catch {
+      return 0;
+    }
+    if (totalBytes <= capBytes) return 0;
+
+    const targetBytes = Math.floor(capBytes * 0.65);
+    const minAgeCutoff = Date.now() - 15_000;
     entries = entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
 
     let evictedCount = 0;
     for (const item of entries) {
       if (totalBytes <= targetBytes) break;
-      if (item.mtimeMs > minAgeCutoff) continue;
-      if (item.name.startsWith('real_')) continue;
-      if (!remoteMediaKeys.has(`media/${item.name}`)) continue;
+      if (item.mtimeMs > minAgeCutoff && totalBytes <= capBytes * 1.5) continue;
+      if (!remoteMediaKeys.has(`media/${item.name}`) && !mediaIdx[item.name]?.r2Key) continue;
       try {
         fs.unlinkSync(item.fullPath);
         totalBytes -= item.size;
@@ -5876,6 +5945,8 @@ export class McpStdioBridgeServer {
         'duration',
         'duration_sec',
         'batch_count',
+        'batch_size',
+        'num_images',
         'count',
       ]);
       const normalizedModels = models.map((m) => {
@@ -9484,14 +9555,20 @@ export class McpStdioBridgeServer {
       hfParams.medias = medias;
     }
 
-    // Resolution & Quality handling
+    // Resolution & Quality handling (check both `resSpec.options` and first-class `modelDef.resolutions`)
     const resSpec = specByName.get('resolution');
     const qualitySpec = specByName.get('quality');
+    const modelResOptions =
+      resSpec && Array.isArray(resSpec.options) && resSpec.options.length > 0
+        ? resSpec.options
+        : Array.isArray(modelDef?.resolutions) && (modelDef!.resolutions as unknown[]).length > 0
+          ? (modelDef!.resolutions as unknown[])
+          : null;
 
-    if (resSpec) {
+    if (modelResOptions) {
       const rawRes = String(mergedModelParams.resolution ?? resolution ?? '').trim();
       if (rawRes) {
-        const matchedRes = matchOption(rawRes, resSpec.options);
+        const matchedRes = matchOption(rawRes, modelResOptions);
         if (matchedRes !== undefined) {
           hfParams.resolution = matchedRes;
         }
@@ -9500,7 +9577,7 @@ export class McpStdioBridgeServer {
 
     if (qualitySpec) {
       let rawQual = String(mergedModelParams.quality ?? quality ?? '').trim();
-      if (!rawQual && !resSpec) {
+      if (!rawQual && !modelResOptions) {
         // Models like soul_2, soul_cinematic, wan2_6 store resolution tier inside `quality`
         rawQual = String(resolution || '').trim();
       }
@@ -9518,16 +9595,22 @@ export class McpStdioBridgeServer {
       }
     }
 
-    // Duration handling
+    // Duration handling (check both `durationSpec` and first-class `modelDef.durationsSec` across video & audio)
     const durationSpec = specByName.get('duration');
-    if ((kind === 'video' && (!modelDef || durationSpec)) || durationSpec) {
+    const modelDurOptions =
+      durationSpec && Array.isArray(durationSpec.options) && durationSpec.options.length > 0
+        ? durationSpec.options
+        : Array.isArray(modelDef?.durationsSec) && (modelDef!.durationsSec as unknown[]).length > 0
+          ? (modelDef!.durationsSec as unknown[])
+          : null;
+    if ((kind === 'video' && (!modelDef || durationSpec || modelDurOptions)) || durationSpec || modelDurOptions) {
       const rawDur =
         mergedModelParams.duration !== undefined
           ? Number(mergedModelParams.duration)
           : durationSec;
       if (Number.isFinite(rawDur) && rawDur > 0) {
-        if (durationSpec && Array.isArray(durationSpec.options) && durationSpec.options.length > 0) {
-          const numOpts = durationSpec.options
+        if (modelDurOptions && modelDurOptions.length > 0) {
+          const numOpts = modelDurOptions
             .map((o) => Number(o))
             .filter((n) => Number.isFinite(n) && n > 0);
           if (numOpts.length > 0) {
@@ -9547,6 +9630,18 @@ export class McpStdioBridgeServer {
           hfParams.duration = Math.round(rawDur);
         }
       }
+    }
+
+    // Explicit Billing Mode (`use_unlim`: 'unlimited' | 'credits' | 'auto')
+    const rawUseUnlim = mergedModelParams.use_unlim ?? explicitParams.use_unlim;
+    if (rawUseUnlim === true || String(rawUseUnlim || '').toLowerCase() === 'unlimited') {
+      if (batchCount <= 1 && modelDef?.supportsUnlim !== false) {
+        hfParams.use_unlim = true;
+      } else {
+        hfParams.use_unlim = false;
+      }
+    } else if (rawUseUnlim === false || String(rawUseUnlim || '').toLowerCase() === 'credits') {
+      hfParams.use_unlim = false;
     }
 
     // Video audio toggle (`generate_audio` vs `sound`)
@@ -10696,9 +10791,20 @@ export class McpStdioBridgeServer {
             hasPromptHandleTag ||
             resolvedReferenceHandles.length > 0);
 
+        const rawCameraMotion = String(
+          params.cameraMotion ?? settings.cameraMotion ?? ''
+        ).trim();
+        const promptWithCamera =
+          kind === 'video' &&
+          rawCameraMotion &&
+          rawCameraMotion.toLowerCase() !== 'static tripod' &&
+          !prompt.toLowerCase().includes(rawCameraMotion.toLowerCase())
+            ? `${prompt.trim()} Camera movement: ${rawCameraMotion}.`.trim()
+            : prompt;
+
         const effectiveHfPrompt = preferMultiImageReferences
-          ? rewriteHandlesForSlotPrefix(prompt, resolvedReferenceImages, (n) => `@Image${n}`)
-          : prompt;
+          ? rewriteHandlesForSlotPrefix(promptWithCamera, resolvedReferenceImages, (n) => `@Image${n}`)
+          : promptWithCamera;
 
         const medias: Array<{ value: string; role: string }> = [];
         const firstRole = this.resolveHiggsfieldRoleForModel(
@@ -15749,20 +15855,43 @@ export class McpStdioBridgeServer {
         }
         const dl = await downloadObjectFromR2(`media/${safeBase}`);
         if (dl.ok && dl.body && dl.body.byteLength > 0) {
-          try {
-            fs.mkdirSync(this.mediaDir, { recursive: true });
-            fs.writeFileSync(primaryTargetPath, dl.body);
-          } catch {
-            // If read-only filesystem, serve directly from memory buffer
-            res.writeHead(200, {
-              'Content-Length': dl.body.byteLength,
-              'Content-Type': dl.contentType || MIME_BY_EXT[path.extname(safeBase).toLowerCase()] || 'application/octet-stream',
+          const buf = dl.body;
+          const totalSize = buf.byteLength;
+          const contentType =
+            dl.contentType ||
+            MIME_BY_EXT[path.extname(safeBase).toLowerCase()] ||
+            'application/octet-stream';
+          const rangeHeader = req.headers.range;
+          if (rangeHeader && /^bytes=\d*-\d*$/.test(rangeHeader)) {
+            const [startStr, endStr] = rangeHeader.replace(/bytes=/, '').split('-');
+            const start = startStr ? parseInt(startStr, 10) : 0;
+            const end = endStr ? Math.min(parseInt(endStr, 10), totalSize - 1) : totalSize - 1;
+            if (start >= totalSize || start > end) {
+              res.writeHead(416, { 'Content-Range': `bytes */${totalSize}` });
+              res.end();
+              return;
+            }
+            const chunk = buf.subarray(start, end + 1);
+            res.writeHead(206, {
+              'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+              'Accept-Ranges': 'bytes',
+              'Content-Length': chunk.byteLength,
+              'Content-Type': contentType,
               'Cache-Control': 'public, max-age=31536000, immutable',
             });
-            if (req.method !== 'HEAD') res.write(dl.body);
+            if (req.method !== 'HEAD') res.write(chunk);
             res.end();
             return;
           }
+          res.writeHead(200, {
+            'Accept-Ranges': 'bytes',
+            'Content-Length': totalSize,
+            'Content-Type': contentType,
+            'Cache-Control': 'public, max-age=31536000, immutable',
+          });
+          if (req.method !== 'HEAD') res.write(buf);
+          res.end();
+          return;
         } else {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: `Media file not found: ${safeBase}` }));

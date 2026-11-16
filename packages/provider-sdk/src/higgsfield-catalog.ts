@@ -121,6 +121,7 @@ const INLINE_PILL_PARAM_NAMES = new Set<string>([
   'mode',
   'background',
   'output_format',
+  'voice',
 ]);
 
 function titleCaseParamName(rawName: string): string {
@@ -197,14 +198,18 @@ function deriveVideoDurationStops(
   if (durationParam && Array.isArray(durationParam.options) && durationParam.options.length > 0) {
     return Array.from(new Set(durationParam.options.map((d) => Number(d)).filter((n) => Number.isFinite(n) && n > 0))).sort((a, b) => a - b);
   }
-  if (modality !== 'video') return undefined;
+  if (modality !== 'video' && modality !== 'audio') return undefined;
 
   const rangeMin = typeof raw.duration_range?.min === 'number' ? raw.duration_range.min : durationParam?.min;
   const rangeMax = typeof raw.duration_range?.max === 'number' ? raw.duration_range.max : durationParam?.max;
   if (typeof rangeMin === 'number' || typeof rangeMax === 'number') {
     const min = Math.max(1, typeof rangeMin === 'number' ? rangeMin : 3);
-    const max = Math.max(min, typeof rangeMax === 'number' ? rangeMax : 15);
-    const stops = [2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30].filter((s) => s >= min && s <= max);
+    const max = Math.max(min, typeof rangeMax === 'number' ? rangeMax : modality === 'audio' ? 30 : 15);
+    const candidateStops =
+      modality === 'audio'
+        ? [3, 4, 5, 6, 8, 10, 12, 15, 20, 30, 60]
+        : [2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30];
+    const stops = candidateStops.filter((s) => s >= min && s <= max);
     if (typeof durationParam?.default === 'number' && durationParam.default > 0 && !stops.includes(durationParam.default)) {
       stops.push(durationParam.default);
     }
@@ -336,6 +341,66 @@ export function convertRawHiggsfieldModelToPlatformModel(
       ? durationParam.default
       : durationsSec?.[0];
 
+  const supportsSingleStartFrame =
+    mediaRoles.includes('start_image') ||
+    mediaRoles.includes('image') ||
+    mediaRoles.includes('ref_image');
+  const supportsTailFrame = mediaRoles.includes('end_image');
+  const supportsStartEndFrames = supportsSingleStartFrame || supportsTailFrame;
+  const supportsOmniRef = mediaRoles.some((r) =>
+    [
+      'image_references',
+      'input_images',
+      'character_images',
+      'character_image',
+      'character_photo',
+      'product_image',
+      'product_photo',
+      'location_image',
+      'location_photo',
+    ].includes(r)
+  );
+  const supportsVideoRef = mediaRoles.some((r) =>
+    [
+      'video_references',
+      'video',
+      'input_video',
+      'motion_video',
+      'driving_video',
+      'reference_video',
+    ].includes(r)
+  );
+  const supportsAudioRef = mediaRoles.some((r) =>
+    ['audio_references', 'input_audio', 'audio'].includes(r)
+  );
+  const supportsMotionControl =
+    raw.id.toLowerCase().includes('motion') ||
+    mediaRoles.includes('motion_video') ||
+    mediaRoles.includes('driving_video');
+
+  const audioSubMode: 'tts' | 'sfx' | 'music' | undefined =
+    modality === 'audio'
+      ? raw.id.includes('music')
+        ? 'music'
+        : raw.id.includes('mirelo') ||
+            raw.id.includes('sound') ||
+            raw.id.includes('sfx') ||
+            raw.id.includes('dubbing')
+          ? 'sfx'
+          : 'tts'
+      : undefined;
+
+  const dedupedParameters = parameters.filter((param) => {
+    const pname = param.name.toLowerCase();
+    if (pname === 'resolution' && resolutions && resolutions.length > 0) return false;
+    if ((pname === 'aspect_ratio' || pname === 'ratio') && aspectRatios && aspectRatios.length > 0)
+      return false;
+    if ((pname === 'duration' || pname === 'duration_sec') && durationsSec && durationsSec.length > 0)
+      return false;
+    if (pname === 'batch_size' || pname === 'batch_count' || pname === 'count') return false;
+    return true;
+  });
+
   return {
     id: raw.id,
     label: buildHumanModelLabel(raw),
@@ -346,8 +411,14 @@ export function convertRawHiggsfieldModelToPlatformModel(
     ...(supportsUnlim ? { supportsUnlim: true } : {}),
     supportsReferences: mediaRoles.length > 0,
     ...(maxReferences > 0 ? { maxReferences } : {}),
-    supportsStartEndFrames:
-      mediaRoles.includes('start_image') || mediaRoles.includes('end_image'),
+    supportsSingleStartFrame,
+    supportsTailFrame,
+    supportsStartEndFrames,
+    supportsOmniRef,
+    supportsVideoRef,
+    supportsAudioRef,
+    supportsMotionControl,
+    ...(audioSubMode ? { audioSubMode } : {}),
     supportsNativeAudio:
       modality === 'audio'
         ? true
@@ -361,7 +432,7 @@ export function convertRawHiggsfieldModelToPlatformModel(
     ...(defaultAspectRatio ? { defaultAspectRatio } : {}),
     ...(defaultResolution ? { defaultResolution } : {}),
     ...(defaultDurationSec ? { defaultDurationSec } : {}),
-    ...(parameters.length > 0 ? { parameters } : {}),
+    ...(dedupedParameters.length > 0 ? { parameters: dedupedParameters } : {}),
   };
 }
 
